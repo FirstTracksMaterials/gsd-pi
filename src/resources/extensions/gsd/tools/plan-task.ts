@@ -1,5 +1,5 @@
 import { clearParseCache } from "../files.js";
-import { assertVerifyIsShellCheckable } from "../verification-gate.js";
+import { assertVerifyIsShellCheckable, validateVerificationCommand } from "../verification-gate.js";
 import { normalizeVerifyCommandForVenv } from "../python-resolver.js";
 import { isClosedStatus } from "../status-guards.js";
 import { isNonEmptyString, validateStringArray } from "../validation.js";
@@ -142,6 +142,10 @@ function validateParams(params: PlanTaskParams): PlanTaskParams {
   if (!isNonEmptyString(params?.estimate)) throw new Error("estimate is required");
   if (!isNonEmptyString(params?.verify)) throw new Error("verify is required");
   assertVerifyIsShellCheckable(params.verify);
+  const verifyValidation = validateVerificationCommand(params.verify);
+  if (!verifyValidation.ok) {
+    throw new Error(`verify must be a shell-checkable command: ${verifyValidation.reason}`);
+  }
   if (params.observabilityImpact !== undefined && !isNonEmptyString(params.observabilityImpact)) {
     throw new Error("observabilityImpact must be a non-empty string when provided");
   }

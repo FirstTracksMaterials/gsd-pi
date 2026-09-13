@@ -1171,6 +1171,31 @@ test("isLikelyCommand: escaped quotes outside quoted segments stay in the token 
   assert.equal(isLikelyCommand("grep -q \\'the\\' file.txt"), true);
 });
 
+test("isLikelyCommand: non-English prose after a known command is rejected (issue #1994)", () => {
+  assert.equal(
+    isLikelyCommand("npm test verifica che il file contiene tutti i nomi"),
+    false,
+  );
+  assert.equal(
+    isLikelyCommand("npm run test:unit"),
+    true,
+  );
+});
+
+test("isLikelyCommand: numbered narrative verify lines are rejected (issue #1994)", () => {
+  assert.equal(
+    isLikelyCommand("6. Decisione D115 conferma che il percorso e corretto"),
+    false,
+  );
+});
+
+test("isLikelyCommand: lowercase prose without command evidence is rejected (issue #1994)", () => {
+  assert.equal(
+    isLikelyCommand("verifica che il file contiene tutti i nomi richiesti"),
+    false,
+  );
+});
+
 test("validateVerificationCommand allows exit-code echo diagnostic suffix", () => {
   assert.equal(validateVerificationCommand('python3 tools/check-status.py; echo "exit:$?"').ok, true);
   assert.equal(validateVerificationCommand("python3 tools/check-status.py; echo 'exit:$?'").ok, true);

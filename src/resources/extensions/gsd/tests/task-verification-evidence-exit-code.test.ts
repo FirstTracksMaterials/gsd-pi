@@ -30,6 +30,7 @@ function insertRawEvidence(values: {
   exitCode: unknown;
   verdict: string;
   durationMs: unknown;
+  createdAt?: string;
 }): void {
   transaction(() =>
     _getAdapter()!.prepare(
@@ -44,7 +45,7 @@ function insertRawEvidence(values: {
       ":exit_code": values.exitCode,
       ":verdict": values.verdict,
       ":duration_ms": values.durationMs,
-      ":created_at": new Date().toISOString(),
+      ":created_at": values.createdAt ?? new Date().toISOString(),
     }),
   );
 }
@@ -113,6 +114,29 @@ describe("getTaskVerificationEvidence: unknown exit codes", () => {
     assert.equal(evidence.exitCode, 0);
     assert.equal(evidence.durationMs, 1200);
     assert.equal(hasQualifyingTaskEvidence(getTaskVerificationEvidence(MID, SID, TID)), true);
+  });
+
+  test("getTaskVerificationEvidence returns only the latest completion batch (#2259)", () => {
+    if (!isDbAvailable()) return;
+    insertRawEvidence({
+      command: "pnpm test",
+      exitCode: 1,
+      verdict: "fail",
+      durationMs: 10,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    insertRawEvidence({
+      command: "pnpm test",
+      exitCode: 0,
+      verdict: "pass",
+      durationMs: 20,
+      createdAt: "2026-01-02T00:00:00.000Z",
+    });
+
+    const evidence = getTaskVerificationEvidence(MID, SID, TID);
+    assert.equal(evidence.length, 1);
+    assert.equal(evidence[0]?.exitCode, 0);
+    assert.equal(hasQualifyingTaskEvidence(evidence), true);
   });
 
   test("one unknown exit_code no longer disqualifies an otherwise passing set (#2213)", () => {

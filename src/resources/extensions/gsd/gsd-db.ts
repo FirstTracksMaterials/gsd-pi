@@ -1212,6 +1212,10 @@ export function getTaskVerificationEvidence(
     `SELECT command, exit_code, verdict, duration_ms
      FROM verification_evidence
      WHERE milestone_id = :mid AND slice_id = :sid AND task_id = :tid
+       AND created_at = (
+         SELECT MAX(created_at) FROM verification_evidence
+         WHERE milestone_id = :mid AND slice_id = :sid AND task_id = :tid
+       )
      ORDER BY id`,
   ).all({ ":mid": milestoneId, ":sid": sliceId, ":tid": taskId }) as Array<Record<string, unknown>>;
   return rows.map((row) => {

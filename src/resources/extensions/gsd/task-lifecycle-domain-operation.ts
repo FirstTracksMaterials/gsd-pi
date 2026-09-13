@@ -29,6 +29,7 @@ import {
 import { terminalizeTaskExecutionDispatch } from "./db/writers/task-execution.js";
 import type { ExecutionInvocation } from "./execution-invocation.js";
 import { ensurePendingSliceQ8 } from "./db/writers/slice-companion-state.js";
+import { deleteVerificationEvidence } from "./gsd-db.js";
 
 export interface TaskLifecycleIdentity {
   milestoneId: string;
@@ -387,6 +388,7 @@ export function reopenTask(input: {
       adoptedFromStatus: legacyStatus,
     });
     reopenLegacyTaskState(context, input.task);
+    deleteVerificationEvidence(state.milestoneId, state.sliceId, state.taskId);
     ensurePendingSliceQ8(context, input.task);
     const checkpoint = appendRecoveryWorkCheckpoint(context, {
       lifecycleId: lifecycle.lifecycleId,
