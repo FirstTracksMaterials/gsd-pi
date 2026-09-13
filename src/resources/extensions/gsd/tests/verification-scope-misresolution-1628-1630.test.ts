@@ -188,6 +188,17 @@ describe("plan-time verify validation (issue #1628)", () => {
     assert.equal(getTask("M001", "S01", "T01")?.verify, "grep -q D023 docs/decisions.md");
   });
 
+  test("gsd_plan_task rejects prose verify at write time (#2248)", async () => {
+    const result = await handlePlanTaskWithInvocation(
+      taskParams({ verify: "Document exists and contains all required sections" }),
+      base,
+      internalPlanningInvocation(),
+    );
+    assert.ok("error" in result);
+    assert.match(result.error, /verify must be a shell-checkable command: does not look like a runnable command/);
+    assert.equal(getTask("M001", "S01", "T01"), null, "prose verify must not persist");
+  });
+
   test("gsd_replan_task rejects a verify that names a GSD tool", async () => {
     insertTask({ id: "T01", sliceId: "S01", milestoneId: "M001", title: "Record decision", status: "pending" });
     const result = await handleReplanTaskWithInvocation(

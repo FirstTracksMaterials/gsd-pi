@@ -8,7 +8,7 @@ import {
 import { invalidateStateCache } from "../state.js";
 import { isClosedStatus } from "../status-guards.js";
 import { isNonEmptyString, validateStringArray } from "../validation.js";
-import { assertVerifyIsShellCheckable } from "../verification-gate.js";
+import { assertVerifyIsShellCheckable, validateVerificationCommand } from "../verification-gate.js";
 import { normalizeVerifyCommandForVenv } from "../python-resolver.js";
 import { loadEffectiveGSDPreferences } from "../preferences.js";
 import {
@@ -76,6 +76,10 @@ function validateParams(params: ReplanTaskParams): ReplanTaskParams {
   if (!isNonEmptyString(params?.estimate)) throw new Error("estimate is required");
   if (!isNonEmptyString(params?.verify)) throw new Error("verify is required");
   assertVerifyIsShellCheckable(params.verify);
+  const verifyValidation = validateVerificationCommand(params.verify);
+  if (!verifyValidation.ok) {
+    throw new Error(`verify must be a shell-checkable command: ${verifyValidation.reason}`);
+  }
   const requiredWorkflowTools = params.requiredWorkflowTools === undefined
     ? []
     : Array.from(new Set(validateStringArray(params.requiredWorkflowTools, "requiredWorkflowTools")));

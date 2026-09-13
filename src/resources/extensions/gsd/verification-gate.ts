@@ -626,7 +626,7 @@ const KNOWN_COMMAND_PREFIXES = new Set([
   "git", "gh",
   "eslint", "prettier", "vitest", "jest", "mocha", "pytest", "phpunit",
   "curl", "wget",
-  "grep", "find", "diff", "wc", "sort", "head", "tail",
+  "grep", "rg", "find", "diff", "wc", "sort", "head", "tail",
 ]);
 
 /**
@@ -709,6 +709,39 @@ function readsAsProseAfterCommandWord(tokens: string[], proseTokens: string[]): 
     .some(t => PROSE_MARKER_WORDS.has(t.toLowerCase().replace(/[.,;:!?]+$/, "")));
 }
 
+function hasShellLikeToken(token: string): boolean {
+  return token.startsWith("-")
+    || token.includes("/")
+    || token.includes("\\")
+    || token.includes(".")
+    || token.includes("*")
+    || token.includes("=")
+    || token.includes(":")
+    || token.includes("@")
+    || token.includes("%");
+}
+
+/**
+ * Long natural-language runs after a known command word are prose in any
+ * language (#1994). Require four or more word-only tail tokens with no shell
+ * metacharacters so short invocations like `go build with tags` stay commands.
+ */
+function looksLikeNaturalLanguageTail(tokens: string[]): boolean {
+  const tail = tokens.slice(1);
+  if (tail.length < 4) return false;
+  if (tail.some(hasShellLikeToken)) return false;
+  return tail.every((token) => /^[\p{L}\p{N}_'-]+$/u.test(token.replace(/[.,;:!?]+$/, "")));
+}
+
+function knownPrefixInvocationIsCommand(
+  effectiveTokens: string[],
+  proseTokens: string[],
+): boolean {
+  if (readsAsProseAfterCommandWord(effectiveTokens, proseTokens)) return false;
+  if (looksLikeNaturalLanguageTail(effectiveTokens)) return false;
+  return true;
+}
+
 /**
  * Heuristic check: does this string look like an executable shell command
  * rather than a prose description?
@@ -746,16 +779,19 @@ export function isLikelyCommand(cmd: string): boolean {
   const strippedTokens = stripped ? stripped.split(/\s+/) : [];
   const proseTokens = firstToken === "!" ? strippedTokens.slice(1) : strippedTokens;
 
-  // Known command prefix → command, unless the rest reads as English prose
+  // Numbered checklist / narrative prose (#1994).
+  if (/^\d+[.)]\s/.test(trimmed)) return false;
+
+  // Known command prefix → command, unless the rest reads as prose.
   if (KNOWN_COMMAND_PREFIXES.has(effectiveFirstToken)) {
-    return !readsAsProseAfterCommandWord(effectiveTokens, proseTokens);
+    return knownPrefixInvocationIsCommand(effectiveTokens, proseTokens);
   }
 
-  // Path-like first token → command, unless the rest reads as English prose.
+  // Path-like first token → command, unless the rest reads as prose.
   // "./out/report.txt exists and contains the summary" is a description of a
   // file, not an invocation of it.
   if (effectiveFirstToken.startsWith("/") || effectiveFirstToken.startsWith("./") || effectiveFirstToken.startsWith("../")) {
-    return !readsAsProseAfterCommandWord(effectiveTokens, proseTokens);
+    return knownPrefixInvocationIsCommand(effectiveTokens, proseTokens);
   }
 
   // Has flag-like tokens → command
@@ -773,12 +809,17 @@ export function isLikelyCommand(cmd: string): boolean {
   // Non-ASCII prose with multiple words should not be executed as a command.
   if (!/[A-Za-z0-9]/.test(effectiveFirstToken) && effectiveTokens.length >= 4) return false;
 
-  // Everything above only rejects prose that announces itself with a capital
-  // letter or comma. Lowercase prose fell through to "command" and got executed
-  // — `greet/hello.txt exists and contains "hello"` ran the .txt file as a
-  // program and failed with exit 126 "Permission denied", failing the gate for
-  // a task that had in fact succeeded. English function words are the tell.
-  return !readsAsProseAfterCommandWord(effectiveTokens, proseTokens);
+  // Short custom script names remain commands; everything else needs positive
+  // command evidence instead of defaulting to executable (#1994).
+  if (effectiveTokens.length <= 2) return true;
+  if (effectiveTokens.length === 3) {
+    const tailHasProseMarker = proseTokens
+      .slice(1)
+      .some((token) => PROSE_MARKER_WORDS.has(token.toLowerCase().replace(/[.,;:!?]+$/, "")));
+    if (!tailHasProseMarker) return true;
+  }
+  if (readsAsProseAfterCommandWord(effectiveTokens, proseTokens)) return false;
+  return false;
 }
 
 /**

@@ -43,24 +43,25 @@ These bugs block `/gsd auto` with no sanctioned recovery path. Highest user impa
 - gate-evaluate prompt explicitly forbids `Agent` with `run_in_background: true`
 - Tests green for `error-classifier`, `auto-liveness-backstop`, `gate-dispatch`
 
-## Wave 2 — Closeout and lifecycle authority (P1)
+## Wave 2 — Closeout and lifecycle authority (P1, shipped)
 
 | Issue | Title | Status | Notes |
 |-------|-------|--------|-------|
-| #2239 | Husk-task gates wedge milestone closeout | **partial** | `closeout-consistency-gate.ts` filters skipped/cancelled tasks; adopted-milestone repair path may still gap |
-| #2313 | Legacy slice cannot close without parent lifecycle authority | open | Needs DB-authoritative repair, not markdown recover |
+| #2239 | Husk-task gates wedge milestone closeout | **fixed** | Husk filter + adopted-milestone gate closure in `closeout-consistency-gate.ts` |
+| #2313 | Legacy slice cannot close without parent lifecycle authority | **fixed** | `repairMilestoneLifecycleShadowsForward` before `completeSlice` |
 | #2033 | finalize-retry wedge without satisfiability pre-check | open | Large-scope |
-| #2126 | `/gsd park` no-ops on adopted milestones | open | — |
+| #2126 | `/gsd park` no-ops on adopted milestones | **fixed** | Canonical `paused` transition + legacy `parked` projection |
+| #2159 | False stale liveness wedges from interrupted closeouts | open | Deferred — needs wedge GC design |
 | #2294 | validate-milestone verdict persistence blocked | needs-info | — |
 
-## Wave 3 — Verification and pre-exec (P1)
+## Wave 3 — Verification and pre-exec (P1, shipped)
 
 | Issue | Title | Status | Notes |
 |-------|-------|--------|-------|
-| #2290 | Prose heuristic rejects grep patterns with English function words | open | Related to #1994 (English-only `PROSE_MARKER_WORDS`) |
-| #2259 | Verification evidence accumulates task-scoped, not attempt-scoped | open | — |
-| #1994 | `PROSE_MARKER_WORDS` is English-only | open | — |
-| #2248 | Decisions register never enforced at `gsd_plan_task` write time | open | — |
+| #2290 | Prose heuristic rejects grep patterns with English function words | **fixed** | Quoted-segment stripping (#2292); plan-time `validateVerificationCommand` |
+| #2259 | Verification evidence accumulates task-scoped, not attempt-scoped | **fixed** | Latest `created_at` batch only; cleared on `task.reopen` |
+| #1994 | `PROSE_MARKER_WORDS` is English-only | **fixed** | Language-neutral tail detection + positive command evidence |
+| #2248 | Decisions register never enforced at `gsd_plan_task` write time | **partial** | Prose/tool verify rejected at plan/replan write time; full decision-rule guard deferred |
 
 ## Wave 4 — Platform, provider, and test hygiene (P2)
 
