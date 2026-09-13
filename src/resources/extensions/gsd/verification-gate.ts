@@ -16,11 +16,12 @@ import {
   rmSync,
   type Dirent,
 } from "node:fs";
-import { join, basename, delimiter } from "node:path";
+import { join, basename } from "node:path";
 import { tmpdir } from "node:os";
 import type { AuditWarning, RuntimeError, VerificationCheck, VerificationResult } from "./types.js";
 import { DEFAULT_COMMAND_TIMEOUT_MS } from "./constants.js";
 import { rewriteCommandWithRtk } from "../shared/rtk.js";
+import { prependPathEntry } from "../shared/rtk-shared.js";
 import { normalizePythonCommand, resolveVenvInterpreter, venvBinDirectory, formatPythonInvocation } from "./python-resolver.js";
 import {
   isWorkflowSurfaceAliasTool,
@@ -900,7 +901,7 @@ export interface VerificationTarget {
   preferenceCommands?: string[];
 }
 
-function verificationChildEnvironment(cwd: string): NodeJS.ProcessEnv {
+export function verificationChildEnvironment(cwd: string): NodeJS.ProcessEnv {
   const env = { ...process.env };
   for (const key of [
     "GSD_PROJECT_ROOT",
@@ -913,8 +914,7 @@ function verificationChildEnvironment(cwd: string): NodeJS.ProcessEnv {
   }
   const venv = resolveVenvInterpreter(cwd);
   if (venv) {
-    const bin = venvBinDirectory(venv);
-    env.PATH = `${bin}${delimiter}${env.PATH ?? ""}`;
+    prependPathEntry(env, venvBinDirectory(venv));
   }
   return env;
 }

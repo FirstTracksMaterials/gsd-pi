@@ -546,6 +546,9 @@ export class ModelRegistry {
 						authMode: providerConfig.apiKey ? "apiKey" : "none",
 						apiKey: providerConfig.apiKey,
 						baseUrl: providerConfig.baseUrl,
+						api: providerConfig.api,
+						headers: providerConfig.headers,
+						authHeader: providerConfig.authHeader,
 						isReady: providerConfig.apiKey ? () => true : undefined,
 					});
 				}

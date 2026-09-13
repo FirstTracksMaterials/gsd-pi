@@ -168,6 +168,18 @@ describe("models.generated.ts", () => {
 		});
 	});
 
+	test("includes GPT-6 Astra for OpenAI Codex (#2250)", () => {
+		const model = MODELS["openai-codex"]["gpt-6-astra"];
+		expect(model).toMatchObject({
+			id: "gpt-6-astra",
+			api: "openai-codex-responses",
+			provider: "openai-codex",
+			contextWindow: 272_000,
+			maxTokens: 128_000,
+			cost: { input: 10, output: 50, cacheRead: 1, cacheWrite: 0 },
+		});
+	});
+
 	test("includes GPT-5.6 variants for OpenAI and OpenAI Codex providers", () => {
 		// models.dev now lists the GPT-5.6 family natively; the curated fill in
 		// generate-models.ts stands down when upstream data is present.
