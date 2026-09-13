@@ -74,7 +74,7 @@ import { buildRunUatPresentationForType, RUN_UAT_TOOL_PRESENTATION_PLAN_ID } fro
 import { classifyUatContentForRun } from "./uat-policy.js";
 import { checkNeedsRunUat as resolveNeedsRunUat, type UatDispatchCandidate } from "./uat-dispatch.js";
 import { isClosedStatus } from "./status-guards.js";
-import { STOPWORDS } from "./slice-scope.js";
+import { STOPWORDS, deriveSliceScope } from "./slice-scope.js";
 import { buildWebAppUatGuidanceBlock } from "./web-app-uat.js";
 import {
   readPendingTaskRecoveryContext,
