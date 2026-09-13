@@ -102,7 +102,6 @@ export function proveMilestoneCloseout(
     refreshFromDisk: options.refreshFromDisk,
     allowOpenMilestone: options.allowOpenMilestone,
     artifactBasePath: options.summaryArtifactBasePath,
-    readOnly: true,
   });
   if (!consistency.ok) return fromConsistencyResult(consistency);
 
