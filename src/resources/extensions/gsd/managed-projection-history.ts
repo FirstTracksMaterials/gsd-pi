@@ -774,6 +774,7 @@ function readUnboundProjectionEvidence(handle: ProjectionRootIdentityLock): Unbo
         || !/^sha256:[0-9a-f]{64}$/u.test(recordedContentDigest)))
       || (transition !== "retained" && transition !== "resolving")
       || (transition === "resolving" && (parsedResolution === undefined
+        || defaultResolutionPaths === null
         || (parsedResolution.action !== "discard" && parsedResolution.action !== "preserve" && parsedResolution.action !== "restore")
         || parsedResolution.destinationPath !== expectedDestination
         || recordedContentDigest !== parsedResolution.contentDigest
@@ -784,7 +785,7 @@ function readUnboundProjectionEvidence(handle: ProjectionRootIdentityLock): Unbo
         || typeof parsedResolution.guardPath !== "string"
         || !isEvidenceResolutionGuardPath(
           parsedResolution.guardPath,
-          defaultResolutionPaths.guardPath,
+          defaultResolutionPaths!.guardPath,
         )
         || (parsedResolution.guardIdentity !== null && typeof parsedResolution.guardIdentity !== "string")
         || (parsedResolution.stagingPath !== null && typeof parsedResolution.stagingPath !== "string")
@@ -793,7 +794,7 @@ function readUnboundProjectionEvidence(handle: ProjectionRootIdentityLock): Unbo
         || typeof parsedResolution.exchangePath !== "string"
         || !isEvidenceResolutionExchangePath(
           parsedResolution.exchangePath,
-          defaultResolutionPaths.exchangePath,
+          defaultResolutionPaths!.exchangePath,
         )
         || (parsedResolution.exchangeIdentity !== null && typeof parsedResolution.exchangeIdentity !== "string")
         || (parsedResolution.phase !== "prepared"
