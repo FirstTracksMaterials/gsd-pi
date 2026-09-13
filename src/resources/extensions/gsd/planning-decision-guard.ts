@@ -44,7 +44,8 @@ export function derivePlanningDecisionScope(
 ): string | undefined {
   const slice = getSlice(milestoneId, sliceId);
   if (!slice) return undefined;
-  return deriveSliceScope(slice.title, slice.description);
+  const sliceDescription = slice.goal || slice.demo;
+  return deriveSliceScope(slice.title, sliceDescription || undefined);
 }
 
 function formatDecisionCitation(decisions: readonly Decision[]): string {
