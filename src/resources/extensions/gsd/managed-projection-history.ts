@@ -22,6 +22,7 @@ import {
 import { withProjectionMutationSync } from "./database-maintenance-fence.js";
 import { gsdProjectionRoot } from "./paths.js";
 import { classifyGsdLogicalPath } from "./projection-path-policy.js";
+import { shouldCopyDeleteOnRenameFailure } from "./projection-observation.js";
 
 function historyPath(targetRoot: string): string {
   return join(gsdProjectionRoot(targetRoot), "migration", "managed-outputs.json");
@@ -63,6 +64,7 @@ let unboundEvidenceCopyFaultForTest: (() => void) | null = null;
 let unboundEvidenceGuardFaultForTest: (() => void) | null = null;
 let unboundEvidenceRemovalFaultForTest: (() => void) | null = null;
 let unboundEvidenceAcknowledgementFaultForTest: (() => void) | null = null;
+let unboundEvidenceExchangeFaultForTest: ((invoke: () => void) => void) | null = null;
 
 export function _setManagedProjectionApplyFaultForTest(fault: (() => void) | null): void {
   managedProjectionApplyFaultForTest = fault;
@@ -98,6 +100,12 @@ export function _setUnboundEvidenceRemovalFaultForTest(fault: (() => void) | nul
 
 export function _setUnboundEvidenceAcknowledgementFaultForTest(fault: (() => void) | null): void {
   unboundEvidenceAcknowledgementFaultForTest = fault;
+}
+
+export function _setUnboundEvidenceExchangeFaultForTest(
+  fault: ((invoke: () => void) => void) | null,
+): void {
+  unboundEvidenceExchangeFaultForTest = fault;
 }
 
 interface PersistedManagedProjectionMutation {
@@ -164,11 +172,13 @@ interface UnboundProjectionEvidenceResolution {
   readonly currentIdentity: string;
   readonly contentDigest: string;
   readonly destinationPath: string | null;
-  readonly guardPath: string;
+  guardPath: string;
   guardIdentity: string | null;
   readonly stagingPath: string | null;
   stagingIdentity: string | null;
+  exchangePath: string | null;
   exchangeIdentity: string | null;
+  resolvedViaCopyFallback?: boolean;
   phase: "prepared" | "guarded" | "published" | "deleting";
 }
 
@@ -735,6 +745,7 @@ function readUnboundProjectionEvidence(handle: ProjectionRootIdentityLock): Unbo
           guardIdentity: rawResolution.guardIdentity ?? null,
           stagingPath: rawResolution.stagingPath ?? defaultResolutionPaths.stagingPath,
           stagingIdentity: rawResolution.stagingIdentity ?? null,
+          exchangePath: rawResolution.exchangePath ?? defaultResolutionPaths.exchangePath,
           exchangeIdentity: rawResolution.exchangeIdentity ?? null,
           phase: rawResolution.phase ?? "prepared",
         };
@@ -771,11 +782,19 @@ function readUnboundProjectionEvidence(handle: ProjectionRootIdentityLock): Unbo
         || typeof parsedResolution.contentDigest !== "string"
         || (parsedResolution.destinationPath !== null && typeof parsedResolution.destinationPath !== "string")
         || typeof parsedResolution.guardPath !== "string"
-        || parsedResolution.guardPath !== defaultResolutionPaths?.guardPath
+        || !isEvidenceResolutionGuardPath(
+          parsedResolution.guardPath,
+          defaultResolutionPaths.guardPath,
+        )
         || (parsedResolution.guardIdentity !== null && typeof parsedResolution.guardIdentity !== "string")
         || (parsedResolution.stagingPath !== null && typeof parsedResolution.stagingPath !== "string")
         || parsedResolution.stagingPath !== defaultResolutionPaths?.stagingPath
         || (parsedResolution.stagingIdentity !== null && typeof parsedResolution.stagingIdentity !== "string")
+        || typeof parsedResolution.exchangePath !== "string"
+        || !isEvidenceResolutionExchangePath(
+          parsedResolution.exchangePath,
+          defaultResolutionPaths.exchangePath,
+        )
         || (parsedResolution.exchangeIdentity !== null && typeof parsedResolution.exchangeIdentity !== "string")
         || (parsedResolution.phase !== "prepared"
           && parsedResolution.phase !== "guarded"
@@ -1824,6 +1843,93 @@ function evidenceResolutionPaths(
   };
 }
 
+function isRandomizedEvidenceGuardPath(path: string): boolean {
+  return /^\.gsd-projection-remove-[0-9a-f-]{36}$/u.test(basename(path));
+}
+
+function isRandomizedEvidenceExchangePath(path: string): boolean {
+  return /^\.gsd-projection-exchange-[0-9a-f-]{36}$/u.test(basename(path));
+}
+
+function isEvidenceResolutionGuardPath(guardPath: string, expectedDefault: string): boolean {
+  return guardPath === expectedDefault || isRandomizedEvidenceGuardPath(guardPath);
+}
+
+function isEvidenceResolutionExchangePath(exchangePath: string, expectedDefault: string): boolean {
+  return exchangePath === expectedDefault || isRandomizedEvidenceExchangePath(exchangePath);
+}
+
+function resolveEvidenceResolutionPaths(
+  evidence: UnboundProjectionEvidence,
+): { guardPath: string; stagingPath: string | null; exchangePath: string } {
+  const resolution = evidence.resolution!;
+  const defaults = evidenceResolutionPaths(
+    evidence.evidenceId,
+    evidence.evidencePath,
+    resolution.destinationPath,
+  );
+  return {
+    guardPath: resolution.guardPath,
+    stagingPath: resolution.stagingPath,
+    exchangePath: resolution.exchangePath ?? defaults.exchangePath,
+  };
+}
+
+function restageEvidenceResolutionExchange(
+  handle: ProjectionRootIdentityLock,
+  evidence: UnboundProjectionEvidence,
+): void {
+  const resolution = evidence.resolution!;
+  const paths = resolveEvidenceResolutionPaths(evidence);
+  const evidenceParent = dirname(evidence.evidencePath).replaceAll("\\", "/");
+  const prefix = evidenceParent === "." ? "" : `${evidenceParent}/`;
+
+  if (handle.pathExists(paths.exchangePath) && resolution.exchangeIdentity === null) {
+    recordUnboundProjectionEvidence(handle, {
+      evidencePath: paths.exchangePath,
+      kind: "quarantine",
+      logicalPath: evidence.logicalPath,
+      scope: evidence.scope,
+    });
+    resolution.exchangePath = `${prefix}.gsd-projection-exchange-${randomUUID()}`;
+    resolution.exchangeIdentity = null;
+    persistResolvingEvidence(handle, evidence);
+  }
+  if (handle.pathExists(resolution.guardPath) && resolution.guardIdentity === null) {
+    recordUnboundProjectionEvidence(handle, {
+      evidencePath: resolution.guardPath,
+      kind: "quarantine",
+      logicalPath: evidence.logicalPath,
+      scope: evidence.scope,
+    });
+    resolution.guardPath = `${prefix}.gsd-projection-remove-${randomUUID()}`;
+    resolution.guardIdentity = null;
+    persistResolvingEvidence(handle, evidence);
+  }
+}
+
+function finalizeEvidenceGuardFromCopy(
+  handle: ProjectionRootIdentityLock,
+  evidence: UnboundProjectionEvidence,
+  paths: { exchangePath: string },
+): string {
+  const resolution = evidence.resolution!;
+  if (resolution.exchangeIdentity !== null && handle.pathExists(paths.exchangePath)) {
+    removeResolutionPath(
+      handle,
+      paths.exchangePath,
+      resolution.exchangeIdentity,
+      false,
+    );
+  }
+  resolution.exchangeIdentity = null;
+  resolution.guardIdentity = handle.pathIdentity(resolution.guardPath);
+  resolution.resolvedViaCopyFallback = true;
+  resolution.phase = "guarded";
+  persistResolvingEvidence(handle, evidence);
+  return resolution.guardPath;
+}
+
 function evidenceConsent(
   evidence: UnboundProjectionEvidence,
   action: UnboundProjectionEvidenceResolutionAction,
@@ -1905,8 +2011,9 @@ function moveEvidenceIntoGuard(
   evidence: UnboundProjectionEvidence,
 ): string {
   const resolution = evidence.resolution!;
-  const paths = evidenceResolutionPaths(evidence.evidenceId, evidence.evidencePath, resolution.destinationPath);
   if (resolution.phase !== "prepared") return resolution.guardPath;
+  restageEvidenceResolutionExchange(handle, evidence);
+  let paths = resolveEvidenceResolutionPaths(evidence);
   if (!handle.pathExists(evidence.evidencePath)) {
     if (!handle.pathExists(resolution.guardPath)
       || handle.pathIdentity(resolution.guardPath) !== resolution.currentIdentity) {
@@ -1919,7 +2026,12 @@ function moveEvidenceIntoGuard(
   }
   if (resolution.guardIdentity === null) {
     if (handle.pathExists(resolution.guardPath)) {
-      throw new Error("unbound projection evidence guard is not journal-bound");
+      restageEvidenceResolutionExchange(handle, evidence);
+      const restagedPaths = resolveEvidenceResolutionPaths(evidence);
+      if (handle.pathExists(resolution.guardPath)) {
+        throw new Error("unbound projection evidence guard is not journal-bound");
+      }
+      paths.exchangePath = restagedPaths.exchangePath;
     }
     resolution.guardIdentity = evidence.scope === "tree"
       ? handle.prepareDirectoryPlaceholder(resolution.guardPath)
@@ -1928,27 +2040,54 @@ function moveEvidenceIntoGuard(
   }
   if (resolution.exchangeIdentity === null) {
     if (handle.pathExists(paths.exchangePath)) {
-      throw new Error("unbound projection exchange guard is not journal-bound");
+      restageEvidenceResolutionExchange(handle, evidence);
+      const restagedPaths = resolveEvidenceResolutionPaths(evidence);
+      if (handle.pathExists(restagedPaths.exchangePath)) {
+        throw new Error("unbound projection exchange guard is not journal-bound");
+      }
+      paths.exchangePath = restagedPaths.exchangePath;
     }
     resolution.exchangeIdentity = evidence.scope === "tree"
       ? handle.prepareDirectoryPlaceholder(paths.exchangePath)
       : handle.prepareFileTemporary(paths.exchangePath, Buffer.alloc(0));
     persistResolvingEvidence(handle, evidence);
   }
-  handle.exchangePaths(
-    evidence.evidencePath,
-    resolution.guardPath,
-    resolution.currentIdentity,
-    resolution.guardIdentity,
-    paths.exchangePath,
-    resolution.exchangeIdentity,
-  );
+  const exchange = (): void => {
+    handle.exchangePaths(
+      evidence.evidencePath,
+      resolution.guardPath,
+      resolution.currentIdentity,
+      resolution.guardIdentity!,
+      paths.exchangePath,
+      resolution.exchangeIdentity!,
+    );
+  };
+  try {
+    if (unboundEvidenceExchangeFaultForTest) {
+      unboundEvidenceExchangeFaultForTest(exchange);
+    } else {
+      exchange();
+    }
+  } catch (error) {
+    if (!shouldCopyDeleteOnRenameFailure(error)) {
+      restageEvidenceResolutionExchange(handle, evidence);
+      throw error;
+    }
+    copyEvidence(handle, evidence.evidencePath, resolution.guardPath, evidence.scope);
+    removeResolutionPath(
+      handle,
+      evidence.evidencePath,
+      resolution.currentIdentity,
+      evidence.scope === "tree",
+    );
+    return finalizeEvidenceGuardFromCopy(handle, evidence, paths);
+  }
   resolution.exchangeIdentity = null;
   persistResolvingEvidence(handle, evidence);
   removeResolutionPath(
     handle,
     evidence.evidencePath,
-    resolution.guardIdentity,
+    resolution.guardIdentity!,
     evidence.scope === "tree",
   );
   resolution.guardIdentity = resolution.currentIdentity;
@@ -2054,7 +2193,9 @@ function applyEvidenceResolution(
   }
   const source = moveEvidenceIntoGuard(handle, evidence);
   unboundEvidenceGuardFaultForTest?.();
-  if (resolution.phase !== "deleting" && (handle.pathIdentity(source) !== resolution.currentIdentity
+  const identityMatches = handle.pathIdentity(source) === resolution.currentIdentity
+    || resolution.resolvedViaCopyFallback === true;
+  if (resolution.phase !== "deleting" && (!identityMatches
     || projectionContentDigest(handle, source, evidence.scope) !== resolution.contentDigest)) {
     const changed: UnboundProjectionEvidence = {
       evidenceId: evidenceId(source, "quarantine", evidence.logicalPath, evidence.scope),
@@ -2081,10 +2222,13 @@ function applyEvidenceResolution(
   unboundEvidenceRemovalFaultForTest?.();
   resolution.phase = "deleting";
   persistResolvingEvidence(handle, evidence);
+  const removalIdentity = resolution.resolvedViaCopyFallback && resolution.guardIdentity
+    ? resolution.guardIdentity
+    : resolution.currentIdentity;
   try {
     handle.removeFileViaGuardExact(
       source,
-      resolution.currentIdentity,
+      removalIdentity,
       source,
       evidence.scope === "tree",
       resolution.contentDigest,
@@ -2225,7 +2369,7 @@ export function resolveUnboundProjectionEvidence(
     const currentIdentity = handle.pathIdentity(evidence.evidencePath);
     const contentDigest = projectionContentDigest(handle, evidence.evidencePath, evidence.scope);
     const destinationPath = evidenceDestination(evidence, action);
-    const { guardPath, stagingPath } = evidenceResolutionPaths(
+    const { guardPath, stagingPath, exchangePath } = evidenceResolutionPaths(
       evidence.evidenceId,
       evidence.evidencePath,
       destinationPath,
@@ -2245,6 +2389,7 @@ export function resolveUnboundProjectionEvidence(
         destinationPath,
         guardPath,
         stagingPath,
+        exchangePath,
         guardIdentity: null,
         stagingIdentity: null,
         exchangeIdentity: null,
