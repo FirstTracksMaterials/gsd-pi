@@ -57,7 +57,7 @@ Subagents report only; they do not write user source. Fold any findings into Dec
 - Do NOT call `gsd_complete_milestone`.
 - Do NOT update `.gsd/PROJECT.md` to reflect completion.
 - Do NOT update `.gsd/REQUIREMENTS.md` to mark requirements validated.
-- Write a clear failed-verification summary for the next attempt.
+- Write the failed-verification summary to exactly `{{verificationFailedPath}}`. No other filename is accepted.
 - Say: "Milestone {{milestoneId}} verification FAILED — not complete." and stop.
 
 **Success path** (all verifications passed):

@@ -400,6 +400,38 @@ test("one validation command conflicts on changed replay facts", () => {
   }), /idempotency conflict/i);
 });
 
+test("re-validation after needs-attention persists a passing verdict (#2294)", () => {
+  setup();
+  const baseCriterion = combinedValidationInput("milestone-validation/rerun/base").criteria[0]!;
+  const interrupted = {
+    ...combinedValidationInput("milestone-validation/rerun/interrupted"),
+    verdict: "inconclusive" as const,
+    outcome: "interrupted" as const,
+    failureClass: "validation-inconclusive",
+    rationale: "Objective checks need human review.",
+    summary: "Validation needs attention.",
+    criteria: [{
+      ...baseCriterion,
+      verdict: "inconclusive" as const,
+      rationale: "Evidence inconclusive pending review.",
+      evidence: [{
+        ...baseCriterion.evidence[0]!,
+        observation: "inconclusive" as const,
+      }],
+    }],
+  };
+  const first = validateMilestone(interrupted);
+  assert.equal(first.attemptNumber, 1);
+
+  const second = validateMilestone(
+    combinedValidationInput("milestone-validation/rerun/pass"),
+  );
+
+  assert.equal(second.status, "committed");
+  assert.equal(second.attemptNumber, 2);
+  assert.equal(second.verdict, "pass");
+});
+
 test("one validation command atomically supersedes criteria removed from the plan", () => {
   setup();
   const baseInput = combinedValidationInput("milestone-validation/combined/criteria-1");

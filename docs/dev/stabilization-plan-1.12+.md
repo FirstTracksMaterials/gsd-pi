@@ -86,6 +86,17 @@ These bugs block `/gsd auto` with no sanctioned recovery path. Highest user impa
 | #2139 | Copilot overlay quarantine test non-hermetic | **fixed** | `mkdtempSync` + cleanup in `copilot-model-catalog.test.ts` |
 | #2114 | Custom provider headers broken in TUI mode | **fixed** | `loadCustomModels` persists headers/api/authHeader in `registeredProviders` |
 
+## Wave 5 — Closeout refusal and startup resilience (P2, shipped)
+
+| Issue | Title | Status | Notes |
+|-------|-------|--------|-------|
+| #2033 | complete-milestone deliberate refusal wedges as finalize-retry | **fixed** | `CLOSEOUT-VERIFICATION-FAILED` alias + named path in prompt |
+| #2077 | startup `validateConfiguredModel` rewrites on transient unavailability | **fixed** | Preserve when model remains in catalog and provider is ready |
+| #2294 | validate-milestone re-run cannot persist verdict | **fixed** | Regression test; V49 schema already allows interrupted→pass rerun |
+| #2159 | False stale liveness wedges from interrupted closeouts | open | Deferred — wedge GC design |
+| #2178 | Windows unbound-evidence resolution wedges projection writes | open | Deferred — native exchange + auto-loop policy |
+| #2140 | 26 pi-agent-core test failures on clean main | open | Deferred — workspace dep alignment |
+
 ## Deferred / structural (ADR-gated)
 
 These require design decisions or timebox gates, not point fixes:

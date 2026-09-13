@@ -3545,6 +3545,7 @@ export async function buildCompleteMilestonePrompt(
   // Use relMilestoneFile to get the layout-aware filename (NN-SUFFIX.md for flat-phase,
   // M001-SUFFIX.md for legacy) rather than manually appending the raw milestone id.
   const milestoneSummaryPath = join(base, relMilestoneFile(base, mid, "SUMMARY"));
+  const verificationFailedPath = join(base, relMilestoneFile(base, mid, "VERIFICATION-FAILED"));
 
   const learningsRelPath = relMilestoneFile(base, mid, "LEARNINGS");
   const learningsAbsPath = join(base, learningsRelPath);
@@ -3561,6 +3562,7 @@ export async function buildCompleteMilestonePrompt(
     roadmapPath: roadmapRel,
     inlinedContext,
     milestoneSummaryPath,
+    verificationFailedPath,
     extractLearningsSteps,
     skillActivation: buildSkillActivationBlock({
       base,
