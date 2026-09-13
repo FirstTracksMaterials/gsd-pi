@@ -74,6 +74,7 @@ import { buildRunUatPresentationForType, RUN_UAT_TOOL_PRESENTATION_PLAN_ID } fro
 import { classifyUatContentForRun } from "./uat-policy.js";
 import { checkNeedsRunUat as resolveNeedsRunUat, type UatDispatchCandidate } from "./uat-dispatch.js";
 import { isClosedStatus } from "./status-guards.js";
+import { STOPWORDS } from "./slice-scope.js";
 import { buildWebAppUatGuidanceBlock } from "./web-app-uat.js";
 import {
   readPendingTaskRecoveryContext,
@@ -1268,67 +1269,7 @@ function onDemandMilestoneContextBlock(contextRel: string, reason: string): stri
   ].join("\n");
 }
 
-// ─── Stopwords for keyword extraction ─────────────────────────────────────
-const STOPWORDS = new Set(['of', 'the', 'and', 'a', 'for', '+', '-', 'to', 'in', 'on', 'with', 'is', 'as', 'by']);
-
-// Generic words that don't provide meaningful scope differentiation
-const GENERIC_WORDS = new Set([
-  'setup', 'integration', 'implementation', 'testing', 'test', 'tests',
-  'config', 'configuration', 'init', 'initial', 'basic', 'core',
-  'main', 'primary', 'final', 'complete', 'finish', 'end',
-  'start', 'begin', 'first', 'last', 'update', 'updates',
-  'fix', 'fixes', 'add', 'adds', 'remove', 'removes',
-  'create', 'creates', 'build', 'builds', 'deploy', 'deployment',
-  'refactor', 'refactoring', 'cleanup', 'polish', 'review',
-  // Process/activity words that describe what you're doing, not what domain
-  'hardening', 'validation', 'verification', 'optimization',
-  'improvement', 'enhancement', 'infrastructure',
-]);
-
-// Pattern to match slice/milestone/task IDs (e.g., S01, M001, T03)
-const UNIT_ID_PATTERN = /^[smt]\d+$/i;
-
-/**
- * Derive a scope keyword from slice title and optional description.
- * Returns the most specific noun (first non-generic keyword) for decision scoping.
- *
- * Examples:
- * - "Auth Middleware & Protected Route" → "auth"
- * - "Database & User Model Setup" → "database"
- * - "Integration Testing" → undefined (too generic)
- * - "API Rate Limiting" → "api"
- *
- * @param sliceTitle - The slice title
- * @param sliceDescription - Optional roadmap description (demo text)
- * @returns A single lowercase keyword or undefined if no meaningful scope
- */
-export function deriveSliceScope(sliceTitle: string, sliceDescription?: string): string | undefined {
-  // Combine title and description for keyword extraction
-  const combinedText = sliceDescription
-    ? `${sliceTitle} ${sliceDescription}`
-    : sliceTitle;
-
-  // Extract all words, lowercase, remove punctuation
-  const words = combinedText
-    .split(/[\s&+,;:|/\\()-]+/)
-    .map(w => w.toLowerCase().replace(/[^a-z0-9]/g, ''))
-    .filter(w => w.length >= 2);
-
-  // Find the first word that is:
-  // 1. Not a stopword
-  // 2. Not a generic word
-  // 3. Not a unit ID (S01, M001, T03)
-  // 4. At least 3 characters (meaningful scope)
-  for (const word of words) {
-    if (STOPWORDS.has(word)) continue;
-    if (GENERIC_WORDS.has(word)) continue;
-    if (UNIT_ID_PATTERN.test(word)) continue;
-    if (word.length < 3) continue;
-    return word;
-  }
-
-  return undefined;
-}
+export { deriveSliceScope, STOPWORDS } from "./slice-scope.js";
 /**
  * Extract keywords from a slice title for scoped knowledge queries.
  * Splits on whitespace, filters stopwords, lowercases.

@@ -9,7 +9,7 @@ Since v1.12.0, GSD Pi shipped the state-DB cutover (#1627) and eight minor relea
 
 **Current version:** 1.20.0  
 **Open issues (total):** ~30  
-**Agent-ready bugs:** 1 (as of 2026-09-13)
+**Agent-ready bugs:** 0 (as of 2026-09-13) — stabilization waves 1–8 complete
 
 ## Failure Taxonomy
 
@@ -60,16 +60,14 @@ These bugs block `/gsd auto` with no sanctioned recovery path. Highest user impa
 | #2290 | Prose heuristic rejects grep patterns with English function words | **fixed** | Quoted-segment stripping (#2292); plan-time `validateVerificationCommand` |
 | #2259 | Verification evidence accumulates task-scoped, not attempt-scoped | **fixed** | Latest `created_at` batch only; cleared on `task.reopen` |
 | #1994 | `PROSE_MARKER_WORDS` is English-only | **fixed** | Language-neutral tail detection + positive command evidence |
-| #2248 | Decisions register never enforced at `gsd_plan_task` write time | **partial** | Prose/tool verify rejected at plan/replan write time; full decision-rule guard deferred |
+| #2248 | Decisions register never enforced at `gsd_plan_task` write time | **fixed** | Wave 8 — plan-time decision guard + project-wide decision visibility |
 
 ## Wave 4 — Platform, provider, and test hygiene (P2, shipped)
 
 | Issue | Title | Status | Notes |
 |-------|-------|--------|-------|
 | #2250 | GPT-6 Astra missing for Codex users | **fixed** | `gpt-6-astra` added to `openai-codex` in `generate-models.ts` |
-| #2178 | Windows unbound-evidence resolution wedges projection writes | open | Deferred — native exchange + auto-loop policy |
 | #2086 | Windows `env.PATH` shadows inherited `Path` in verify spawn | **fixed** | `prependPathEntry` in `verificationChildEnvironment` |
-| #2140 | 26 pi-agent-core test failures on clean main | open | Deferred — workspace dep alignment |
 | #2139 | Copilot overlay quarantine test non-hermetic | **fixed** | `mkdtempSync` + cleanup in `copilot-model-catalog.test.ts` |
 | #2114 | Custom provider headers broken in TUI mode | **fixed** | `loadCustomModels` persists headers/api/authHeader in `registeredProviders` |
 
@@ -80,20 +78,25 @@ These bugs block `/gsd auto` with no sanctioned recovery path. Highest user impa
 | #2033 | complete-milestone deliberate refusal wedges as finalize-retry | **fixed** | `CLOSEOUT-VERIFICATION-FAILED` alias + named path in prompt |
 | #2077 | startup `validateConfiguredModel` rewrites on transient unavailability | **fixed** | Preserve when model remains in catalog and provider is ready |
 | #2294 | validate-milestone re-run cannot persist verdict | **fixed** | Regression test; V49 schema already allows interrupted→pass rerun |
-| #2178 | Windows unbound-evidence resolution wedges projection writes | **fixed** | `cursor/stabilization-wave7-3f39` |
-| #2140 | 26 pi-agent-core test failures on clean main | **fixed** | Vitest `@gsd/pi-ai` alias alignment |
 
 ## Wave 6 — Stale wedge GC and closeout resilience (P1, shipped)
 
 | Issue | Title | Status | Notes |
 |-------|-------|--------|-------|
 | #2159 | False stale liveness wedges from interrupted closeouts | **fixed** | `garbageCollectResolvedWedges` on advance/complete/start; `clearAbandonedCloseoutSignatures`; `validate-milestone` snapshot rows |
+
 ## Wave 7 — Platform exchange resilience and test harness (P2, shipped)
 
 | Issue | Title | Status | Notes |
 |-------|-------|--------|-------|
 | #2178 | Windows unbound-evidence resolution wedges projection writes | **fixed** | Copy+delete fallback + exchange-path restaging in `moveEvidenceIntoGuard` |
 | #2140 | 26 pi-agent-core test failures on clean main | **fixed** | Vitest resolve aliases for `@earendil-works/pi-ai` → workspace `@gsd/pi-ai` |
+
+## Wave 8 — Decisions register enforcement (P1, shipped)
+
+| Issue | Title | Status | Notes |
+|-------|-------|--------|-------|
+| #2248 | Decisions register never enforced at `gsd_plan_task` write time | **fixed** | `validateVerifyAgainstActiveDecisions` in plan/replan; project-wide decisions visible via empty `when_context` |
 
 ## Deferred / structural (ADR-gated)
 
@@ -103,6 +106,7 @@ These require design decisions or timebox gates, not point fixes:
 - **ADR-045 flat-phase migration** (plans 033–034): `detectStaleRenders` still stubbed; fixtures needed before re-enable
 - **#1560** UAT-as-CLI RFC: blocked on external design
 - **#818** multi-repo parent workspace: large-scope feature
+- **#1754** Additional wedge/livelock class — tracked in taxonomy, no agent-ready fix scoped
 
 ## Changelog cross-reference (1.12 → 1.20)
 

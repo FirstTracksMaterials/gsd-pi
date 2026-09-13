@@ -388,6 +388,7 @@ function cacheKey(content: string): string {
 const _parseCache = new Map<string, unknown>();
 
 function cachedParse<T>(content: string, tag: string, parseFn: (c: string) => T): T {
+  ensureCacheClearRegistered();
   const key = tag + '|' + cacheKey(content);
   if (_parseCache.has(key)) return _parseCache.get(key) as T;
   if (_parseCache.size >= CACHE_MAX) _parseCache.clear();
@@ -401,8 +402,12 @@ export function clearLegacyParseCache(): void {
   _parseCache.clear();
 }
 
-// Register with files.ts so clearParseCache() also clears our cache
-registerCacheClearCallback(clearLegacyParseCache);
+let _cacheClearRegistered = false;
+function ensureCacheClearRegistered(): void {
+  if (_cacheClearRegistered) return;
+  registerCacheClearCallback(clearLegacyParseCache);
+  _cacheClearRegistered = true;
+}
 
 // ─── Roadmap Parser ────────────────────────────────────────────────────────
 
