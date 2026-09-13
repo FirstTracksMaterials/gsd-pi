@@ -7,6 +7,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import {
   _getAdapter,
   acknowledgeLivenessWedgeRecord,
+  clearLivenessBlockSignatures,
   insertLivenessWedgeRecord,
   isDbAvailable,
   reopenLivenessWedgeRecord,
@@ -235,6 +236,88 @@ export function recordNonAdvancingRecurrence(
   }
 }
 
+/** Guards whose recurrence counters reset when a unit closeout is abandoned. */
+export const ABANDONED_CLOSEOUT_SIGNATURE_GUARDS = [
+  'finalize-retry',
+  'finalize-break',
+] as const;
+
+export type GarbageCollectWedgesResult =
+  | { ok: true; acknowledged: WedgeRecord[] }
+  | { ok: false; error: string };
+
+/**
+ * Re-evaluate a completed-no-advance wedge against current target rows.
+ * Exported so entry gates can GC stale wedges without a live orchestrator.
+ */
+export function recheckCompletedNoAdvanceWedge(
+  wedge: Pick<WedgeRecord, 'guardId' | 'unitType' | 'unitId' | 'inputHash'>,
+): { blocking: boolean; reason?: string } {
+  const current = snapshotUnitTargetRows(wedge.unitType, wedge.unitId);
+  if (!current.ok) return { blocking: true, reason: current.error };
+  const blocking = current.hash !== null && hashBackstopInput(current.hash) === wedge.inputHash;
+  return {
+    blocking,
+    ...(blocking ? { reason: `state did not advance for ${wedge.unitType} ${wedge.unitId}` } : {}),
+  };
+}
+
+/**
+ * Clear finalize-retry / finalize-break recurrence counters after a unit
+ * closeout is abandoned (worker kill, heartbeat loss). The killed attempt must
+ * not count toward trip-at-2 for the retried closeout (#2159).
+ */
+export function clearAbandonedCloseoutSignatures(
+  scopeId: string,
+  unitType: string,
+  unitId: string,
+): void {
+  if (!isDbAvailable()) return;
+  for (const guardId of ABANDONED_CLOSEOUT_SIGNATURE_GUARDS) {
+    clearLivenessBlockSignatures({ scopeId, guardId, unitType, unitId });
+  }
+}
+
+function listOpenWedges(scopeId: string): WedgeRecord[] {
+  const rows = _getAdapter()!.prepare(
+    `SELECT * FROM liveness_wedge_records
+     WHERE scope_id = :scope AND acknowledged_at IS NULL
+     ORDER BY created_at ASC`,
+  ).all({ ':scope': scopeId }) as Record<string, unknown>[];
+  return rows.map(rowToWedge);
+}
+
+/**
+ * Auto-acknowledge open wedges whose originating guard no longer blocks.
+ * Unlike explicit `--resume-wedge`, this only runs after a successful recheck
+ * proves the blocker cleared — typically because the unit later reached
+ * terminal success (#2159).
+ */
+export async function garbageCollectResolvedWedges(
+  scopeId: string,
+  recheck: WedgeBlockerRecheck,
+): Promise<GarbageCollectWedgesResult> {
+  if (!isDbAvailable()) {
+    return { ok: false, error: 'workflow database unavailable' };
+  }
+  try {
+    const acknowledged: WedgeRecord[] = [];
+    for (const wedge of listOpenWedges(scopeId)) {
+      const blocker = await recheck(wedge);
+      if (blocker.blocking) continue;
+      const now = nowIso();
+      acknowledgeLivenessWedgeRecord(wedge.wedgeId, now);
+      acknowledged.push({ ...wedge, acknowledgedAt: now });
+    }
+    return { ok: true, acknowledged };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
 /** Oldest unacknowledged wedge record for the project scope, if any. */
 export function getOpenWedge(scopeId: string): OpenWedgeResult {
   if (!isDbAvailable()) return { ok: false, error: 'workflow database unavailable' };
@@ -379,6 +462,23 @@ export function snapshotUnitTargetRows(unitType: string, unitId: string): UnitTa
       }
     } else {
       collect('SELECT * FROM slices WHERE milestone_id = :m ORDER BY id', { ':m': milestone });
+      if (unitType === 'validate-milestone') {
+        collect(
+          `SELECT milestone_id, slice_id, scope, status
+             FROM assessments
+            WHERE milestone_id = :m AND scope = 'milestone-validation'
+            ORDER BY created_at DESC, ROWID DESC
+            LIMIT 1`,
+          { ':m': milestone },
+        );
+        collect(
+          `SELECT milestone_id, slice_id, gate_id, scope, task_id, status, verdict
+             FROM quality_gates
+            WHERE milestone_id = :m AND gate_id LIKE 'MV%'
+            ORDER BY gate_id, slice_id`,
+          { ':m': milestone },
+        );
+      }
     }
     return { ok: true, hash: hashBackstopInput(`${unitType}\n${JSON.stringify(rows)}`) };
   } catch (err) {

@@ -71,11 +71,14 @@ import { abortActiveUnitTurn } from "./unit-turn-abort.js";
 import { clearInFlightTools } from "../auto-tool-tracking.js";
 import {
   COMPLETED_NO_ADVANCE_GUARD_ID,
+  clearAbandonedCloseoutSignatures,
   formatWedgeRefusalNotice,
   formatWedgeTripNotice,
+  garbageCollectResolvedWedges,
   getOpenWedge,
   hashBackstopInput,
   lookupLatestLedgerError,
+  recheckCompletedNoAdvanceWedge,
   recordNonAdvancingOutcome,
   recordNonAdvancingRecurrence,
   serializeNonAdvancingEvidence,
@@ -971,6 +974,8 @@ export class AutoOrchestrator implements AutoOrchestrationModule {
     }
     const scopeId = this.backstopScopeId();
     if (!scopeId) return this.backstopFailure('project scope unavailable');
+    const gcResult = await garbageCollectResolvedWedges(scopeId, (wedge) => this.recheckWedge(wedge));
+    if (!gcResult.ok) return this.backstopFailure(gcResult.error);
     const openWedgeResult = getOpenWedge(scopeId);
     if (!openWedgeResult.ok) return this.backstopFailure(openWedgeResult.error);
     const openWedge = openWedgeResult.wedge;
@@ -994,13 +999,7 @@ export class AutoOrchestrator implements AutoOrchestrationModule {
 
   public async recheckWedge(wedge: WedgeRecheckTarget): Promise<WedgeRecheckResult> {
     if (wedge.guardId === COMPLETED_NO_ADVANCE_GUARD_ID) {
-      const current = snapshotUnitTargetRows(wedge.unitType, wedge.unitId);
-      if (!current.ok) return { blocking: true, reason: current.error };
-      const blocking = current.hash !== null && hashBackstopInput(current.hash) === wedge.inputHash;
-      return {
-        blocking,
-        ...(blocking ? { reason: `state did not advance for ${wedge.unitType} ${wedge.unitId}` } : {}),
-      };
+      return recheckCompletedNoAdvanceWedge(wedge);
     }
 
     if (wedge.guardId === "orphaned-active-unit") {
@@ -1828,6 +1827,13 @@ export class AutoOrchestrator implements AutoOrchestrationModule {
       }
     }
 
+    if (scopeId) {
+      const gcResult = await garbageCollectResolvedWedges(scopeId, (wedge) => this.recheckWedge(wedge));
+      if (!gcResult.ok) {
+        this.pendingBackstopFailure = gcResult.error;
+      }
+    }
+
     this.status.activeUnit = undefined;
     this.lastFinalizedUnitKey = unitKey;
     this.bumpTransition();
@@ -1891,6 +1897,10 @@ export class AutoOrchestrator implements AutoOrchestrationModule {
     // later units from the idle watchdog and hard timeout.
     abortActiveUnitTurn(this.ctx);
     clearInFlightTools();
+    const scopeId = this.backstopScopeId();
+    if (scopeId) {
+      clearAbandonedCloseoutSignatures(scopeId, unit.unitType, unit.unitId);
+    }
     this.status.activeUnit = undefined;
     this.pendingTargetSnapshot = null;
     this.bumpTransition();
