@@ -9,7 +9,7 @@ Since v1.12.0, GSD Pi shipped the state-DB cutover (#1627) and eight minor relea
 
 **Current version:** 1.20.0  
 **Open issues (total):** ~30  
-**Agent-ready bugs:** 6 (as of 2026-09-13)
+**Agent-ready bugs:** 3 (as of 2026-09-13)
 
 ## Failure Taxonomy
 
@@ -38,7 +38,7 @@ These bugs block `/gsd auto` with no sanctioned recovery path. Highest user impa
 | #2314 | Anthropic 400 "extra usage" pauses instead of failing over | **fixed** | `cursor/stabilization-wave1-3f39` |
 | #2310 | `recheckWedge` never clears gate-evaluate `completed-no-advance` wedges | **fixed** | `cursor/stabilization-wave1-3f39` |
 | #2309 | gate-evaluate background Agent dispatch drops second gate | **fixed** | `cursor/stabilization-wave1-3f39` |
-| #2159 | False stale liveness wedges from interrupted closeouts | open | — |
+| #2159 | False stale liveness wedges from interrupted closeouts | **fixed** | `cursor/stabilization-wave6-3f39` |
 | #2267 | Manual blocker route omits `recoveryActionId` (regression of #1593) | **fixed** | `cursor/stabilization-wave2-3f39` |
 =======
 | #2314 | Anthropic 400 "extra usage" pauses instead of failing over | **fixing** | `cursor/stabilization-wave1-3f39` |
@@ -61,10 +61,9 @@ These bugs block `/gsd auto` with no sanctioned recovery path. Highest user impa
 |-------|-------|--------|-------|
 | #2239 | Husk-task gates wedge milestone closeout | **fixed** | Husk filter + adopted-milestone gate closure in `closeout-consistency-gate.ts` |
 | #2313 | Legacy slice cannot close without parent lifecycle authority | **fixed** | `repairMilestoneLifecycleShadowsForward` before `completeSlice` |
-| #2033 | finalize-retry wedge without satisfiability pre-check | open | Large-scope |
+| #2033 | finalize-retry wedge without satisfiability pre-check | **fixed** | Wave 5 — `CLOSEOUT-VERIFICATION-FAILED` alias |
 | #2126 | `/gsd park` no-ops on adopted milestones | **fixed** | Canonical `paused` transition + legacy `parked` projection |
-| #2159 | False stale liveness wedges from interrupted closeouts | open | Deferred — needs wedge GC design |
-| #2294 | validate-milestone verdict persistence blocked | needs-info | — |
+| #2294 | validate-milestone verdict persistence blocked | **fixed** | Wave 5 — V49 schema + regression test |
 
 ## Wave 3 — Verification and pre-exec (P1, shipped)
 
@@ -93,7 +92,14 @@ These bugs block `/gsd auto` with no sanctioned recovery path. Highest user impa
 | #2033 | complete-milestone deliberate refusal wedges as finalize-retry | **fixed** | `CLOSEOUT-VERIFICATION-FAILED` alias + named path in prompt |
 | #2077 | startup `validateConfiguredModel` rewrites on transient unavailability | **fixed** | Preserve when model remains in catalog and provider is ready |
 | #2294 | validate-milestone re-run cannot persist verdict | **fixed** | Regression test; V49 schema already allows interrupted→pass rerun |
-| #2159 | False stale liveness wedges from interrupted closeouts | open | Deferred — wedge GC design |
+| #2178 | Windows unbound-evidence resolution wedges projection writes | open | Deferred — native exchange + auto-loop policy |
+| #2140 | 26 pi-agent-core test failures on clean main | open | Deferred — workspace dep alignment |
+
+## Wave 6 — Stale wedge GC and closeout resilience (P1, shipped)
+
+| Issue | Title | Status | Notes |
+|-------|-------|--------|-------|
+| #2159 | False stale liveness wedges from interrupted closeouts | **fixed** | `garbageCollectResolvedWedges` on advance/complete/start; `clearAbandonedCloseoutSignatures`; `validate-milestone` snapshot rows |
 | #2178 | Windows unbound-evidence resolution wedges projection writes | open | Deferred — native exchange + auto-loop policy |
 | #2140 | 26 pi-agent-core test failures on clean main | open | Deferred — workspace dep alignment |
 
