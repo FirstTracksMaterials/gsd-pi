@@ -24,10 +24,17 @@ import { loadQueueOrder, saveQueueOrder } from "./queue-order.js";
 import {
   assertNoAdoptedLifecycleHistory,
   deleteMilestone,
+  executeDomainOperation,
   getMilestone,
   isDbAvailable,
+  projectCanonicalStatusToLegacy,
   updateMilestoneStatus,
 } from "./gsd-db.js";
+import { isMilestoneLifecycleAdopted } from "./db/milestone-closeout-readiness.js";
+import {
+  adoptOrTransitionLifecycle,
+  readDomainOperationFence,
+} from "./db/writers/lifecycle-commands.js";
 import { removeWorktree } from "./worktree-manager.js";
 import { logWarning } from "./workflow-logger.js";
 import { isAutoActive } from "./auto.js";
@@ -47,6 +54,49 @@ function assertNotAutoActive(action: string): void {
       `${action} cannot run while auto-mode is active. Stop auto-mode first with /gsd stop.`,
     );
   }
+}
+
+/**
+ * Park/unpark through canonical lifecycle for adopted milestones (#2126).
+ * Legacy `parked` maps to canonical `paused`; generic status writes reject
+ * that mismatch on adopted rows.
+ */
+function syncAdoptedMilestoneParkStatus(milestoneId: string, parked: boolean): void {
+  const fence = readDomainOperationFence();
+  executeDomainOperation({
+    operationType: parked ? "milestone.park" : "milestone.unpark",
+    idempotencyKey: `command/${parked ? "park" : "unpark"}/${milestoneId}/${fence.revision}`,
+    expectedRevision: fence.revision,
+    expectedAuthorityEpoch: fence.authorityEpoch,
+    actorType: "operator",
+    sourceTransport: "internal",
+    payload: { milestoneId, parked },
+  }, (context) => {
+    adoptOrTransitionLifecycle(context, {
+      itemKind: "milestone",
+      milestoneId,
+      lifecycleStatus: parked ? "paused" : "in_progress",
+    });
+    projectCanonicalStatusToLegacy(context, {
+      entity: "milestone",
+      milestoneId,
+      status: parked ? "parked" : "active",
+    });
+    return {
+      events: [{
+        eventType: parked ? "milestone.parked" : "milestone.unparked",
+        entityType: "milestone",
+        entityId: milestoneId,
+        payload: { milestoneId, parked },
+        destinations: ["db"],
+      }],
+      projections: [{
+        projectionKey: `milestone/${milestoneId.toLowerCase()}/${parked ? "parked" : "active"}`,
+        projectionKind: "milestone-status",
+        rendererVersion: "1",
+      }],
+    };
+  });
 }
 
 // ─── Park ──────────────────────────────────────────────────────────────────
@@ -95,7 +145,11 @@ export function parkMilestone(basePath: string, milestoneId: string, reason: str
   // The failure propagates (#2255) — callers must not report success.
   if (dbAvailable) {
     try {
-      updateMilestoneStatus(milestoneId, "parked");
+      if (isMilestoneLifecycleAdopted(milestoneId)) {
+        syncAdoptedMilestoneParkStatus(milestoneId, true);
+      } else {
+        updateMilestoneStatus(milestoneId, "parked");
+      }
     } catch (err) {
       throw new Error(`parkMilestone DB sync failed for ${milestoneId}: ${(err as Error).message}`);
     }
@@ -135,7 +189,11 @@ export function unparkMilestone(basePath: string, milestoneId: string): boolean 
   // Sync DB status so deriveStateFromDb picks up the unparked milestone (#2694)
   if (isDbAvailable()) {
     try {
-      updateMilestoneStatus(milestoneId, "active");
+      if (isMilestoneLifecycleAdopted(milestoneId)) {
+        syncAdoptedMilestoneParkStatus(milestoneId, false);
+      } else {
+        updateMilestoneStatus(milestoneId, "active");
+      }
     } catch (err) {
       logWarning("engine", `unparkMilestone DB sync failed for ${milestoneId}: ${(err as Error).message}`);
     }
