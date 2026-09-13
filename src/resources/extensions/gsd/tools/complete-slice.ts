@@ -31,6 +31,7 @@ import {
   SliceLifecycleValidationError,
   type SliceCompletionCloseout,
 } from "../slice-lifecycle-domain-operation.js";
+import { repairMilestoneLifecycleShadowsForward } from "../lifecycle-shadow-repair-domain-operation.js";
 import { setSliceCompletionSummaryProjectionIfCurrent } from "../db/writers/slice-lifecycle.js";
 
 export interface CompleteSliceResult {
@@ -362,6 +363,21 @@ export async function handleCompleteSlice(
   }
 
   const closeout = normalizeCloseout(params, readPriorCloseout(params, invocation));
+  const shadowRepair = repairMilestoneLifecycleShadowsForward({
+    invocation,
+    milestoneId: params.milestoneId,
+  });
+  if (shadowRepair.unresolved.length > 0) {
+    return {
+      error: `Milestone ${params.milestoneId} has unresolved canonical lifecycle shadows: ${shadowRepair.unresolved.join(", ")}`,
+    };
+  }
+  if (shadowRepair.repaired.length > 0) {
+    logWarning(
+      "db",
+      `Repaired ${shadowRepair.repaired.length} evidence-backed lifecycle shadow(s) before completing slice ${params.milestoneId}/${params.sliceId}`,
+    );
+  }
   let completion: ReturnType<typeof completeSlice>;
   try {
     completion = completeSlice({

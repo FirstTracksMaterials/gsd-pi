@@ -63,9 +63,11 @@ import type { ExecutionInvocation } from "../execution-invocation.js";
 import type { DomainJsonValue } from "../db/domain-operation.js";
 import {
   readTaskRecoveryRoute,
+  recordFailureAndSelectRecovery,
   resumeTaskRecovery,
   type TaskRecoveryRouteSnapshot,
 } from "../task-recovery-domain-operation.js";
+import { internalExecutionInvocation } from "../execution-invocation.js";
 import {
   applyBlockerAcceptedDisposition,
   applyTaskSettle,
@@ -1059,15 +1061,33 @@ export async function executeTaskComplete(
       });
       // A routed blocker must leave the worker with the recoveryActionId that
       // gsd_task_recovery_resume requires instead of forcing it to guess ids
-      // or read the database (#2267). Best-effort: a fresh blocker report
-      // precedes recovery routing, so no action exists yet and the plain
-      // routing notice stands.
+      // or read the database (#2267). Route synchronously on the first blocker
+      // receipt so manual callers get the action id immediately.
       let recoveryRoute: TaskRecoveryRouteSnapshot | null = null;
       if (staged.nextStage === "route") {
         try {
           recoveryRoute = readTaskRecoveryRoute(staged.attemptId);
         } catch {
           recoveryRoute = null;
+        }
+        if (!recoveryRoute) {
+          try {
+            recordFailureAndSelectRecovery({
+              invocation: internalExecutionInvocation(
+                `pi:gsd_task_complete:blocker-route:${staged.resultId}`,
+              ),
+              attemptId: staged.attemptId,
+              resultId: staged.resultId,
+              owner: "agent",
+              classification: { failureKind: "fatal" },
+              summary: params.oneLiner ?? "A blocker was discovered during task execution.",
+              evidence: { source: "executor", blockerDiscovered: true },
+              rationale: "Route the recorded blocker through durable recovery policy.",
+            });
+            recoveryRoute = readTaskRecoveryRoute(staged.attemptId);
+          } catch {
+            recoveryRoute = null;
+          }
         }
       }
       return {
