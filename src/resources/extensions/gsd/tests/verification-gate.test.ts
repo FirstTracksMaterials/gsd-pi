@@ -18,11 +18,12 @@
 import { describe, test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync, rmSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { join, dirname, delimiter } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { discoverCommands, runVerificationGate, runVerificationGateForTargets, formatFailureContext, captureRuntimeErrors, runDependencyAudit, isLikelyCommand, validateVerificationCommand, splitUnquotedLines } from "../verification-gate.ts";
+import { discoverCommands, runVerificationGate, runVerificationGateForTargets, formatFailureContext, captureRuntimeErrors, runDependencyAudit, isLikelyCommand, validateVerificationCommand, splitUnquotedLines, verificationChildEnvironment } from "../verification-gate.ts";
+import { prependPathEntry } from "../../shared/rtk-shared.ts";
 import type { CaptureRuntimeErrorsOptions, DependencyAuditOptions } from "../verification-gate.ts";
 import { validatePreferences } from "../preferences.ts";
 
@@ -662,6 +663,38 @@ describe("verification-gate: execution", () => {
     assert.equal(result.passed, true);
     assert.equal(result.discoverySource, "task-plan-prose");
     assert.deepEqual(result.checks, []);
+  });
+
+  test("verificationChildEnvironment preserves Windows Path casing when prepending venv (#2086)", () => {
+    const tmpDir = makeTempDir("gsd-verify-path-2086");
+    const venvDir = join(tmpDir, ".venv", "bin");
+    mkdirSync(venvDir, { recursive: true });
+    writeFileSync(join(tmpDir, ".venv", "pyvenv.cfg"), "home = /usr/bin\n");
+    writeFileSync(join(venvDir, "python"), "#!/bin/sh\n");
+
+    const previousPath = process.env.PATH;
+    const previousPathCased = process.env.Path;
+    delete process.env.PATH;
+    process.env.Path = "C:\\Windows\\System32";
+
+    try {
+      const env = verificationChildEnvironment(tmpDir);
+      assert.ok("Path" in env);
+      assert.equal(env.PATH, undefined);
+      assert.match(env.Path ?? "", /^.*\.venv[\\/]+bin.*C:\\Windows\\System32/);
+    } finally {
+      delete process.env.Path;
+      if (previousPathCased !== undefined) process.env.Path = previousPathCased;
+      if (previousPath !== undefined) process.env.PATH = previousPath;
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test("prependPathEntry avoids duplicate PATH keys on Windows (#2086)", () => {
+    const env: NodeJS.ProcessEnv = { Path: "C:\\Windows\\System32" };
+    prependPathEntry(env, "C:\\project\\.venv\\Scripts");
+    assert.equal(env.PATH, undefined);
+    assert.equal(env.Path, `C:\\project\\.venv\\Scripts${delimiter}C:\\Windows\\System32`);
   });
 
   test("host verification removes GSD control-plane routing while preserving ordinary environment", () => {

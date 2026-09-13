@@ -75,16 +75,16 @@ These bugs block `/gsd auto` with no sanctioned recovery path. Highest user impa
 | #1994 | `PROSE_MARKER_WORDS` is English-only | **fixed** | Language-neutral tail detection + positive command evidence |
 | #2248 | Decisions register never enforced at `gsd_plan_task` write time | **partial** | Prose/tool verify rejected at plan/replan write time; full decision-rule guard deferred |
 
-## Wave 4 — Platform, provider, and test hygiene (P2)
+## Wave 4 — Platform, provider, and test hygiene (P2, shipped)
 
 | Issue | Title | Status | Notes |
 |-------|-------|--------|-------|
-| #2250 | GPT-6 Astra missing for Codex users | open | needs-forensics |
-| #2178 | Windows unbound-evidence resolution wedges projection writes | open | — |
-| #2086 | Windows `env.PATH` shadows inherited `Path` in verify spawn | open | — |
-| #2140 | 26 pi-agent-core test failures on clean main | open | tech-debt |
-| #2139 | Copilot overlay quarantine test non-hermetic | open | tech-debt |
-| #2114 | Custom provider headers broken in TUI mode | blocked | — |
+| #2250 | GPT-6 Astra missing for Codex users | **fixed** | `gpt-6-astra` added to `openai-codex` in `generate-models.ts` |
+| #2178 | Windows unbound-evidence resolution wedges projection writes | open | Deferred — native exchange + auto-loop policy |
+| #2086 | Windows `env.PATH` shadows inherited `Path` in verify spawn | **fixed** | `prependPathEntry` in `verificationChildEnvironment` |
+| #2140 | 26 pi-agent-core test failures on clean main | open | Deferred — workspace dep alignment |
+| #2139 | Copilot overlay quarantine test non-hermetic | **fixed** | `mkdtempSync` + cleanup in `copilot-model-catalog.test.ts` |
+| #2114 | Custom provider headers broken in TUI mode | **fixed** | `loadCustomModels` persists headers/api/authHeader in `registeredProviders` |
 
 ## Deferred / structural (ADR-gated)
 

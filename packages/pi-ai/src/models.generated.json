@@ -10014,6 +10014,40 @@
       "contextWindow": 1000000,
       "maxTokens": 384000
     },
+    "deepseek-ai/DeepSeek-V4.1-Flash": {
+      "id": "deepseek-ai/DeepSeek-V4.1-Flash",
+      "name": "DeepSeek V4.1 Flash",
+      "api": "openai-completions",
+      "provider": "together",
+      "baseUrl": "https://api.together.ai/v1",
+      "reasoning": true,
+      "thinkingLevelMap": {
+        "minimal": null,
+        "low": null,
+        "medium": null
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "cost": {
+        "input": 0.3,
+        "output": 1.2,
+        "cacheRead": 0.006,
+        "cacheWrite": 0
+      },
+      "compat": {
+        "supportsStore": false,
+        "supportsDeveloperRole": false,
+        "supportsReasoningEffort": false,
+        "maxTokensField": "max_tokens",
+        "supportsStrictMode": false,
+        "supportsLongCacheRetention": false,
+        "thinkingFormat": "together"
+      },
+      "contextWindow": 1048576,
+      "maxTokens": 384000
+    },
     "deepseek-ai/DeepSeek-V4-Pro-0813": {
       "id": "deepseek-ai/DeepSeek-V4-Pro-0813",
       "name": "DeepSeek V4 Pro 0813",
@@ -15411,13 +15445,13 @@
         "text"
       ],
       "cost": {
-        "input": 0.8727,
-        "output": 3.36,
-        "cacheRead": 0.1639,
+        "input": 0.936,
+        "output": 3.168,
+        "cacheRead": 0.1872,
         "cacheWrite": 0
       },
       "contextWindow": 1310720,
-      "maxTokens": 943718
+      "maxTokens": 235929
     },
     "z-ai/glm-5.3": {
       "id": "z-ai/glm-5.3",
@@ -15430,13 +15464,13 @@
         "text"
       ],
       "cost": {
-        "input": 1.4,
-        "output": 4.4,
-        "cacheRead": 0.26,
+        "input": 1.092,
+        "output": 3.432,
+        "cacheRead": 0.2028,
         "cacheWrite": 0
       },
       "contextWindow": 1310720,
-      "maxTokens": 943718
+      "maxTokens": 131072
     },
     "z-ai/glm-5.3:batch": {
       "id": "z-ai/glm-5.3:batch",
@@ -15803,8 +15837,8 @@
         "image"
       ],
       "cost": {
-        "input": 0.3,
-        "output": 1.1,
+        "input": 0.35,
+        "output": 1.5,
         "cacheRead": 0.04,
         "cacheWrite": 0
       },
@@ -15862,13 +15896,13 @@
         "text"
       ],
       "cost": {
-        "input": 0.03,
-        "output": 0.07,
-        "cacheRead": 0.003,
+        "input": 0.0352,
+        "output": 0.1056,
+        "cacheRead": 0.00112,
         "cacheWrite": 0
       },
       "contextWindow": 1310720,
-      "maxTokens": 393216,
+      "maxTokens": 131072,
       "compat": {
         "requiresReasoningContentOnAssistantMessages": true,
         "thinkingFormat": "deepseek"
@@ -16315,9 +16349,9 @@
         "image"
       ],
       "cost": {
-        "input": 2.30272875,
-        "output": 11.550195,
-        "cacheRead": 0.263169,
+        "input": 2.648138063,
+        "output": 13.28272425,
+        "cacheRead": 0.30264435,
         "cacheWrite": 0
       },
       "contextWindow": 1048576,
@@ -17497,9 +17531,9 @@
         "image"
       ],
       "cost": {
-        "input": 2.125,
-        "output": 11.9,
-        "cacheRead": 0.2465,
+        "input": 2.1,
+        "output": 10.95,
+        "cacheRead": 0.23,
         "cacheWrite": 0
       },
       "contextWindow": 1048576,
@@ -17747,13 +17781,13 @@
         "text"
       ],
       "cost": {
-        "input": 0.72819,
-        "output": 1.45638,
-        "cacheRead": 0.0606825,
+        "input": 1.6,
+        "output": 3.2,
+        "cacheRead": 0.135,
         "cacheWrite": 0
       },
       "contextWindow": 1048576,
-      "maxTokens": 384000,
+      "maxTokens": 393216,
       "compat": {
         "requiresReasoningContentOnAssistantMessages": true,
         "thinkingFormat": "deepseek"
@@ -17777,9 +17811,9 @@
         "text"
       ],
       "cost": {
-        "input": 0.06594,
-        "output": 0.13188,
-        "cacheRead": 0.013188,
+        "input": 0.04732,
+        "output": 0.09464,
+        "cacheRead": 0.009464,
         "cacheWrite": 0
       },
       "contextWindow": 1048576,
@@ -17971,13 +18005,13 @@
         "image"
       ],
       "cost": {
-        "input": 0.042,
-        "output": 0.22,
-        "cacheRead": 0,
+        "input": 0.09,
+        "output": 0.3,
+        "cacheRead": 0.05,
         "cacheWrite": 0
       },
       "contextWindow": 262144,
-      "maxTokens": 32768
+      "maxTokens": 235929
     },
     "google/gemma-4-26b-a4b-it:free": {
       "id": "google/gemma-4-26b-a4b-it:free",
@@ -19763,11 +19797,11 @@
       "cost": {
         "input": 0.6,
         "output": 2.5,
-        "cacheRead": 0,
+        "cacheRead": 0.15,
         "cacheWrite": 0
       },
       "contextWindow": 262144,
-      "maxTokens": 235929
+      "maxTokens": 98304
     },
     "amazon/nova-premier-v1": {
       "id": "amazon/nova-premier-v1",
@@ -20294,7 +20328,7 @@
         "cacheWrite": 0
       },
       "contextWindow": 262144,
-      "maxTokens": 100352
+      "maxTokens": 98304
     },
     "qwen/qwen3-30b-a3b-thinking-2507": {
       "id": "qwen/qwen3-30b-a3b-thinking-2507",
@@ -20679,13 +20713,13 @@
         "text"
       ],
       "cost": {
-        "input": 0.09,
-        "output": 0.3,
+        "input": 0.04815,
+        "output": 0.19305,
         "cacheRead": 0,
         "cacheWrite": 0
       },
       "contextWindow": 262144,
-      "maxTokens": 235929
+      "maxTokens": 32000
     },
     "z-ai/glm-4.5": {
       "id": "z-ai/glm-4.5",
@@ -20839,7 +20873,7 @@
         "cacheWrite": 0
       },
       "contextWindow": 131072,
-      "maxTokens": 100352
+      "maxTokens": 98304
     },
     "mistralai/mistral-small-3.2-24b-instruct": {
       "id": "mistralai/mistral-small-3.2-24b-instruct",
@@ -21928,13 +21962,13 @@
         "text"
       ],
       "cost": {
-        "input": 0.72,
-        "output": 0.72,
+        "input": 0.4,
+        "output": 0.4,
         "cacheRead": 0,
         "cacheWrite": 0
       },
       "contextWindow": 131072,
-      "maxTokens": 8192
+      "maxTokens": 16384
     },
     "meta-llama/llama-3.1-8b-instruct": {
       "id": "meta-llama/llama-3.1-8b-instruct",
@@ -23448,6 +23482,26 @@
       "contextWindow": 256000,
       "maxTokens": 64000
     },
+    "bytedance/seed-2.1-turbo": {
+      "id": "bytedance/seed-2.1-turbo",
+      "name": "Seed 2.1 Turbo",
+      "api": "anthropic-messages",
+      "baseUrl": "https://ai-gateway.vercel.sh",
+      "provider": "vercel-ai-gateway",
+      "reasoning": true,
+      "input": [
+        "text",
+        "image"
+      ],
+      "cost": {
+        "input": 0.5,
+        "output": 2.5,
+        "cacheRead": 0.1,
+        "cacheWrite": 0
+      },
+      "contextWindow": 262144,
+      "maxTokens": 262144
+    },
     "cohere/command-a": {
       "id": "cohere/command-a",
       "name": "Command A",
@@ -23670,13 +23724,13 @@
         "image"
       ],
       "cost": {
-        "input": 0.3,
-        "output": 1.2,
-        "cacheRead": 0.03,
+        "input": 0.15,
+        "output": 0.6,
+        "cacheRead": 0.015,
         "cacheWrite": 0
       },
-      "contextWindow": 1048576,
-      "maxTokens": 32768
+      "contextWindow": 1000000,
+      "maxTokens": 384000
     },
     "google/gemini-2.5-flash": {
       "id": "google/gemini-2.5-flash",
@@ -27456,6 +27510,26 @@
         "max": "max",
         "minimal": "low"
       }
+    },
+    "gpt-6-astra": {
+      "id": "gpt-6-astra",
+      "name": "GPT-6 Astra",
+      "api": "openai-codex-responses",
+      "provider": "openai-codex",
+      "baseUrl": "https://chatgpt.com/backend-api",
+      "reasoning": true,
+      "input": [
+        "text",
+        "image"
+      ],
+      "cost": {
+        "input": 10,
+        "output": 50,
+        "cacheRead": 1,
+        "cacheWrite": 0
+      },
+      "contextWindow": 272000,
+      "maxTokens": 128000
     }
   },
   "google-vertex": {
