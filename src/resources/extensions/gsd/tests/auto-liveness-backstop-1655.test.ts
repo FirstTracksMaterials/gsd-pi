@@ -15,6 +15,8 @@ import {
   insertSlice,
   insertTask,
   insertAssessment,
+  insertGateRow,
+  saveGateResult,
   updateTaskStatus,
 } from '../gsd-db.ts';
 import {
@@ -345,6 +347,41 @@ test('ADR-047: run-uat target advances when a retried assessment changes verdict
     passed,
     'new attempt metadata without a verdict change is not target advancement',
   );
+});
+
+test('ADR-047: gate-evaluate target advances when a scoped gate verdict is persisted (#2310)', (t) => {
+  const base = makeBase();
+  t.after(() => cleanup(base));
+  openDatabase(join(base, '.gsd', 'gsd.db'));
+  insertMilestone({ id: 'M001', title: 'T', status: 'active' });
+  insertSlice({ id: 'S01', milestoneId: 'M001', title: 'S', status: 'active', depends: [] });
+  insertGateRow({ milestoneId: 'M001', sliceId: 'S01', gateId: 'Q3', scope: 'slice' });
+  insertGateRow({ milestoneId: 'M001', sliceId: 'S01', gateId: 'Q4', scope: 'slice' });
+
+  const before = readTargetSnapshot('gate-evaluate', 'M001/S01/gates+Q3,Q4');
+  assert.ok(before, 'gate-evaluate snapshot available when gate rows exist');
+
+  saveGateResult({
+    milestoneId: 'M001',
+    sliceId: 'S01',
+    gateId: 'Q3',
+    verdict: 'pass',
+    rationale: 'no auth surface',
+    findings: '',
+  });
+  const afterQ3 = readTargetSnapshot('gate-evaluate', 'M001/S01/gates+Q3,Q4');
+  assert.notEqual(afterQ3, before, 'persisting one scoped gate verdict must advance the hash');
+
+  saveGateResult({
+    milestoneId: 'M001',
+    sliceId: 'S01',
+    gateId: 'Q4',
+    verdict: 'pass',
+    rationale: 'requirements covered',
+    findings: '',
+  });
+  const afterQ4 = readTargetSnapshot('gate-evaluate', 'M001/S01/gates+Q3,Q4');
+  assert.notEqual(afterQ4, afterQ3, 'persisting the remaining gate verdict must advance again');
 });
 
 test('ADR-047: stable guard identity isolates identical payloads from different guards', (t) => {

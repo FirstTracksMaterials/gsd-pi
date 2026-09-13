@@ -104,6 +104,20 @@ test("classifyError treats extra-usage phrasing as transient rate-limit (#4397)"
   assert.ok("retryAfterMs" in result && result.retryAfterMs === 60_000);
 });
 
+test("classifyError treats Anthropic subscription extra-usage 400 as transient rate-limit (#2314)", () => {
+  const result = classifyError(
+    '400 {"type":"error","error":{"type":"invalid_request_error","message":"Third-party apps now draw from your extra usage, not your plan limits. Add more at claude.ai/settings/usage and keep going."}}',
+  );
+  assert.ok(isTransient(result));
+  assert.equal(result.kind, "rate-limit");
+  assert.ok("retryAfterMs" in result && result.retryAfterMs === 60_000);
+});
+
+test("classifyError does not treat benign usage prose as rate-limit (#2314)", () => {
+  const result = classifyError("Review extra usage stats in the dashboard.");
+  assert.notEqual(result.kind, "rate-limit");
+});
+
 test("classifyError treats OpenRouter affordability errors as transient rate-limit class", () => {
   const result = classifyError(
     "402 This request requires more credits, or fewer max_tokens. You requested up to 32000 tokens, but can only afford 329.",

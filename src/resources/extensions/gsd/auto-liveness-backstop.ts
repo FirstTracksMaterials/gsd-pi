@@ -330,8 +330,31 @@ export function snapshotUnitTargetRows(unitType: string, unitId: string): UnitTa
         rows.push(strip(r));
       }
     };
+    const collectGateEvaluateRows = (gateScope: string): void => {
+      const gateIds = gateScope.slice('gates+'.length).split(',').filter(Boolean);
+      if (gateIds.length === 0) return;
+      const placeholders = gateIds.map((_, index) => `:g${index}`).join(', ');
+      const params: Record<string, unknown> = { ':m': milestone, ':s': slice };
+      for (const [index, gateId] of gateIds.entries()) {
+        params[`:g${index}`] = gateId;
+      }
+      collect(
+        `SELECT milestone_id, slice_id, gate_id, scope, task_id, status, verdict
+           FROM quality_gates
+          WHERE milestone_id = :m AND slice_id = :s AND gate_id IN (${placeholders})
+          ORDER BY gate_id, task_id`,
+        params,
+      );
+    };
+
     collect('SELECT * FROM milestones WHERE id = :m', { ':m': milestone });
-    if (slice && task) {
+    if (slice && task && unitType === 'gate-evaluate' && task.startsWith('gates+')) {
+      // gate-evaluate unit ids encode scoped gate ids in the third segment
+      // (e.g. M001/S01/gates+Q3,Q4) — not a real task row.
+      collect('SELECT * FROM slices WHERE milestone_id = :m AND id = :s ORDER BY id', { ':m': milestone, ':s': slice });
+      collect('SELECT * FROM tasks WHERE milestone_id = :m AND slice_id = :s ORDER BY id', { ':m': milestone, ':s': slice });
+      collectGateEvaluateRows(task);
+    } else if (slice && task) {
       collect('SELECT * FROM slices WHERE milestone_id = :m AND id = :s ORDER BY id', { ':m': milestone, ':s': slice });
       collect('SELECT * FROM tasks WHERE milestone_id = :m AND slice_id = :s AND id = :t ORDER BY id', { ':m': milestone, ':s': slice, ':t': task });
     } else if (slice) {

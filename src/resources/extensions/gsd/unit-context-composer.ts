@@ -221,7 +221,7 @@ const TOOL_SURFACE_GUIDANCE_BY_UNIT: Record<string, string> = {
   "complete-slice":
     "Run slice-level verification through `gsd_exec` (or MCP-scoped `mcp__…__gsd_exec`), not direct `bash`. Capture learnings through `gsd_capture_thought` (or MCP-scoped `mcp__…__gsd_capture_thought`), not bare `capture_thought`, when workflow MCP tools are presented. Do not call `gsd_uat_result_save` — run-uat owns persisted UAT assessment. On verification failure, do not edit user source files in this unit.",
   "gate-evaluate":
-    "Dispatch only **tester** subagents via `subagent`. Persist each gate with `gsd_save_gate_result`. Do not use `ToolSearch` — it is not available.",
+    "Dispatch only **tester** subagents via the GSD `subagent` tool — never the native `Agent` tool and never with `run_in_background: true`. Wait for every subagent to finish, then persist each gate with `gsd_save_gate_result`. Do not use `ToolSearch` — it is not available.",
   "reactive-execute":
     "Dispatch only **worker** subagents via `subagent`. Do not call `gsd_task_complete` from this parent batch — each worker owns its task completion. If a failed task left no summary, call `gsd_summary_save` with `blocker_discovered: true`.",
   "execute-task":
