@@ -435,7 +435,9 @@ export function checkCloseoutConsistencyGate(
   // Closing gates persists what the read-only inspection above already found;
   // the pending-gate decision below uses plannedGateClosure either way, so
   // suppressing the write under preview is decision-neutral (#2230).
-  if (gateClosureOptions && !options.readOnly) {
+  // Adopted milestones defer validation-owned gate closure to complete-milestone
+  // so waivers stay pending until the terminal completion write (#2248 area).
+  if (!adoptedMilestone && gateClosureOptions && !options.readOnly) {
     closeQualityGatesFromEvidence(milestoneId, gateClosureOptions);
   }
 

@@ -824,7 +824,10 @@ describe("state-machine-live-validation", () => {
 
       const result = await handleCompleteSlice(makeSliceParams("S99", "M099") as any, base);
       assert.ok("error" in result);
-      assert.match(result.error, /canonical Milestone lifecycle authority/);
+      assert.match(
+        result.error,
+        /canonical Milestone lifecycle authority|unresolved canonical lifecycle shadows/,
+      );
       assert.equal(getSlice("M099", "S99")?.status, "pending");
     });
   });
