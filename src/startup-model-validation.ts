@@ -18,6 +18,8 @@ interface MinimalModel {
 
 interface MinimalModelRegistry {
   getAvailable(): MinimalModel[]
+  getAll?(): MinimalModel[]
+  isProviderRequestReady?(provider: string): boolean
 }
 
 type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
@@ -48,6 +50,7 @@ export function validateConfiguredModel(
   const configuredProvider = settingsManager.getDefaultProvider()
   const configuredModel = settingsManager.getDefaultModel()
   const availableModels = modelRegistry.getAvailable()
+  const catalogModels = modelRegistry.getAll?.() ?? availableModels
   // Check against availableModels (configured + auth'd) rather than getAll()
   // so a stale default pointing at an unconfigured provider triggers the
   // fallback. Previously a model present in the registry but missing API
@@ -55,6 +58,20 @@ export function validateConfiguredModel(
   // up as ctx.model even though it couldn't actually be used.
   const configuredExists = configuredProvider && configuredModel &&
     availableModels.some((m) => m.provider === configuredProvider && m.id === configuredModel)
+  const configuredInCatalog = configuredProvider && configuredModel &&
+    catalogModels.some((m) => m.provider === configuredProvider && m.id === configuredModel)
+
+  // Preserve explicit settings when the model is still in the catalog but
+  // temporarily absent from getAvailable() (#2077). Only rewrite when the
+  // model is genuinely gone, or the provider is known to be unready.
+  if (configuredInCatalog && !configuredExists) {
+    const providerReady = configuredProvider
+      ? modelRegistry.isProviderRequestReady?.(configuredProvider)
+      : undefined
+    if (providerReady !== false) {
+      return
+    }
+  }
 
   if (!configuredModel || !configuredExists) {
     // Model not configured at all, or removed from registry — pick a fallback.

@@ -31,6 +31,7 @@ import {
   relSliceFile,
   relTaskFile,
   normalizeRealPath,
+  resolveVerificationFailureMarker,
 } from "./paths.js";
 import { invalidateAllCaches } from "./cache.js";
 import { rebuildState } from "./doctor.js";
@@ -714,21 +715,21 @@ function resolveVerificationFailureMarkerPath(
 ): string | null {
   const { milestone: mid, slice: sid, task: tid } = parseUnitId(unitId);
   switch (unitType) {
-    case "complete-milestone": {
-      const existing = resolveMilestoneFile(basePath, mid, "VERIFICATION-FAILED");
-      if (existing) return existing;
-      return join(basePath, relMilestoneFile(basePath, mid, "VERIFICATION-FAILED"));
-    }
-    case "complete-slice": {
-      const existing = resolveSliceFile(basePath, mid, sid!, "VERIFICATION-FAILED");
-      if (existing) return existing;
-      return join(basePath, relSliceFile(basePath, mid, sid!, "VERIFICATION-FAILED"));
-    }
-    case "execute-task": {
-      const existing = resolveTaskArtifactPath(basePath, mid, sid!, tid!, "VERIFICATION-FAILED");
-      if (existing) return existing;
-      return join(basePath, relTaskFile(basePath, mid, sid!, tid!, "VERIFICATION-FAILED"));
-    }
+    case "complete-milestone":
+      return resolveVerificationFailureMarker(
+        (suffix) => resolveMilestoneFile(basePath, mid, suffix),
+        (suffix) => join(basePath, relMilestoneFile(basePath, mid, suffix)),
+      );
+    case "complete-slice":
+      return resolveVerificationFailureMarker(
+        (suffix) => resolveSliceFile(basePath, mid, sid!, suffix),
+        (suffix) => join(basePath, relSliceFile(basePath, mid, sid!, suffix)),
+      );
+    case "execute-task":
+      return resolveVerificationFailureMarker(
+        (suffix) => resolveTaskArtifactPath(basePath, mid, sid!, tid!, suffix),
+        (suffix) => join(basePath, relTaskFile(basePath, mid, sid!, tid!, suffix)),
+      );
     default:
       return null;
   }

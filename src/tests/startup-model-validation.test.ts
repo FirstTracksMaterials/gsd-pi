@@ -16,10 +16,17 @@ interface MockModel {
 	id: string;
 }
 
-function createMockRegistry(allModels: MockModel[], availableModels?: MockModel[]) {
+function createMockRegistry(
+	allModels: MockModel[],
+	availableModels?: MockModel[],
+	options?: { isProviderRequestReady?: (provider: string) => boolean },
+) {
 	return {
 		getAll: () => allModels,
 		getAvailable: () => availableModels ?? allModels,
+		...(options?.isProviderRequestReady
+			? { isProviderRequestReady: options.isProviderRequestReady }
+			: {}),
 	};
 }
 
@@ -135,7 +142,9 @@ describe("validateConfiguredModel — regression #3534", () => {
 		const availableModels = [
 			{ provider: "anthropic", id: "claude-opus-4-6" },
 		];
-		const registry = createMockRegistry(allModels, availableModels);
+		const registry = createMockRegistry(allModels, availableModels, {
+			isProviderRequestReady: (provider) => provider === "anthropic",
+		});
 		const settings = createMockSettings({
 			provider: "xai",
 			model: "grok-4-fast-non-reasoning",
@@ -162,6 +171,25 @@ describe("validateConfiguredModel — regression #3534", () => {
 
 		assert.equal(settings._provider, "anthropic");
 		assert.equal(settings._model, "claude-opus-4-7");
+	});
+
+	it("preserves configured model when catalog entry exists but getAvailable is temporarily empty (#2077)", () => {
+		const allModels = [
+			{ provider: "ccswitch-anthropic-k3", id: "kimi-k3" },
+			{ provider: "anthropic", id: "claude-opus-4-6" },
+		];
+		const registry = createMockRegistry(allModels, [], {
+			isProviderRequestReady: () => true,
+		});
+		const settings = createMockSettings({
+			provider: "ccswitch-anthropic-k3",
+			model: "kimi-k3",
+		});
+
+		validateConfiguredModel(registry, settings);
+
+		assert.equal(settings._provider, "ccswitch-anthropic-k3");
+		assert.equal(settings._model, "kimi-k3");
 	});
 
 	it("preserves claude-opus-4-8 when registered and configured", () => {

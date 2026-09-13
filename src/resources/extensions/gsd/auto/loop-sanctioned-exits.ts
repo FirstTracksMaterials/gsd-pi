@@ -47,7 +47,7 @@ const GUARD_SANCTIONED_EXITS: Record<string, string> = {
   "finalize-break":
     "Closeout failed terminally for this unit. Inspect it with `/gsd status`, repair state with `/gsd doctor fix`, then re-run `/gsd auto`.",
   "finalize-retry":
-    "Closeout verification failed twice with identical inputs. Re-project the missing artifact with `/gsd rebuild markdown`, confirm with `/gsd status`, then re-run `/gsd auto`.",
+    "Closeout verification failed twice with identical inputs. First check for a `*-VERIFICATION-FAILED.md` or `*-CLOSEOUT-VERIFICATION-FAILED.md` report — if present, closeout was deliberately refused and no summary is missing. Otherwise re-project the missing artifact with `/gsd rebuild markdown`, confirm with `/gsd status`, then re-run `/gsd auto`.",
   "orchestration-skip":
     "The orchestrator skipped the same state twice without advancing. Inspect it with `/gsd status` and repair with `/gsd doctor fix` (`/gsd rebuild markdown` for projection drift), then re-run `/gsd auto`.",
   "orchestration-stale-active-unit":
