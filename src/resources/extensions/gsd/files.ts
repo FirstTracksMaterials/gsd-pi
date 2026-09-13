@@ -23,9 +23,13 @@ import { checkExistingEnvKeys } from './env-utils.js';
 import { nativeExtractSection, nativeParseSummaryFile, NATIVE_UNAVAILABLE } from './native-parser-bridge.js';
 import { CACHE_MAX } from './constants.js';
 import { splitFrontmatter, parseFrontmatterMap } from '../shared/frontmatter.js';
+import type { UatType } from "./uat-types.js";
+import { UAT_TYPE_KEYWORDS } from "./uat-types.js";
 
 // Re-export for downstream consumers
 export { splitFrontmatter, parseFrontmatterMap };
+export type { UatType } from "./uat-types.js";
+export { UAT_TYPE_KEYWORDS } from "./uat-types.js";
 
 // ─── Parse Cache ──────────────────────────────────────────────────────────
 
@@ -664,22 +668,6 @@ export function parseTaskPlanIO(content: string): { inputFiles: string[]; output
 }
 
 // ─── UAT Type Extractor ────────────────────────────────────────────────────
-
-/**
- * The four UAT classification types recognised by GSD auto-mode.
- * `undefined` is returned (not this union) when no type can be determined.
- */
-export type UatType = 'artifact-driven' | 'live-runtime' | 'human-experience' | 'mixed' | 'browser-executable' | 'runtime-executable';
-
-/** Canonical list of recognised UAT types — uat-policy.ts re-exports this as UAT_TYPES. */
-export const UAT_TYPE_KEYWORDS: readonly UatType[] = [
-  'artifact-driven',
-  'browser-executable',
-  'runtime-executable',
-  'live-runtime',
-  'mixed',
-  'human-experience',
-];
 
 /** Match a value against the recognised UAT type keywords (leading-keyword-only). */
 function matchUatTypeKeyword(value: string): UatType | undefined {

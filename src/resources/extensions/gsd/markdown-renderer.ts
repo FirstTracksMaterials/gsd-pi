@@ -1187,9 +1187,15 @@ export interface StaleEntry {
 // by reconcileBeforeDispatch repairs), so a changed file always re-parses.
 interface CachedProjection { mtimeMs: number; size: number; parsed: unknown }
 const _projectionParseCache = new Map<string, CachedProjection>();
-registerCacheClearCallback(() => _projectionParseCache.clear());
+let _projectionCacheClearRegistered = false;
+function ensureProjectionCacheClearRegistered(): void {
+  if (_projectionCacheClearRegistered) return;
+  registerCacheClearCallback(() => _projectionParseCache.clear());
+  _projectionCacheClearRegistered = true;
+}
 
 function parseProjectionByIdentity(path: string, parse: (content: string) => unknown): unknown {
+  ensureProjectionCacheClearRegistered();
   let st: ReturnType<typeof statSync> | null = null;
   try { st = statSync(path); } catch { st = null; }
   if (st) {

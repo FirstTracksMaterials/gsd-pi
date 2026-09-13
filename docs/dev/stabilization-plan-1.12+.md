@@ -9,7 +9,7 @@ Since v1.12.0, GSD Pi shipped the state-DB cutover (#1627) and eight minor relea
 
 **Current version:** 1.20.0  
 **Open issues (total):** ~30  
-**Agent-ready bugs:** 3 (as of 2026-09-13)
+**Agent-ready bugs:** 1 (as of 2026-09-13)
 
 ## Failure Taxonomy
 
@@ -92,16 +92,20 @@ These bugs block `/gsd auto` with no sanctioned recovery path. Highest user impa
 | #2033 | complete-milestone deliberate refusal wedges as finalize-retry | **fixed** | `CLOSEOUT-VERIFICATION-FAILED` alias + named path in prompt |
 | #2077 | startup `validateConfiguredModel` rewrites on transient unavailability | **fixed** | Preserve when model remains in catalog and provider is ready |
 | #2294 | validate-milestone re-run cannot persist verdict | **fixed** | Regression test; V49 schema already allows interrupted→pass rerun |
-| #2178 | Windows unbound-evidence resolution wedges projection writes | open | Deferred — native exchange + auto-loop policy |
-| #2140 | 26 pi-agent-core test failures on clean main | open | Deferred — workspace dep alignment |
+| #2178 | Windows unbound-evidence resolution wedges projection writes | **fixed** | `cursor/stabilization-wave7-3f39` |
+| #2140 | 26 pi-agent-core test failures on clean main | **fixed** | Vitest `@gsd/pi-ai` alias alignment |
 
 ## Wave 6 — Stale wedge GC and closeout resilience (P1, shipped)
 
 | Issue | Title | Status | Notes |
 |-------|-------|--------|-------|
 | #2159 | False stale liveness wedges from interrupted closeouts | **fixed** | `garbageCollectResolvedWedges` on advance/complete/start; `clearAbandonedCloseoutSignatures`; `validate-milestone` snapshot rows |
-| #2178 | Windows unbound-evidence resolution wedges projection writes | open | Deferred — native exchange + auto-loop policy |
-| #2140 | 26 pi-agent-core test failures on clean main | open | Deferred — workspace dep alignment |
+## Wave 7 — Platform exchange resilience and test harness (P2, shipped)
+
+| Issue | Title | Status | Notes |
+|-------|-------|--------|-------|
+| #2178 | Windows unbound-evidence resolution wedges projection writes | **fixed** | Copy+delete fallback + exchange-path restaging in `moveEvidenceIntoGuard` |
+| #2140 | 26 pi-agent-core test failures on clean main | **fixed** | Vitest resolve aliases for `@earendil-works/pi-ai` → workspace `@gsd/pi-ai` |
 
 ## Deferred / structural (ADR-gated)
 

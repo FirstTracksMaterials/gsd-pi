@@ -61,6 +61,7 @@ import {
   _setUnboundEvidenceAcknowledgementFaultForTest,
   _setUnboundEvidenceRemovalFaultForTest,
   _setUnboundEvidenceResolutionFaultForTest,
+  _setUnboundEvidenceExchangeFaultForTest,
   loadUnboundProjectionEvidence,
   loadManagedProjectionPaths,
   previewUnboundProjectionEvidenceResolution,
@@ -68,6 +69,7 @@ import {
 } from "../managed-projection-history.ts";
 import { renderAllFromDb, renderMilestoneArtifactsFromDb, renderRoadmapFromDb } from "../markdown-renderer.ts";
 import { gsdRoot } from "../paths.ts";
+import { ProjectionLockTransientError } from "../projection-root-errors.ts";
 import { _getAdapter, closeDatabase, getArtifact, getMilestone, getSliceTasks, insertArtifact, insertMilestone, openDatabase } from "../gsd-db.ts";
 import { _setDomainOperationFaultForTest, executeDomainOperation } from "../db/domain-operation.ts";
 import { hashLegacyImportValue } from "../legacy-import-preview.ts";
@@ -2768,6 +2770,38 @@ test("unbound evidence resolution resumes after bytes move before ledger cleanup
     assert.equal(readFileSync(join(base, ".gsd", "notes", "result.md"), "utf8"), "later accepted work\n");
   } finally {
     _setUnboundEvidenceResolutionFaultForTest(null);
+    cleanup(base);
+  }
+});
+
+test("#2178: unbound evidence resolution falls back to copy+delete on transient exchange failure", () => {
+  const base = makeBase("gsd-migrate-evidence-exchange-fallback-");
+  try {
+    mkdirSync(join(base, ".gsd", "notes"), { recursive: true });
+    assert.equal(openDatabase(join(base, ".gsd", "gsd.db")), true);
+    const evidencePath = "notes/.gsd-projection-tmp-00000000-0000-0000-0000-000000000002";
+    write(join(base, ".gsd", evidencePath), "later accepted work\n");
+    write(join(base, ".gsd", "migration", "unbound-projection-evidence.json"), `${JSON.stringify([{
+      evidencePath,
+      evidenceIdentity: null,
+      kind: "temporary",
+      logicalPath: "notes/result.md",
+      scope: "file",
+      transition: "retained",
+    }])}\n`);
+    const [evidence] = loadUnboundProjectionEvidence(base);
+    assert.ok(evidence);
+    const preview = previewUnboundProjectionEvidenceResolution(base, evidence.evidenceId, "restore");
+    _setUnboundEvidenceExchangeFaultForTest(() => {
+      throw new ProjectionLockTransientError(new Error("projection root operation failed: os error 32 sharing violation"));
+    });
+    resolveUnboundProjectionEvidence(base, evidence.evidenceId, "restore", preview.consent);
+    _setUnboundEvidenceExchangeFaultForTest(null);
+
+    assert.deepEqual(loadUnboundProjectionEvidence(base), []);
+    assert.equal(readFileSync(join(base, ".gsd", "notes", "result.md"), "utf8"), "later accepted work\n");
+  } finally {
+    _setUnboundEvidenceExchangeFaultForTest(null);
     cleanup(base);
   }
 });
