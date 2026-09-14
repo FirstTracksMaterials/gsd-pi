@@ -269,11 +269,32 @@ function recordCanonicalValidation(input: {
   const canonical = canonicalOutcome(input.params.verdict);
   const classResults = input.requiredClasses.map((className) => {
     const evidence = evidenceByClass.get(className.toLowerCase())!;
+    const rawVerdict = evidenceVerdict(evidence);
+    // A per-class "pass" technical verdict is only valid inside a succeeded
+    // attempt. Two invariants forbid recording one otherwise:
+    //   1. the schema trigger trg_workflow_technical_verdict_scope enforces
+    //      (verdict != 'pass' OR result.outcome = 'succeeded'); and
+    //   2. the writer's validateEvidence requires the class verdict to agree
+    //      with its evidence observations (an "inconclusive" verdict needs an
+    //      "inconclusive" observation, not "passed").
+    // Under a needs-attention or needs-remediation Milestone verdict the attempt
+    // outcome is "interrupted"/"failed", so an all-"passed" class cannot be
+    // recorded as "pass" (trigger 1) and cannot be recorded as "inconclusive"
+    // while its observations still say "passed" (invariant 2) - previously this
+    // aborted the whole validation write with an opaque error. Clamp the class
+    // to "inconclusive" at the milestone-acceptance level, downgrading the class
+    // verdict AND its "passed" observations together so both invariants stay
+    // consistent. The raw command exit code, durable output ref, and rationale
+    // are preserved on every evidence row, and the prose Verification Class
+    // table retains the honest per-class detail.
+    const clampPassToInconclusive =
+      canonical.outcome !== "succeeded" && rawVerdict === "pass";
+    const classVerdict = clampPassToInconclusive ? "inconclusive" : rawVerdict;
     return {
       criterionKey: `milestone-validation:${className.toLowerCase()}`,
       evidenceClass: evidence[0]!.evidenceClass,
       description: `${className} verification planned for this Milestone must be current and pass.`,
-      verdict: evidenceVerdict(evidence),
+      verdict: classVerdict,
       rationale: evidence.map((entry) => entry.rationale).join("\n"),
       evidence: evidence.map(({
         verificationClass: _verificationClass,
@@ -283,6 +304,7 @@ function recordCanonicalValidation(input: {
         ...entry
       }) => ({
         ...entry,
+        observation: clampPassToInconclusive ? "inconclusive" : entry.observation,
         environment: {
           ...entry.environment,
           ...(sliceId ? { sliceId } : {}),
