@@ -108,8 +108,11 @@ function readDecisionsFromMemories(
 		if (opts?.milestoneId) {
 			// when_context is a free-text JSON value; substring match preserves the
 			// semantics of `when_context LIKE '%milestoneId%'` on the legacy table.
+			// Project-wide decisions with an empty when_context must also surface for
+			// every milestone (#2248).
 			clauses.push(
-				"json_extract(structured_fields, '$.when_context') LIKE :milestone_pattern",
+				`(json_extract(structured_fields, '$.when_context') LIKE :milestone_pattern
+          OR TRIM(COALESCE(json_extract(structured_fields, '$.when_context'), '')) = '')`,
 			);
 			params[":milestone_pattern"] = `%${opts.milestoneId}%`;
 		}
@@ -194,7 +197,8 @@ function readDecisionsFromMemories(
  *
  * Filter semantics match `queryDecisions` exactly:
  * - active only (skips rows where `structured_fields.superseded_by` is set)
- * - `milestoneId`: substring match on `structured_fields.when_context`
+ * - `milestoneId`: substring match on `structured_fields.when_context`, plus
+ *   project-wide rows whose `when_context` is empty
  * - `scope`: exact match on `structured_fields.scope`
  *
  * Used by the prompt-inline path (`inlineDecisionsFromDb` in

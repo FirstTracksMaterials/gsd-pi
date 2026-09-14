@@ -39,6 +39,10 @@ import {
 } from "../planning-domain-operation.js";
 import type { PlanningInvocation } from "../planning-invocation.js";
 import { validateTaskToolRequirements } from "../task-tool-requirements.js";
+import {
+  derivePlanningDecisionScope,
+  validateVerifyAgainstActiveDecisions,
+} from "../planning-decision-guard.js";
 
 export interface ReplanTaskParams {
   milestoneId: string;
@@ -75,6 +79,14 @@ function validateParams(params: ReplanTaskParams): ReplanTaskParams {
   if (!isNonEmptyString(params?.description)) throw new Error("description is required");
   if (!isNonEmptyString(params?.estimate)) throw new Error("estimate is required");
   if (!isNonEmptyString(params?.verify)) throw new Error("verify is required");
+  const decisionVerifyError = validateVerifyAgainstActiveDecisions(
+    params.verify,
+    params.milestoneId,
+    derivePlanningDecisionScope(params.milestoneId, params.sliceId),
+  );
+  if (decisionVerifyError) {
+    throw new Error(decisionVerifyError);
+  }
   assertVerifyIsShellCheckable(params.verify);
   const verifyValidation = validateVerificationCommand(params.verify);
   if (!verifyValidation.ok) {
