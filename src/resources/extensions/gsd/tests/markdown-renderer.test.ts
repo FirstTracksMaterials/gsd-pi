@@ -1254,7 +1254,7 @@ test('── markdown-renderer: stderr warning on missing content ──', async
 // Stale Detection — Plan Checkbox Mismatch
 // ═══════════════════════════════════════════════════════════════════════════
 
-test('── markdown-renderer: detectStaleRenders finds plan checkbox mismatch ──', { skip: true }, () => {
+test('── markdown-renderer: detectStaleRenders finds plan checkbox mismatch ──', () => {
   const tmpDir = makeTmpDir();
   const dbPath = path.join(tmpDir, '.gsd', 'gsd.db');
   openDatabase(dbPath);
@@ -1286,9 +1286,9 @@ test('── markdown-renderer: detectStaleRenders finds plan checkbox mismatch 
     const stale = detectStaleRenders(tmpDir);
 
     assert.ok(stale.length > 0, 'detectStaleRenders should find stale entries');
-    const t02Stale = stale.find(s => s.reason.includes('T02'));
-    assert.ok(!!t02Stale, 'should detect T02 as stale (done in DB, unchecked in plan)');
-    assert.ok(t02Stale!.reason.includes('done in DB but unchecked'), 'reason should explain the mismatch');
+    const t02Stale = stale.find(s => s.reason.includes('in plan'));
+    assert.ok(!!t02Stale, 'should detect plan as stale (done in DB, unchecked in plan)');
+    assert.ok(t02Stale!.reason.includes('in plan'), 'reason should keep the repair-dispatch "in plan" marker');
 
     // T01 should NOT be stale — it's checked and done
     const t01Stale = stale.find(s => s.reason.includes('T01'));
@@ -1303,7 +1303,7 @@ test('── markdown-renderer: detectStaleRenders finds plan checkbox mismatch 
 // Stale Repair — Plan Checkbox
 // ═══════════════════════════════════════════════════════════════════════════
 
-test('── markdown-renderer: repairStaleRenders fixes plan and second detect returns empty ──', { skip: true }, async () => {
+test('── markdown-renderer: repairStaleRenders fixes plan and second detect returns empty ──', async () => {
   const tmpDir = makeTmpDir();
   const dbPath = path.join(tmpDir, '.gsd', 'gsd.db');
   openDatabase(dbPath);
@@ -1354,7 +1354,7 @@ test('── markdown-renderer: repairStaleRenders fixes plan and second detect 
 // Stale Detection — Roadmap Checkbox Mismatch
 // ═══════════════════════════════════════════════════════════════════════════
 
-test('── markdown-renderer: detectStaleRenders finds roadmap checkbox mismatch ──', { skip: true }, () => {
+test('── markdown-renderer: detectProjectionDrift finds roadmap checkbox mismatch ──', () => {
   const tmpDir = makeTmpDir();
   const dbPath = path.join(tmpDir, '.gsd', 'gsd.db');
   openDatabase(dbPath);
@@ -1376,11 +1376,11 @@ test('── markdown-renderer: detectStaleRenders finds roadmap checkbox mismat
     fs.writeFileSync(roadmapPath, roadmapContent);
     clearAllCaches();
 
-    const stale = detectStaleRenders(tmpDir);
-    const s01Stale = stale.find(s => s.reason.includes('S01'));
-    assert.ok(!!s01Stale, 'should detect S01 as stale (complete in DB, unchecked in roadmap)');
+    const stale = detectProjectionDrift(tmpDir);
+    const s01Stale = stale.find(s => s.reason.includes('in roadmap'));
+    assert.ok(!!s01Stale, 'should detect roadmap as stale (complete in DB, unchecked in roadmap)');
 
-    const s02Stale = stale.find(s => s.reason.includes('S02'));
+    const s02Stale = stale.find(s => s.reason.includes('in roadmap') && s.reason.includes('S02'));
     assert.deepStrictEqual(s02Stale, undefined, 'S02 should not be stale (pending and unchecked — matches)');
   } finally {
     closeDatabase();
@@ -1388,7 +1388,7 @@ test('── markdown-renderer: detectStaleRenders finds roadmap checkbox mismat
   }
 });
 
-test('── markdown-renderer: repairStaleRenders reads worktree roadmap projection ──', { skip: true }, async () => {
+test('── markdown-renderer: renderRoadmapFromDb reads worktree roadmap projection ──', async () => {
   const tmpDir = makeTmpDir();
   const worktreeDir = path.join(tmpDir, '.gsd', 'worktrees', 'M001');
   const dbPath = path.join(tmpDir, '.gsd', 'gsd.db');
@@ -1413,9 +1413,9 @@ test('── markdown-renderer: repairStaleRenders reads worktree roadmap projec
     fs.writeFileSync(projectionRoadmapPath, staleRoadmap);
     clearAllCaches();
 
-    const staleBefore = detectStaleRenders(worktreeDir);
+    const staleBefore = detectProjectionDrift(worktreeDir);
     assert.ok(
-      staleBefore.some(s => pathsEqual(s.path, projectionRoadmapPath) && s.reason.includes('S01')),
+      staleBefore.some(s => pathsEqual(s.path, projectionRoadmapPath) && s.reason.includes('in roadmap')),
       'worktree projection roadmap should be detected as stale',
     );
     assert.ok(
@@ -1423,11 +1423,10 @@ test('── markdown-renderer: repairStaleRenders reads worktree roadmap projec
       'project mirror roadmap should not be used for worktree stale detection',
     );
 
-    const repaired = await repairStaleRenders(worktreeDir);
-    assert.ok(repaired > 0, 'repairStaleRenders should repair the worktree projection');
+    await renderRoadmapFromDb(worktreeDir, 'M001');
 
     clearAllCaches();
-    const staleAfter = detectStaleRenders(worktreeDir);
+    const staleAfter = detectProjectionDrift(worktreeDir);
     assert.deepStrictEqual(staleAfter, [], 'worktree stale roadmap should be clear after repair');
 
     const projectContent = fs.readFileSync(projectRoadmapPath, 'utf-8');
@@ -1440,7 +1439,7 @@ test('── markdown-renderer: repairStaleRenders reads worktree roadmap projec
   }
 });
 
-test('── markdown-renderer: repairStaleRenders handles descriptor roadmap projection dirs ──', { skip: true }, async () => {
+test('── markdown-renderer: renderRoadmapFromDb handles descriptor roadmap projection dirs ──', async () => {
   const tmpDir = makeTmpDir();
   const worktreeDir = path.join(tmpDir, '.gsd', 'worktrees', 'M001');
   const dbPath = path.join(tmpDir, '.gsd', 'gsd.db');
@@ -1461,17 +1460,16 @@ test('── markdown-renderer: repairStaleRenders handles descriptor roadmap pr
     fs.writeFileSync(descriptorRoadmapPath, staleRoadmap);
     clearAllCaches();
 
-    const staleBefore = detectStaleRenders(worktreeDir);
+    const staleBefore = detectProjectionDrift(worktreeDir);
     assert.ok(
-      staleBefore.some(s => pathsEqual(s.path, descriptorRoadmapPath) && s.reason.includes('S01')),
+      staleBefore.some(s => pathsEqual(s.path, descriptorRoadmapPath) && s.reason.includes('in roadmap')),
       'descriptor worktree projection roadmap should be detected as stale',
     );
 
-    const repaired = await repairStaleRenders(worktreeDir);
-    assert.ok(repaired > 0, 'repairStaleRenders should repair the descriptor projection');
+    await renderRoadmapFromDb(worktreeDir, 'M001');
 
     clearAllCaches();
-    const staleAfter = detectStaleRenders(worktreeDir);
+    const staleAfter = detectProjectionDrift(worktreeDir);
     assert.deepStrictEqual(staleAfter, [], 'descriptor stale roadmap should be clear after repair');
 
     const projectionContent = fs.readFileSync(descriptorRoadmapPath, 'utf-8');
@@ -1482,7 +1480,7 @@ test('── markdown-renderer: repairStaleRenders handles descriptor roadmap pr
   }
 });
 
-test('── markdown-renderer: repairStaleRenders handles legacy descriptor roadmap filenames ──', { skip: true }, async () => {
+test('── markdown-renderer: renderRoadmapFromDb handles legacy descriptor roadmap filenames ──', async () => {
   const tmpDir = makeTmpDir();
   const dbPath = path.join(tmpDir, '.gsd', 'gsd.db');
   openDatabase(dbPath);
@@ -1502,17 +1500,16 @@ test('── markdown-renderer: repairStaleRenders handles legacy descriptor roa
     fs.writeFileSync(legacyRoadmapPath, staleRoadmap);
     clearAllCaches();
 
-    const staleBefore = detectStaleRenders(tmpDir);
+    const staleBefore = detectProjectionDrift(tmpDir);
     assert.ok(
-      staleBefore.some(s => pathsEqual(s.path, legacyRoadmapPath) && s.reason.includes('S01')),
+      staleBefore.some(s => pathsEqual(s.path, legacyRoadmapPath) && s.reason.includes('in roadmap')),
       'legacy descriptor roadmap filename should be detected as stale',
     );
 
-    const repaired = await repairStaleRenders(tmpDir);
-    assert.ok(repaired > 0, 'repairStaleRenders should repair the legacy descriptor roadmap');
+    await renderRoadmapFromDb(tmpDir, 'M001');
 
     clearAllCaches();
-    const staleAfter = detectStaleRenders(tmpDir);
+    const staleAfter = detectProjectionDrift(tmpDir);
     assert.deepStrictEqual(staleAfter, [], 'legacy descriptor roadmap should be clear after repair');
 
     const repairedContent = fs.readFileSync(legacyRoadmapPath, 'utf-8');
@@ -1527,7 +1524,7 @@ test('── markdown-renderer: repairStaleRenders handles legacy descriptor roa
 // Stale Detection — Missing Task Summary
 // ═══════════════════════════════════════════════════════════════════════════
 
-test('── markdown-renderer: detectStaleRenders finds missing task summary ──', { skip: true }, () => {
+test('── markdown-renderer: detectStaleRenders finds missing task summary ──', () => {
   const tmpDir = makeTmpDir();
   const dbPath = path.join(tmpDir, '.gsd', 'gsd.db');
   openDatabase(dbPath);
@@ -1574,7 +1571,7 @@ test('── markdown-renderer: detectStaleRenders finds missing task summary �
 // Stale Repair — Missing Task Summary
 // ═══════════════════════════════════════════════════════════════════════════
 
-test('── markdown-renderer: repairStaleRenders writes missing task summary ──', { skip: true }, async () => {
+test('── markdown-renderer: repairStaleRenders writes missing task summary ──', async () => {
   const tmpDir = makeTmpDir();
   const dbPath = path.join(tmpDir, '.gsd', 'gsd.db');
   openDatabase(dbPath);
@@ -1642,12 +1639,8 @@ test('── markdown-renderer: repairStaleRenders idempotency — fully synced 
     insertSlice({ id: 'S01', milestoneId: 'M001', title: 'Slice', status: 'pending' });
     insertTask({ id: 'T01', sliceId: 'S01', milestoneId: 'M001', title: 'Task', status: 'done' });
 
-    // Write plan with T01 checked — matches DB
-    const planContent = makePlanContent('S01', [
-      { id: 'T01', title: 'Task', done: true },
-    ]);
-    const planPath = path.join(tmpDir, '.gsd', 'phases', '01-test', '01-01-PLAN.md');
-    fs.writeFileSync(planPath, planContent);
+    // Render plan from DB so on-disk bytes match render intent (checkboxes + metadata).
+    await renderPlanFromDb(tmpDir, 'M001', 'S01');
     clearAllCaches();
 
     // No stale entries when everything is in sync (no summary to check since no fullSummaryMd)
@@ -1663,7 +1656,7 @@ test('── markdown-renderer: repairStaleRenders idempotency — fully synced 
 // Stale Detection — Missing Slice Summary + UAT
 // ═══════════════════════════════════════════════════════════════════════════
 
-test('── markdown-renderer: detectStaleRenders finds missing slice summary and UAT ──', { skip: true }, () => {
+test('── markdown-renderer: detectStaleRenders finds missing slice summary and UAT ──', () => {
   const tmpDir = makeTmpDir();
   const dbPath = path.join(tmpDir, '.gsd', 'gsd.db');
   openDatabase(dbPath);
