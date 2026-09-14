@@ -266,14 +266,6 @@ function sanitizeInlineRoadmapText(value: string | null | undefined): string {
     .trim();
 }
 
-function isMilestoneFlatPhaseLayout(basePath: string, milestoneId: string): boolean {
-  const existing = resolveMilestonePath(basePath, milestoneId);
-  const legacyBase = legacyMilestonesDir(basePath);
-  return existing
-    ? !(existing.startsWith(legacyBase + "/") || existing.startsWith(legacyBase + "\\"))
-    : !isLegacyMilestonesLayout(basePath);
-}
-
 /**
  * Write rendered content to disk and update the artifacts table.
  * The content is stamped with the current DB state version before writing;
@@ -1225,27 +1217,6 @@ interface ProjectionRenderIntent {
   reason: string;
 }
 
-function planRenderIntentDrift(
-  basePath: string,
-  milestoneId: string,
-  slice: SliceRow,
-  tasks: TaskRow[],
-): StaleEntry | null {
-  const planPath = resolveSliceFile(basePath, milestoneId, slice.id, "PLAN");
-  if (!planPath || !existsSync(planPath)) return null;
-  const intent = renderSlicePlanMarkdown(
-    slice,
-    tasks,
-    getGateResults(milestoneId, slice.id, "slice"),
-  );
-  const actual = readFileSync(planPath, "utf-8");
-  if (stripProjectionStamp(actual) === stripProjectionStamp(intent)) return null;
-  return {
-    path: planPath,
-    reason: `plan for ${milestoneId}/${slice.id} differs from DB render intent (content drift in plan)`,
-  };
-}
-
 function projectionRenderIntents(basePath: string): ProjectionRenderIntent[] {
   const intents = new Map<string, ProjectionRenderIntent>();
   const record = (path: string, content: string, reason: string): void => {
@@ -1377,16 +1348,50 @@ export function detectProjectionDrift(basePath: string): StaleEntry[] {
   return stale;
 }
 
+function preferStaleRenderReason(current: string, candidate: string): string {
+  const repairable = (reason: string) =>
+    reason.includes("in roadmap") ||
+    reason.includes("in plan") ||
+    reason.includes("SUMMARY.md missing") ||
+    reason.includes("UAT.md missing");
+  if (repairable(candidate) && !repairable(current)) return candidate;
+  return current;
+}
+
 export function detectStaleRenders(basePath: string): StaleEntry[] {
-  // TODO(flat-phase): stale-render detection is temporarily fully disabled.
-  // The isLegacyMilestonesLayout gate is unreliable: git-service.ts creates
-  // milestones/<mid>/ directories for integration-branch metadata even in
-  // flat-phase projects, making the gate fire true and then producing false
-  // stale-render drift in the second reconcile cycle → ReconciliationFailedError
-  // → auto-mode blocked (exit 10) for multi-slice/remediation e2e scenarios.
-  // Re-enable after path construction is unified and the metadata dir is
-  // decoupled from the layout-detection signal.
-  return [];
+  const byPath = new Map<string, StaleEntry>();
+
+  const record = (entry: StaleEntry): void => {
+    const existing = byPath.get(entry.path);
+    if (!existing) {
+      byPath.set(entry.path, entry);
+      return;
+    }
+    const reason = preferStaleRenderReason(existing.reason, entry.reason);
+    if (reason !== existing.reason) {
+      byPath.set(entry.path, { path: entry.path, reason });
+    }
+  };
+
+  // Roadmap drift is owned by the roadmap-divergence handler, which applies
+  // readiness/skipped-slice guards that a blind DB-vs-render-intent compare
+  // does not. Stale-render covers plans, summaries, and missing files only.
+  for (const entry of detectProjectionDrift(basePath)) {
+    if (entry.reason.includes("in roadmap")) continue;
+    record(entry);
+  }
+  for (const entry of detectStaleRendersImpl(basePath)) record(entry);
+
+  const stale = [...byPath.values()];
+  if (stale.length > 0) {
+    process.stderr.write(
+      `markdown-renderer: detected ${stale.length} stale render(s):\n`,
+    );
+    for (const entry of stale) {
+      process.stderr.write(`  - ${entry.path}: ${entry.reason}\n`);
+    }
+  }
+  return stale;
 }
 
 function detectStaleRendersImpl(basePath: string): StaleEntry[] {
@@ -1399,75 +1404,28 @@ function detectStaleRendersImpl(basePath: string): StaleEntry[] {
 
   for (const milestone of milestones) {
     const slices = getMilestoneSlices(milestone.id);
-    const isFlatPhase = isMilestoneFlatPhaseLayout(basePath, milestone.id);
 
-    // ── Check roadmap checkbox state ──────────────────────────────────
-    // TODO(flat-phase): roadmap checkbox parsing may not match flat-phase
-    // roadmap format, causing false-positive drift loops. Skip during transition.
-    /*
-    const roadmapPath = targetMilestoneFile(basePath, milestone.id, "ROADMAP", milestone.title);
-    if (existsSync(roadmapPath)) {
-      try {
-        const parsed = parseProjectionByIdentity(roadmapPath, parseProjectionRoadmap) as ReturnType<typeof parseProjectionRoadmap>;
+    // Plan and roadmap checkbox drift is handled by detectProjectionDrift
+    // (DB-vs-render-intent). This pass only checks for missing on-disk files.
 
-        for (const slice of slices) {
-          const isCompleteInDb = isClosedStatus(slice.status);
-          const roadmapSlice = parsed.slices.find((s: { id: string }) => s.id === slice.id);
-          if (!roadmapSlice) continue;
-
-          if (isCompleteInDb && !roadmapSlice!.done) {
-            stale.push({
-              path: roadmapPath,
-              reason: `${slice.id} is closed in DB but unchecked in roadmap`,
-            });
-          } else if (!isCompleteInDb && roadmapSlice!.done) {
-            stale.push({
-              path: roadmapPath,
-              reason: `${slice.id} is not closed in DB but checked in roadmap`,
-            });
-          }
-        }
-      } catch (e) {
-        logWarning("renderer", `roadmap parse failed: ${(e as Error).message}`);
-      }
-    }
-    */
-
-    // ── Check plan checkbox state and summaries for each slice ────────
     for (const slice of slices) {
       const tasks = getActivePlanTasks(milestone.id, slice.id);
 
-      if (!isFlatPhase) {
-        // Check plan content against the DB render intent (T008): the
-        // projection file is never parsed — staleness is judged
-        // DB-vs-render-intent via a stamp-insensitive byte comparison.
-        if (tasks.length > 0) {
-          try {
-            const entry = planRenderIntentDrift(basePath, milestone.id, slice, tasks);
-            if (entry) stale.push(entry);
-          } catch (e) {
-            logWarning("renderer", `plan render-intent check failed: ${(e as Error).message}`);
-          }
-        }
-      }
-
-      // Check missing task summary files (legacy layout only — flat-phase keeps
-      // task state in plan <tasks> blocks and does not project Txx-SUMMARY.md)
-      if (!isFlatPhase) {
-        for (const task of tasks) {
-          if (isClosedStatus(task.status) && task.full_summary_md) {
-            const slicePath = resolveSlicePath(basePath, milestone.id, slice.id);
-            if (slicePath) {
-              const fileName = buildTaskFileName(task.id, "SUMMARY");
-              const summaryAbsPath = join(slicePath, fileName);
-
-              if (!existsSync(summaryAbsPath)) {
-                stale.push({
-                  path: summaryAbsPath,
-                  reason: `${task.id} is complete with summary in DB but SUMMARY.md missing on disk`,
-                });
-              }
-            }
+      for (const task of tasks) {
+        if (isClosedStatus(task.status) && task.full_summary_md) {
+          const summaryAbsPath = targetTaskFile(
+            basePath,
+            milestone.id,
+            slice.id,
+            task.id,
+            "SUMMARY",
+            milestone.title,
+          );
+          if (!existsSync(summaryAbsPath)) {
+            stale.push({
+              path: summaryAbsPath,
+              reason: `${task.id} is complete with summary in DB but SUMMARY.md missing on disk`,
+            });
           }
         }
       }
@@ -1497,15 +1455,6 @@ function detectStaleRendersImpl(basePath: string): StaleEntry[] {
           }
         }
       }
-    }
-  }
-
-  if (stale.length > 0) {
-    process.stderr.write(
-      `markdown-renderer: detected ${stale.length} stale render(s):\n`,
-    );
-    for (const entry of stale) {
-      process.stderr.write(`  - ${entry.path}: ${entry.reason}\n`);
     }
   }
 
