@@ -878,6 +878,11 @@ export async function renderPlanCheckboxes(
     if (!isDbAvailable()) {
       throw new Error(`database unavailable while rendering plan checkboxes for ${milestoneId}/${sliceId}`);
     }
+    // A skipped slice's tasks are all terminal (filtered by getActivePlanTasks),
+    // so an empty active list is valid historical state — nothing to project (#2335).
+    if (toStatus(getSlice(milestoneId, sliceId)?.status ?? "") === "skipped") {
+      return false;
+    }
     process.stderr.write(
       `markdown-renderer: no tasks found for ${milestoneId}/${sliceId}\n`,
     );
