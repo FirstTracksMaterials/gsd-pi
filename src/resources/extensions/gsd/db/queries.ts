@@ -1383,6 +1383,26 @@ export function getLatestAssessmentByScope(
   return row ?? null;
 }
 
+/**
+ * Latest roadmap-scoped assessment recorded against a slice — the durable row
+ * `reassess-roadmap` writes (it never renders a slice ASSESSMENT.md), so
+ * dispatch checks treat its presence as "this slice was already reassessed"
+ * (#2344).
+ */
+export function getRoadmapAssessmentForSlice(
+  milestoneId: string,
+  sliceId: string,
+): Record<string, unknown> | null {
+  if (!getDbOrNull()!) return null;
+  const row = getDbOrNull()!.prepare(
+    `SELECT * FROM assessments
+      WHERE milestone_id = :mid AND slice_id = :sid AND scope = 'roadmap'
+      ORDER BY created_at DESC, ROWID DESC
+      LIMIT 1`,
+  ).get({ ":mid": milestoneId, ":sid": sliceId });
+  return row ?? null;
+}
+
 export function getPendingGates(milestoneId: string, sliceId: string, scope?: GateScope): GateRow[] {
   if (!getDbOrNull()!) return [];
   const sql = scope

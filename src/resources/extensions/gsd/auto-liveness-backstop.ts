@@ -460,6 +460,22 @@ export function snapshotUnitTargetRows(unitType: string, unitId: string): UnitTa
           { ':m': milestone, ':s': slice },
         );
       }
+      if (unitType === 'reassess-roadmap') {
+        // reassess-roadmap upserts one roadmap-scoped assessment per milestone
+        // (its projection path is deterministic per milestone), so a re-run with
+        // an identical verdict rewrites the row without moving any status column.
+        // created_at is refreshed on every insert (tools/reassess-roadmap.ts never
+        // passes one), making it the only per-run proof of a fresh run (#2344) —
+        // aliased so strip() keeps it in the hash.
+        collect(
+          `SELECT milestone_id, slice_id, scope, status, created_at AS persisted_at
+             FROM assessments
+            WHERE milestone_id = :m AND slice_id = :s AND scope = 'roadmap'
+            ORDER BY created_at DESC, ROWID DESC
+            LIMIT 1`,
+          { ':m': milestone, ':s': slice },
+        );
+      }
     } else {
       collect('SELECT * FROM slices WHERE milestone_id = :m ORDER BY id', { ':m': milestone });
       if (unitType === 'validate-milestone') {

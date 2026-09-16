@@ -626,3 +626,120 @@ test('#2159: abandoned closeout clears finalize-retry recurrence counters', (t) 
   assert.equal(afterAbandon.recurred, false, 'abandoned attempt must not inherit the killed run counter');
   assert.equal(afterAbandon.count, 1);
 });
+
+test('#2344: reassess-roadmap target advances when a roadmap assessment is persisted', async (t) => {
+  const base = makeBase();
+  t.after(() => cleanup(base));
+  openDatabase(join(base, '.gsd', 'gsd.db'));
+  insertMilestone({ id: 'M001', title: 'T', status: 'active' });
+  insertSlice({ id: 'S01', milestoneId: 'M001', title: 'S', status: 'complete', depends: [] });
+  insertSlice({ id: 'S02', milestoneId: 'M001', title: 'S2', status: 'pending', depends: ['S01'] });
+
+  // A "roadmap is fine" verdict moves no milestone/slice/task row — before the
+  // fix the wedge input hash could never change, so --resume-wedge failed forever.
+  const atDispatch = readTargetSnapshot('reassess-roadmap', 'M001/S01');
+  assert.ok(atDispatch, 'reassess-roadmap snapshot available when slice rows exist');
+  const record = () => recordNonAdvancingOutcome({
+    scopeId: SCOPE,
+    guardId: COMPLETED_NO_ADVANCE_GUARD_ID,
+    unitType: 'reassess-roadmap',
+    unitId: 'M001/S01',
+    inputPayload: atDispatch!,
+  });
+  assert.equal(record().tripped, false);
+  const tripped = record();
+  assert.equal(tripped.tripped, true);
+  if (!tripped.tripped) return;
+
+  insertAssessment({
+    path: '.gsd/milestones/M001/M001-ROADMAP-ASSESSMENT.md',
+    milestoneId: 'M001',
+    sliceId: 'S01',
+    status: 'no-changes',
+    scope: 'roadmap',
+    fullContent: 'roadmap is fine',
+    createdAt: '2026-01-02T00:00:00.000Z',
+  });
+  const afterAssessment = readTargetSnapshot('reassess-roadmap', 'M001/S01');
+  assert.notEqual(afterAssessment, atDispatch, 'a persisted roadmap assessment must advance the reassess-roadmap target');
+
+  const gc = await garbageCollectResolvedWedges(SCOPE, async (wedge) => recheckCompletedNoAdvanceWedge(wedge));
+  assert.equal(gc.ok, true);
+  if (!gc.ok) return;
+  assert.equal(gc.acknowledged.length, 1, 'the wedged reassess-roadmap unit must be acknowledgeable after the assessment lands');
+  assert.equal(gc.acknowledged[0]!.wedgeId, tripped.wedge.wedgeId);
+  assert.equal(readOpenWedge(), null, 'stale wedge must be garbage-collected after the assessment advances the hash');
+});
+
+test('#2344: a roadmap assessment does not unblock wedges of unit types that ignore it', async (t) => {
+  const base = makeBase();
+  t.after(() => cleanup(base));
+  openDatabase(join(base, '.gsd', 'gsd.db'));
+  insertMilestone({ id: 'M001', title: 'T', status: 'active' });
+  insertSlice({ id: 'S01', milestoneId: 'M001', title: 'S', status: 'active', depends: [] });
+  insertTask({ id: 'T01', sliceId: 'S01', milestoneId: 'M001', title: 'task', status: 'pending' });
+
+  const atDispatch = readTargetSnapshot('complete-slice', 'M001/S01');
+  assert.ok(atDispatch);
+  const record = () => recordNonAdvancingOutcome({
+    scopeId: SCOPE,
+    guardId: COMPLETED_NO_ADVANCE_GUARD_ID,
+    unitType: 'complete-slice',
+    unitId: 'M001/S01',
+    inputPayload: atDispatch!,
+  });
+  assert.equal(record().tripped, false);
+  const tripped = record();
+  assert.equal(tripped.tripped, true);
+  if (!tripped.tripped) return;
+
+  insertAssessment({
+    path: '.gsd/milestones/M001/M001-ROADMAP-ASSESSMENT.md',
+    milestoneId: 'M001',
+    sliceId: 'S01',
+    status: 'no-changes',
+    scope: 'roadmap',
+    fullContent: 'roadmap is fine',
+    createdAt: '2026-01-02T00:00:00.000Z',
+  });
+
+  assert.equal(
+    readTargetSnapshot('complete-slice', 'M001/S01'),
+    atDispatch,
+    'the roadmap row must stay out of the complete-slice snapshot',
+  );
+  const gc = await garbageCollectResolvedWedges(SCOPE, async (wedge) => recheckCompletedNoAdvanceWedge(wedge));
+  assert.equal(gc.ok, true);
+  if (!gc.ok) return;
+  assert.equal(gc.acknowledged.length, 0, 'an out-of-scope assessment row must not ack another unit type\'s wedge');
+});
+
+test('#2344: a second reassessment run advances the target even with an identical verdict', (t) => {
+  const base = makeBase();
+  t.after(() => cleanup(base));
+  openDatabase(join(base, '.gsd', 'gsd.db'));
+  insertMilestone({ id: 'M001', title: 'T', status: 'active' });
+  insertSlice({ id: 'S01', milestoneId: 'M001', title: 'S', status: 'complete', depends: [] });
+
+  // reassess-roadmap upserts one roadmap-scoped row per milestone (the
+  // projection path is deterministic per milestone), so two runs with the
+  // same verdict differ only in the row they rewrite.
+  const insertRun = (createdAt: string): void => {
+    insertAssessment({
+      path: '.gsd/milestones/M001/M001-ROADMAP-ASSESSMENT.md',
+      milestoneId: 'M001',
+      sliceId: 'S01',
+      status: 'no-changes',
+      scope: 'roadmap',
+      fullContent: 'roadmap is fine',
+      createdAt,
+    });
+  };
+
+  insertRun('2026-01-01T00:00:00.000Z');
+  const afterFirst = readTargetSnapshot('reassess-roadmap', 'M001/S01');
+  assert.ok(afterFirst, 'first run snapshot available');
+  insertRun('2026-01-02T00:00:00.000Z');
+  const afterSecond = readTargetSnapshot('reassess-roadmap', 'M001/S01');
+  assert.notEqual(afterSecond, afterFirst, 'the second run must hash differently so its wedge stays acknowledgeable');
+});
