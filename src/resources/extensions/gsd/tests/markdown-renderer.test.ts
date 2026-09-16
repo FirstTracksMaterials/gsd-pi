@@ -495,6 +495,90 @@ test('── markdown-renderer: renderPlanCheckboxes bidirectional ──', asyn
   }
 });
 
+test('── markdown-renderer: renderPlanCheckboxes silently skips a skipped slice ──', async (t) => {
+  // Regression (#2335): a skipped slice's tasks are all terminal, so
+  // getActivePlanTasks() legitimately returns an empty list. That is valid
+  // historical state — nothing to project — not a "no tasks found" diagnostic.
+  const tmpDir = makeTmpDir();
+  const dbPath = path.join(tmpDir, '.gsd', 'gsd.db');
+  openDatabase(dbPath);
+  clearAllCaches();
+
+  let stderr = '';
+  const originalWrite = process.stderr.write.bind(process.stderr);
+  process.stderr.write = ((chunk: string | Uint8Array) => {
+    stderr += String(chunk);
+    return true;
+  }) as typeof process.stderr.write;
+  t.after(() => { process.stderr.write = originalWrite; });
+  t.after(() => { closeDatabase(); cleanupDir(tmpDir); });
+
+  scaffoldDirs(tmpDir, 'M001', ['S01']);
+  insertMilestone({ id: 'M001', title: 'Test', status: 'active' });
+  insertSlice({ id: 'S01', milestoneId: 'M001', title: 'Slice', status: 'skipped' });
+  insertTask({ id: 'T01', sliceId: 'S01', milestoneId: 'M001', title: 'Only task', status: 'skipped' });
+
+  const ok = await renderPlanCheckboxes(tmpDir, 'M001', 'S01');
+  assert.ok(!ok, 'skipped slice projects nothing (returns false)');
+  assert.doesNotMatch(stderr, /no tasks found/, 'no "no tasks found" diagnostic for a skipped slice');
+});
+
+test('── markdown-renderer: renderPlanCheckboxes still warns on a non-skipped slice with no tasks ──', async (t) => {
+  // Control for #2335: a non-skipped slice with a genuinely empty task list
+  // keeps the existing diagnostic.
+  const tmpDir = makeTmpDir();
+  const dbPath = path.join(tmpDir, '.gsd', 'gsd.db');
+  openDatabase(dbPath);
+  clearAllCaches();
+
+  let stderr = '';
+  const originalWrite = process.stderr.write.bind(process.stderr);
+  process.stderr.write = ((chunk: string | Uint8Array) => {
+    stderr += String(chunk);
+    return true;
+  }) as typeof process.stderr.write;
+  t.after(() => { process.stderr.write = originalWrite; });
+  t.after(() => { closeDatabase(); cleanupDir(tmpDir); });
+
+  scaffoldDirs(tmpDir, 'M001', ['S01']);
+  insertMilestone({ id: 'M001', title: 'Test', status: 'active' });
+  insertSlice({ id: 'S01', milestoneId: 'M001', title: 'Slice', status: 'pending' });
+  // No tasks inserted — genuinely empty.
+
+  const ok = await renderPlanCheckboxes(tmpDir, 'M001', 'S01');
+  assert.ok(!ok, 'returns false when there is nothing to project');
+  assert.match(stderr, /no tasks found/, 'diagnostic preserved for a non-skipped empty slice');
+});
+
+test('── markdown-renderer: renderPlanCheckboxes warns when every task is skipped but the slice is not ──', async (t) => {
+  // Coverage for the #2335 guard: suppression depends on the slice status,
+  // not task content. A non-skipped slice whose tasks are ALL skipped has no
+  // active work and no projection target — the diagnostic must still fire.
+  const tmpDir = makeTmpDir();
+  const dbPath = path.join(tmpDir, '.gsd', 'gsd.db');
+  openDatabase(dbPath);
+  clearAllCaches();
+
+  let stderr = '';
+  const originalWrite = process.stderr.write.bind(process.stderr);
+  process.stderr.write = ((chunk: string | Uint8Array) => {
+    stderr += String(chunk);
+    return true;
+  }) as typeof process.stderr.write;
+  t.after(() => { process.stderr.write = originalWrite; });
+  t.after(() => { closeDatabase(); cleanupDir(tmpDir); });
+
+  scaffoldDirs(tmpDir, 'M001', ['S01']);
+  insertMilestone({ id: 'M001', title: 'Test', status: 'active' });
+  insertSlice({ id: 'S01', milestoneId: 'M001', title: 'Slice', status: 'pending' });
+  insertTask({ id: 'T01', sliceId: 'S01', milestoneId: 'M001', title: 'First task', status: 'skipped' });
+  insertTask({ id: 'T02', sliceId: 'S01', milestoneId: 'M001', title: 'Second task', status: 'skipped' });
+
+  const ok = await renderPlanCheckboxes(tmpDir, 'M001', 'S01');
+  assert.ok(!ok, 'returns false when there is nothing to project');
+  assert.match(stderr, /no tasks found/, 'slice status, not task content, controls suppression');
+});
+
 test('── markdown-renderer: renderPlanFromDb creates parse-compatible slice plan + task plan files ──', { skip: true }, async () => {
   const tmpDir = makeTmpDir();
   const dbPath = path.join(tmpDir, '.gsd', 'gsd.db');
