@@ -1,5 +1,5 @@
 // gsd-pi - Claude Code stream adapter regression tests
-import { describe, mock, test } from "node:test";
+import { describe, beforeEach, afterEach, mock, test } from "node:test";
 import { clearGuidedUnitContext, setGuidedUnitContext } from "../../gsd/guided-unit-context.ts";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -4670,5 +4670,134 @@ describe("bashCommandMatchesSavedRules — compound command bypass", () => {
 			restoreCwd();
 			rmSync(tempDir, { recursive: true, force: true });
 		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Interactive legacy gsd-core skill guard (#2369)
+//
+// Interactive claude-code runs load user settings (settingSources includes
+// "user"), so legacy gsd-core v1 skills under ~/.claude/skills/ are announced
+// and callable. #1395 excluded them from the pi skill catalog; these tests
+// pin the same ownership criterion onto the claude-code Skill tool surface
+// via a default PreToolUse hook.
+// ---------------------------------------------------------------------------
+
+describe("stream-adapter — interactive legacy gsd-core skill guard (#2369)", () => {
+	let scratch: string;
+	let prevHome: string | undefined;
+	const envRestores: Array<() => void> = [];
+
+	beforeEach(() => {
+		scratch = mkdtempSync(join(tmpdir(), "claude-legacy-skill-guard-"));
+		mkdirSync(join(scratch, "project"), { recursive: true });
+		prevHome = process.env.HOME;
+		process.env.HOME = join(scratch, "home");
+
+		// gsd-core installer layout: ~/.claude/{gsd-file-manifest.json, skills/<name>/SKILL.md}
+		const claudeDir = join(process.env.HOME as string, ".claude");
+		writeLegacyGsdCoreFixture(claudeDir, "gsd-plan-phase");
+		// independently authored gsd-* skill: no gsd-core ownership markers
+		const customSkillDir = join(claudeDir, "skills", "gsd-custom");
+		mkdirSync(customSkillDir, { recursive: true });
+		writeFileSync(
+			join(customSkillDir, "SKILL.md"),
+			["---", "name: gsd-custom", "description: independently authored gsd skill", "---", "custom body"].join("\n"),
+		);
+	});
+
+	afterEach(() => {
+		if (prevHome === undefined) delete process.env.HOME;
+		else process.env.HOME = prevHome;
+		for (const restore of envRestores.splice(0)) restore();
+		rmSync(scratch, { recursive: true, force: true });
+	});
+
+	function writeLegacyGsdCoreFixture(claudeDir: string, skillName: string): void {
+		const skillDir = join(claudeDir, "skills", skillName);
+		mkdirSync(skillDir, { recursive: true });
+		writeFileSync(
+			join(skillDir, "SKILL.md"),
+			["---", `name: ${skillName}`, "description: legacy gsd-core v1 skill", "---", "legacy body"].join("\n"),
+		);
+		writeFileSync(
+			join(claudeDir, "gsd-file-manifest.json"),
+			JSON.stringify({ files: { [`skills/${skillName}/SKILL.md`]: {} } }),
+		);
+	}
+
+	function pushEnv(key: string, value: string): void {
+		const prev = process.env[key];
+		envRestores.push(() => {
+			if (prev === undefined) delete process.env[key];
+			else process.env[key] = prev;
+		});
+		process.env[key] = value;
+	}
+
+	function buildInteractiveOptions(): Record<string, unknown> {
+		envRestores.push(setWorkflowMcpEnv({
+			GSD_WORKFLOW_MCP_COMMAND: "node",
+			GSD_WORKFLOW_MCP_NAME: "gsd-workflow",
+			GSD_WORKFLOW_MCP_ARGS: JSON.stringify(["packages/mcp-server/dist/cli.js"]),
+			GSD_WORKFLOW_MCP_ENV: JSON.stringify({ GSD_CLI_PATH: "/tmp/gsd" }),
+			GSD_WORKFLOW_MCP_CWD: "/tmp/project",
+		}));
+		return buildSdkOptions("claude-sonnet-4-20250514", "test", undefined, {
+			cwd: join(scratch, "project"),
+		});
+	}
+
+	type PreToolUseDecision = {
+		hookSpecificOutput?: { permissionDecision?: "allow" | "deny" | "ask"; permissionDecisionReason?: string };
+	};
+
+	async function invokeSkillHook(options: Record<string, unknown>, skillName: string): Promise<PreToolUseDecision> {
+		const hooks = options.hooks as
+			| { PreToolUse?: Array<{ matcher?: string; hooks: Array<(input: unknown) => Promise<PreToolUseDecision>> }> }
+			| undefined;
+		const matchers = hooks?.PreToolUse;
+		assert.ok(Array.isArray(matchers) && matchers.length > 0, "expected a registered PreToolUse hook matcher");
+		assert.equal(matchers[0].matcher, "Skill");
+		return matchers[0].hooks[0]({
+			hook_event_name: "PreToolUse",
+			tool_name: "Skill",
+			tool_input: { skill: skillName },
+			tool_use_id: "tu_guard_1",
+		});
+	}
+
+	test("denies legacy gsd-core skills and points at the workflow MCP tools", async () => {
+		const options = buildInteractiveOptions();
+		const decision = await invokeSkillHook(options, "gsd-plan-phase");
+		assert.equal(decision.hookSpecificOutput?.permissionDecision, "deny");
+		assert.match(decision.hookSpecificOutput?.permissionDecisionReason ?? "", /mcp__gsd-workflow__gsd_/);
+	});
+
+	test("keeps independently authored gsd-* skills callable", async () => {
+		const options = buildInteractiveOptions();
+		const decision = await invokeSkillHook(options, "gsd-custom");
+		assert.notEqual(decision.hookSpecificOutput?.permissionDecision, "deny");
+	});
+
+	test("registers no Skill hook during gsdPhase runs (auto-mode unchanged)", () => {
+		envRestores.push(setWorkflowMcpEnv({
+			GSD_WORKFLOW_MCP_COMMAND: "node",
+			GSD_WORKFLOW_MCP_NAME: "gsd-workflow",
+			GSD_WORKFLOW_MCP_ARGS: JSON.stringify(["packages/mcp-server/dist/cli.js"]),
+			GSD_WORKFLOW_MCP_CWD: "/tmp/project",
+		}));
+		const options = buildSdkOptions("claude-sonnet-4-20250514", "test", undefined, {
+			cwd: join(scratch, "project"),
+			gsdPhase: "plan-milestone",
+		});
+		assert.equal(options.hooks, undefined);
+		assert.ok((options.disallowedTools as string[]).includes("Skill"));
+	});
+
+	test("GSD_CLAUDE_CODE_LEGACY_SKILL_FILTER=0 removes the guard", () => {
+		pushEnv("GSD_CLAUDE_CODE_LEGACY_SKILL_FILTER", "0");
+		const options = buildInteractiveOptions();
+		assert.equal(options.hooks, undefined);
 	});
 });
