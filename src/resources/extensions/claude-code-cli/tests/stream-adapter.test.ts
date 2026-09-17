@@ -1619,6 +1619,23 @@ describe("stream-adapter — print bg wait ceiling (#1855)", () => {
 	});
 });
 
+// #2365: gsd-pi always disallows Claude Code's native task tools — the workflow MCP owns task tracking.
+const NATIVE_TASK_TOOLS_DISALLOWED = ["TaskCreate", "TaskUpdate", "TaskList", "TaskGet"];
+
+describe("stream-adapter — native task tool gating (#2365)", () => {
+	test("buildSdkOptions disallows Claude Code's native task tools for normal runs", () => {
+		const options = buildSdkOptions("claude-sonnet-4-20250514", "test prompt");
+		const disallowed = options.disallowedTools as string[];
+		assert.ok(Array.isArray(disallowed), "disallowedTools must be an array");
+		for (const toolName of NATIVE_TASK_TOOLS_DISALLOWED) {
+			assert.ok(
+				disallowed.includes(toolName),
+				`${toolName} must be in disallowedTools — task tracking is owned by the workflow MCP (#2365)`,
+			);
+		}
+	});
+});
+
 describe("stream-adapter — session persistence (#2859)", () => {
 	test("buildSdkOptions enables persistSession by default", () => {
 		const options = buildSdkOptions("claude-sonnet-4-20250514", "test prompt");
@@ -1851,7 +1868,7 @@ describe("stream-adapter — session persistence (#2859)", () => {
 			assert.equal(srv.env.GSD_CLI_PATH, "/tmp/gsd");
 			assert.equal(srv.env.GSD_PERSIST_WRITE_GATE_STATE, "1");
 			assert.equal(srv.env.GSD_WORKFLOW_PROJECT_ROOT, "/tmp/project");
-			assert.deepEqual(options.disallowedTools, ["AskUserQuestion"]);
+			assert.deepEqual(options.disallowedTools, [...NATIVE_TASK_TOOLS_DISALLOWED, "AskUserQuestion"]);
 			assert.deepEqual(options.allowedTools, [
 				"Read",
 				"Write",
@@ -2285,7 +2302,7 @@ describe("stream-adapter — session persistence (#2859)", () => {
 			const mcpServers = options.mcpServers as Record<string, any>;
 			assert.ok(mcpServers?.["custom-workflow"], "expected custom workflow server config");
 			assert.ok(mcpServers?.["gsd-browser"], "expected gsd-browser server config");
-			assert.deepEqual(options.disallowedTools, ["AskUserQuestion"]);
+			assert.deepEqual(options.disallowedTools, [...NATIVE_TASK_TOOLS_DISALLOWED, "AskUserQuestion"]);
 			assert.deepEqual(options.allowedTools, [
 				"Read",
 				"Write",
@@ -2331,9 +2348,9 @@ describe("stream-adapter — session persistence (#2859)", () => {
 			if (mcpServers) {
 				assert.ok(mcpServers["gsd-workflow"], "if present, must include gsd-workflow");
 				assert.ok(mcpServers["gsd-browser"], "if present, must include gsd-browser");
-				assert.deepEqual((options as any).disallowedTools, ["AskUserQuestion"]);
+				assert.deepEqual((options as any).disallowedTools, [...NATIVE_TASK_TOOLS_DISALLOWED, "AskUserQuestion"]);
 			} else {
-				assert.deepEqual((options as any).disallowedTools, ["ToolSearch"]);
+				assert.deepEqual((options as any).disallowedTools, [...NATIVE_TASK_TOOLS_DISALLOWED, "ToolSearch"]);
 			}
 			rmSync(emptyDir, { recursive: true, force: true });
 		} finally {
@@ -2373,7 +2390,7 @@ describe("stream-adapter — session persistence (#2859)", () => {
 			assert.equal(srv.env.GSD_CLI_PATH, "/tmp/gsd");
 			assert.equal(srv.env.GSD_PERSIST_WRITE_GATE_STATE, "1");
 			assert.equal(srv.env.GSD_WORKFLOW_PROJECT_ROOT, resolvedRepoDir);
-			assert.deepEqual(options.disallowedTools, ["AskUserQuestion"]);
+			assert.deepEqual(options.disallowedTools, [...NATIVE_TASK_TOOLS_DISALLOWED, "AskUserQuestion"]);
 		} finally {
 			process.chdir(originalCwd);
 			rmSync(repoDir, { recursive: true, force: true });

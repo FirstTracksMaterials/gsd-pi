@@ -2317,6 +2317,11 @@ export function buildSdkOptions(
 		: [];
 	const allowToolSearchForWorkflowMcp = workflowMcpTools.length > 0 || exactWorkflowMcpTools.length > 0;
 	const disallowedTools: string[] = [...new Set([
+		// Task tracking is owned by the workflow MCP (#2365) — native task tools invite a parallel task list plus task_reminder nudges.
+		"TaskCreate",
+		"TaskUpdate",
+		"TaskList",
+		"TaskGet",
 		...(allowToolSearchForWorkflowMcp ? [] : ["ToolSearch"]),
 		...(gsdPhase ? ["Skill"] : []),
 		...(workflowMcpTools.length > 0 || exactWorkflowMcpTools.length > 0 ? ["AskUserQuestion"] : []),
