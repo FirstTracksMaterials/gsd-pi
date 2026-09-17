@@ -27,10 +27,13 @@ import {
   getSlice,
   insertArtifact,
   deleteArtifactByPath,
+  getArtifact,
+  getArtifactContentHash,
   getGateResults,
   getDbOrNull,
   isDbAvailable,
 } from "./gsd-db.js";
+import { createHash } from "node:crypto";
 import type { MilestoneRow, ArtifactRow } from "./db-milestone-artifact-rows.js";
 import type { SliceRow, TaskRow } from "./db-task-slice-rows.js";
 import type { GateRow } from "./types.js";
@@ -266,10 +269,91 @@ function sanitizeInlineRoadmapText(value: string | null | undefined): string {
     .trim();
 }
 
+// ─── Skip-if-unchanged (#2349) ────────────────────────────────────────────
+// A zero-drift rebuild previously rewrote every projection: an fsync'd
+// saveFile plus a full-content artifact row plus invalidateCaches() per file,
+// which takes hours on large projects. writeAndStore therefore short-circuits
+// only when ALL three baselines already match this render — on-disk bytes,
+// the DB artifact row (content AND artifact_type/milestone/slice/task scope),
+// and the compat-marker entry (sha AND entity scope). Any single mismatch — a
+// drifted file, a missing/diverged/mis-scoped row, an absent/mis-scoped
+// marker entry — falls through to the normal write path, so drift repair is
+// never skipped.
+function projectionEntities(opts: {
+  milestone_id: string;
+  slice_id?: string;
+  task_id?: string;
+}): string[] {
+  const entities: string[] = [];
+  if (opts.milestone_id) entities.push(opts.milestone_id);
+  if (opts.milestone_id && opts.slice_id) entities.push(`${opts.milestone_id}/${opts.slice_id}`);
+  if (opts.milestone_id && opts.slice_id && opts.task_id) entities.push(`${opts.milestone_id}/${opts.slice_id}/${opts.task_id}`);
+  return entities;
+}
+
+function projectionWriteAlreadyApplied(
+  absPath: string,
+  artifactPath: string,
+  stamped: string,
+  basePath: string,
+  opts: {
+    artifact_type: string;
+    milestone_id: string;
+    slice_id?: string;
+    task_id?: string;
+  },
+): boolean {
+  let disk: Buffer;
+  try {
+    disk = readFileSync(absPath);
+  } catch {
+    return false;
+  }
+  if (!disk.equals(Buffer.from(stamped, "utf-8"))) return false;
+
+  const artifact = getArtifact(artifactPath);
+  if (
+    !artifact ||
+    artifact.full_content !== stamped ||
+    artifact.artifact_type !== opts.artifact_type ||
+    artifact.milestone_id !== opts.milestone_id ||
+    (artifact.slice_id ?? null) !== (opts.slice_id ?? null) ||
+    (artifact.task_id ?? null) !== (opts.task_id ?? null)
+  ) {
+    return false;
+  }
+  // insertArtifact recomputes content_hash on every write; a row whose hash
+  // diverged (NULL or stale) must be repaired, not skipped (#2349).
+  const storedHash = getArtifactContentHash(artifactPath);
+  if (storedHash !== createHash("sha256").update(stamped).digest("hex")) {
+    return false;
+  }
+
+  if (basePath) {
+    try {
+      const entry = readCompatMarker(basePath).projections[artifactPath];
+      const entities = projectionEntities(opts);
+      if (
+        !entry ||
+        entry.sha !== computeProjectionSha(stamped) ||
+        entry.entities.length !== entities.length ||
+        !entities.every((id, i) => entry.entities[i] === id)
+      ) {
+        return false;
+      }
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
+
 /**
  * Write rendered content to disk and update the artifacts table.
  * The content is stamped with the current DB state version before writing;
  * disk bytes, artifact content, and the returned string are identical.
+ * When every baseline already matches (#2349), the write is skipped and the
+ * stamped content is still returned.
  */
 async function writeAndStore(
   absPath: string,
@@ -284,6 +368,9 @@ async function writeAndStore(
   basePath: string,
 ): Promise<string> {
   const stamped = stampProjectionContent(content);
+  if (projectionWriteAlreadyApplied(absPath, artifactPath, stamped, basePath, opts)) {
+    return stamped;
+  }
   await saveFile(absPath, stamped);
 
   try {
@@ -311,11 +398,7 @@ async function writeAndStore(
   // marker. basePath is optional only to avoid forcing every caller; when
   // present, the marker gets updated. artifactPath is already .gsd/-relative.
   if (basePath) {
-    const entities: string[] = [];
-    if (opts.milestone_id) entities.push(opts.milestone_id);
-    if (opts.milestone_id && opts.slice_id) entities.push(`${opts.milestone_id}/${opts.slice_id}`);
-    if (opts.milestone_id && opts.slice_id && opts.task_id) entities.push(`${opts.milestone_id}/${opts.slice_id}/${opts.task_id}`);
-    recordProjectionWrite(basePath, artifactPath, entities, stamped);
+    recordProjectionWrite(basePath, artifactPath, projectionEntities(opts), stamped);
   }
 
   invalidateCaches();
