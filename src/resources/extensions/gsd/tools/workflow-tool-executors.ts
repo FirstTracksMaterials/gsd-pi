@@ -2363,8 +2363,11 @@ export async function executePlanSlice(
       isError: true,
       };
     }
+    const zeroTaskWarning = result.planPath === "" && result.taskPlanPaths.length === 0
+      ? "\n\nWarning: no non-skipped tasks remain for this slice. Pass tasks to gsd_plan_slice or call gsd_plan_task to persist them."
+      : "";
     return {
-      content: [{ type: "text", text: `Planned slice ${result.sliceId} (${result.milestoneId})` }],
+      content: [{ type: "text", text: `Planned slice ${result.sliceId} (${result.milestoneId})${zeroTaskWarning}` }],
       details: {
         operation: "plan_slice",
         milestoneId: result.milestoneId,
