@@ -1655,6 +1655,10 @@ test("executeUatResultSave accepts gsd_uat_exec evidence written in a milestone 
       join(worktreeExecDir, `${evidenceId}.meta.json`),
       JSON.stringify({
         id: evidenceId,
+        exit_code: 0,
+        signal: null,
+        timed_out: false,
+        aborted: false,
         metadata: {
           kind: "uat_exec",
           milestoneId: "M001",
@@ -1741,6 +1745,96 @@ test("executeUatResultSave accepts gsd_uat_exec evidence written in a milestone 
     closeDatabase();
     cleanup(base);
   }
+});
+
+test("executeUatResultSave rejects a PASS verdict citing failed gsd_uat_exec evidence and leaves the UAT gate unwritten", async (t) => {
+  const base = makeTmpBase();
+  const worktree = join(base, ".gsd", "worktrees", "M001");
+  const worktreeExecDir = join(worktree, ".gsd", "exec");
+  const evidenceId = "uat-failed-exec-evidence";
+  t.after(() => {
+    closeDatabase();
+    cleanup(base);
+  });
+  openTestDb(base);
+  seedMilestone("M001", "Milestone One");
+  seedSlice("M001", "S08", "complete");
+  mkdirSync(worktreeExecDir, { recursive: true });
+  writeFileSync(
+    join(worktreeExecDir, `${evidenceId}.meta.json`),
+    JSON.stringify({
+      id: evidenceId,
+      exit_code: 1,
+      signal: null,
+      timed_out: false,
+      aborted: false,
+      metadata: {
+        kind: "uat_exec",
+        milestoneId: "M001",
+        sliceId: "S08",
+        checkId: "UAT-01",
+        intent: "uat-runtime-check",
+      },
+    }),
+    "utf-8",
+  );
+
+  const selectUatGate = _getAdapter()!.prepare(
+    "SELECT verdict FROM quality_gates WHERE milestone_id = ? AND slice_id = ? AND gate_id = ?",
+  );
+  assert.equal(
+    selectUatGate.get("M001", "S08", "UAT"),
+    undefined,
+    "fixture should start with no UAT quality gate row",
+  );
+
+  const result = await inProjectDir(worktree, () => executeUatResultSave({
+    milestoneId: "M001",
+    sliceId: "S08",
+    uatType: "runtime-executable",
+    verdict: "PASS",
+    checks: [{
+      id: "UAT-01",
+      description: "Runtime check claims success",
+      mode: "runtime",
+      result: "PASS",
+      evidence: [{ kind: "gsd_uat_exec", ref: evidenceId }],
+      notes: "Claims the cited run passed.",
+    }],
+    presentation: {
+      surface: "mcp",
+      presentedTools: [
+        "gsd_uat_exec",
+        "gsd_uat_result_save",
+        "gsd_resume",
+        "gsd_milestone_status",
+        "gsd_journal_query",
+      ],
+      blockedTools: [
+        { name: "gsd_exec", reason: "forbidden during run-uat" },
+        { name: "gsd_summary_save", reason: "forbidden during run-uat" },
+        { name: "gsd_save_gate_result", reason: "forbidden during run-uat" },
+      ],
+    },
+    notes: "UAT passed.",
+  }, worktree));
+
+  assert.equal(result.isError, true);
+  assert.equal(result.details.error, "invalid_evidence");
+  const message = String(result.content[0]?.text ?? "");
+  assert.match(message, /check UAT-01/);
+  assert.match(message, new RegExp(evidenceId));
+  assert.match(message, /exit_code=1/);
+  assert.equal(
+    existsSync(join(base, ".gsd", "uat", "M001", "S08", "attempt-1.json")),
+    false,
+    "rejected PASS save must not persist an attempt artifact",
+  );
+  assert.equal(
+    selectUatGate.get("M001", "S08", "UAT"),
+    undefined,
+    "rejected PASS save must not write a UAT quality gate row",
+  );
 });
 
 test("executeUatResultSave leaves UAT pending after a harness-aborted turn", async () => {
@@ -1855,6 +1949,10 @@ test("executeUatResultSave supplies canonical presentation and normalizes verdic
       join(worktreeExecDir, `${evidenceId}.meta.json`),
       JSON.stringify({
         id: evidenceId,
+        exit_code: 0,
+        signal: null,
+        timed_out: false,
+        aborted: false,
         metadata: {
           kind: "uat_exec",
           milestoneId: "M001",
@@ -1912,6 +2010,10 @@ test("executeUatResultSave supplies direct browser tools for browser-executable 
       join(worktreeExecDir, `${evidenceId}.meta.json`),
       JSON.stringify({
         id: evidenceId,
+        exit_code: 0,
+        signal: null,
+        timed_out: false,
+        aborted: false,
         metadata: {
           kind: "uat_exec",
           milestoneId: "M001",
@@ -1973,6 +2075,10 @@ test("executeUatResultSave merges canonical plan ID and read-only tools when pre
       join(worktreeExecDir, `${evidenceId}.meta.json`),
       JSON.stringify({
         id: evidenceId,
+        exit_code: 0,
+        signal: null,
+        timed_out: false,
+        aborted: false,
         metadata: {
           kind: "uat_exec",
           milestoneId: "M001",
@@ -2046,6 +2152,10 @@ test("executeUatResultSave surfaces the worktree validation path and notificatio
       join(worktreeExecDir, `${evidenceId}.meta.json`),
       JSON.stringify({
         id: evidenceId,
+        exit_code: 0,
+        signal: null,
+        timed_out: false,
+        aborted: false,
         metadata: {
           kind: "uat_exec",
           milestoneId: "M001",
@@ -2128,6 +2238,10 @@ test("executeUatResultSave omits manual-validation guidance when no human checks
       join(worktreeExecDir, `${evidenceId}.meta.json`),
       JSON.stringify({
         id: evidenceId,
+        exit_code: 0,
+        signal: null,
+        timed_out: false,
+        aborted: false,
         metadata: {
           kind: "uat_exec",
           milestoneId: "M001",
@@ -2260,6 +2374,10 @@ test("executeUatResultSave rejects artifact-driven PASS with human follow-up che
       join(worktreeExecDir, `${evidenceId}.meta.json`),
       JSON.stringify({
         id: evidenceId,
+        exit_code: 0,
+        signal: null,
+        timed_out: false,
+        aborted: false,
         metadata: {
           kind: "uat_exec",
           milestoneId: "M001",
