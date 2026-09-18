@@ -27,6 +27,7 @@ import { deriveState, invalidateStateCache } from "../state.ts";
 import { autoSession } from "../auto-runtime-state.ts";
 import { normalizeRealPath, relSliceFile, targetMilestoneFile } from "../paths.ts";
 import { _setManagedProjectionWriteFaultForTest } from "../managed-projection-history.ts";
+import { handlePlanTask } from "../tools/plan-task.ts";
 import { recordUnitHarnessAbort } from "../unit-runtime.ts";
 import { markApprovalGateVerified, markDepthVerified, clearDiscussionFlowState, loadWriteGateSnapshot, setPendingGate } from "../bootstrap/write-gate.ts";
 import {
@@ -1927,6 +1928,94 @@ test("executePlanSlice accepts metadata-only incremental planning payloads", asy
     closeDatabase();
     cleanup(base);
   }
+});
+
+test("executePlanSlice warns when the slice ends with zero non-skipped tasks", async (t) => {
+  const base = makeTmpBase();
+  t.after(() => {
+    closeDatabase();
+    cleanup(base);
+  });
+  openTestDb(base);
+  await inProjectDir(base, () => executePlanMilestone(validMilestonePlan(), base));
+
+  const result = await inProjectDir(base, () => executePlanSlice({
+    milestoneId: "M001",
+    sliceId: "S01",
+    goal: "Persist slice metadata before tasks.",
+  }, base));
+
+  assert.equal(result.isError, undefined);
+  assert.match(result.content[0].text, /Planned slice S01/);
+  assert.match(result.content[0].text, /no non-skipped tasks remain/);
+  assert.match(result.content[0].text, /gsd_plan_task/);
+});
+
+test("executePlanSlice omits the zero-task warning when tasks are persisted", async (t) => {
+  const base = makeTmpBase();
+  t.after(() => {
+    closeDatabase();
+    cleanup(base);
+  });
+  openTestDb(base);
+  await inProjectDir(base, () => executePlanMilestone(validMilestonePlan(), base));
+
+  const result = await inProjectDir(base, () => executePlanSlice({
+    milestoneId: "M001",
+    sliceId: "S01",
+    goal: "Persist slice plan over MCP.",
+    tasks: [
+      {
+        taskId: "T01",
+        title: "Add planning bridge",
+        description: "Implement the shared executor path.",
+        estimate: "15m",
+        files: ["src/resources/extensions/gsd/tools/workflow-tool-executors.ts"],
+        verify: "node --test",
+        inputs: [],
+        expectedOutput: ["src/bridge-status.md"],
+      },
+    ],
+  }, base));
+
+  assert.equal(result.isError, undefined);
+  assert.match(result.content[0].text, /Planned slice S01/);
+  assert.doesNotMatch(result.content[0].text, /no non-skipped tasks remain/);
+});
+
+test("executePlanSlice omits the zero-task warning for metadata-only replans over planned tasks", async (t) => {
+  const base = makeTmpBase();
+  t.after(() => {
+    closeDatabase();
+    cleanup(base);
+  });
+  openTestDb(base);
+  await inProjectDir(base, () => executePlanMilestone(validMilestonePlan(), base));
+
+  const plannedTask = await inProjectDir(base, () => handlePlanTask({
+    milestoneId: "M001",
+    sliceId: "S01",
+    taskId: "T01",
+    title: "Add planning bridge",
+    description: "Implement the shared executor path.",
+    estimate: "15m",
+    files: ["src/resources/extensions/gsd/tools/workflow-tool-executors.ts"],
+    verify: "node --test",
+    inputs: [],
+    expectedOutput: ["src/bridge-status.md"],
+  }, base, internalPlanningInvocation()));
+  assert.ok(!("error" in plannedTask), `plan_task failed: ${JSON.stringify(plannedTask)}`);
+
+  const result = await inProjectDir(base, () => executePlanSlice({
+    milestoneId: "M001",
+    sliceId: "S01",
+    goal: "Persist slice metadata after planning a task.",
+  }, base));
+
+  assert.equal(result.isError, undefined);
+  assert.match(result.content[0].text, /Planned slice S01/);
+  assert.notEqual(result.details.planPath, "");
+  assert.doesNotMatch(result.content[0].text, /no non-skipped tasks remain/);
 });
 
 test("executeUatResultSave accepts gsd_uat_exec evidence written in a milestone worktree", async () => {
