@@ -1221,6 +1221,14 @@ export function getArtifact(path: string): ArtifactRow | null {
   return rowToArtifact(row);
 }
 
+/** Stored content_hash for one artifact row, or null when the row is missing. */
+export function getArtifactContentHash(path: string): string | null {
+  if (!getDbOrNull()!) return null;
+  const row = getDbOrNull()!.prepare("SELECT content_hash FROM artifacts WHERE path = :path").get({ ":path": path }) as Record<string, unknown> | undefined;
+  if (!row) return null;
+  return (row["content_hash"] as string) ?? null;
+}
+
 /** Milestone-level artifacts (CONTEXT, RESEARCH, VALIDATION, etc.) from the artifacts table. */
 export function getMilestoneScopedArtifacts(milestoneId: string): ArtifactRow[] {
   if (!getDbOrNull()!) return [];
