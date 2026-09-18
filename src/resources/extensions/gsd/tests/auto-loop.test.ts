@@ -8913,3 +8913,227 @@ test("autoLoop classifies ModelPolicyDispatchBlockedError as blocked, not a retr
   assert.equal(pausedTurn!.unitType, "research-slice", "onTurnResult must receive the blocked unitType from the typed error");
   assert.equal(pausedTurn!.unitId, "M001/S01", "onTurnResult must receive the blocked unitId from the typed error");
 });
+
+// ─── #2385: cooldown retries must not feed the ADR-047 liveness backstop ─────
+
+/**
+ * The bounded cooldown wait must not run in real time: resolve every wait on
+ * the next microtask so the loop proceeds immediately.
+ */
+function stubCooldownWaitImmediate(t: TestContext): void {
+  const originalSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = ((fn: () => void) => {
+    queueMicrotask(fn);
+    return 0 as unknown as ReturnType<typeof setTimeout>;
+  }) as typeof setTimeout;
+  t.after(() => {
+    globalThis.setTimeout = originalSetTimeout;
+  });
+}
+
+function loopSignatureRows(
+  scope: string,
+): Array<{ guard_id: string; occurrence_count: number }> {
+  return _getAdapter()!.prepare(
+    "SELECT guard_id, occurrence_count FROM liveness_block_signatures WHERE scope_id = :scope",
+  ).all({ ":scope": scope }) as Array<{ guard_id: string; occurrence_count: number }>;
+}
+
+interface CooldownRig {
+  orchestration: AutoOrchestrationModule;
+  advanceCalls: () => number;
+  notifications: string[];
+  stopReasons: Array<string | undefined>;
+}
+
+/**
+ * Orchestration fixture that dispatches the same unit every iteration until
+ * `maxAdvances` dispatches, then winds the loop down. Pair it with a
+ * `taskExecutionBoundary` override that returns the per-call unit-phase result.
+ */
+function makeCooldownLoopRig(
+  s: any,
+  opts: { maxAdvances: number },
+): CooldownRig {
+  const unit = { unitType: "execute-task", unitId: "M001/S01/T01" };
+  const stateSnapshot = {
+    phase: "executing",
+    activeMilestone: { id: "M001", title: "Test Milestone", status: "active" },
+    activeSlice: { id: "S01", title: "Test Slice" },
+    activeTask: { id: "T01" },
+    registry: [{ id: "M001", status: "active" }],
+    blockers: [],
+  } as any;
+  let advanceCalls = 0;
+  const notifications: string[] = [];
+  const stopReasons: Array<string | undefined> = [];
+  const orchestration = {
+    start: async () => ({ kind: "stopped" as const, reason: "unused" }),
+    advance: async () => {
+      advanceCalls++;
+      if (advanceCalls > opts.maxAdvances) {
+        s.active = false;
+        return { kind: "stopped" as const, reason: "test wind-down" };
+      }
+      return { kind: "advanced" as const, unit, stateSnapshot, dispatchId: 1 };
+    },
+    settle: async () => {},
+    completeActiveUnit: async () => {},
+    retryActiveUnit: async () => {},
+    abandonActiveUnit: async () => {},
+    resume: async () => ({ kind: "stopped" as const, reason: "unused" }),
+    stop: async (reason: string) => ({ kind: "stopped" as const, reason }),
+    getStatus: () => ({ phase: "running" as const, transitionCount: advanceCalls }),
+  } satisfies AutoOrchestrationModule;
+  return { orchestration, advanceCalls: () => advanceCalls, notifications, stopReasons };
+}
+
+test("#2385: two budgeted credential-cooldown retries never mint a liveness wedge", async (t) => {
+  _resetPendingResolve();
+
+  const ctx = makeMockCtx();
+  ctx.ui.setStatus = () => {};
+  const pi = makeMockPi();
+  const s = makeLoopSession({ currentMilestoneId: "M001" });
+  const rig = makeCooldownLoopRig(s, { maxAdvances: 2 });
+  s.orchestration = rig.orchestration;
+  openLoopDatabase(t, s);
+  stubCooldownWaitImmediate(t);
+  const deps = makeMockDeps({
+    adjudicateNonAdvancingOutcome: undefined,
+    taskExecutionBoundary: async () => ({
+      action: "retry" as const,
+      reason: "credential-cooldown",
+      data: { retryAfterMs: 30_000 },
+    }),
+    stopAuto: async (_ctx, _pi, reason) => {
+      rig.stopReasons.push(reason);
+      s.active = false;
+    },
+  });
+  ctx.ui.notify = (message: string) => rig.notifications.push(message);
+
+  await autoLoop(ctx, pi, s, deps);
+
+  // Both cooldowns stayed inside the sanctioned budget and were announced as
+  // budgeted retries — the protocol the user sees ("(1/5)", "(2/5)").
+  assert.match(rig.notifications.join("\n"), /Credentials in cooldown \(1\/5\)/);
+  assert.match(rig.notifications.join("\n"), /Credentials in cooldown \(2\/5\)/);
+  // The loop retried after BOTH cooldowns: the third dispatch attempt is the
+  // wind-down advance. Pre-fix, the second cooldown's constant signature
+  // tripped the backstop and killed the loop here.
+  assert.equal(rig.advanceCalls(), 3, "both budgeted cooldown retries must redispatch the unit");
+  // A budgeted cooldown retry is not a non-advancing outcome: no trip notice,
+  // no wedge record, no signature row for the cooldown retry path.
+  assert.equal(
+    rig.notifications.some((n) => /liveness backstop tripped/.test(n)),
+    false,
+    "the second cooldown must not trip the liveness backstop",
+  );
+  const wedge = getOpenWedge(realpathSync(s.basePath));
+  assert.equal(wedge.ok, true);
+  assert.equal(wedge.ok ? wedge.wedge : null, null, "no wedge may exist for budgeted cooldown retries");
+  const cooldownSigRows = loopSignatureRows(realpathSync(s.basePath)).filter(
+    (row) => row.guard_id === "credential-cooldown",
+  );
+  assert.deepEqual(cooldownSigRows, [], "the cooldown retry path must not record a liveness signature");
+});
+
+test("#2385: the exhausted cooldown terminal still records credential-cooldown-exhausted", async (t) => {
+  _resetPendingResolve();
+
+  const ctx = makeMockCtx();
+  ctx.ui.setStatus = () => {};
+  const pi = makeMockPi();
+  const s = makeLoopSession({ currentMilestoneId: "M001" });
+  const rig = makeCooldownLoopRig(s, { maxAdvances: 10 });
+  s.orchestration = rig.orchestration;
+  openLoopDatabase(t, s);
+  stubCooldownWaitImmediate(t);
+  const deps = makeMockDeps({
+    adjudicateNonAdvancingOutcome: undefined,
+    taskExecutionBoundary: async () => ({
+      action: "retry" as const,
+      reason: "credential-cooldown",
+      data: { retryAfterMs: 30_000 },
+    }),
+    stopAuto: async (_ctx, _pi, reason) => {
+      rig.stopReasons.push(reason);
+      s.active = false;
+    },
+  });
+  ctx.ui.notify = (message: string) => rig.notifications.push(message);
+
+  await autoLoop(ctx, pi, s, deps);
+
+  // The full budget was advertised to the user, then the terminal fired.
+  assert.match(rig.notifications.join("\n"), /Credentials in cooldown \(5\/5\)/);
+  assert.match(rig.notifications.join("\n"), /Auto-mode stopped: 6 consecutive credential cooldowns/);
+  assert.deepEqual(
+    rig.stopReasons.filter((reason) => /consecutive credential cooldowns exceeded retry budget/.test(reason ?? "")),
+    ["6 consecutive credential cooldowns exceeded retry budget"],
+    "the sanctioned exhausted-budget stop must fire",
+  );
+  // The exhausted terminal is the one liveness signature this failure family
+  // produces: recorded once, without tripping, and the retry path contributes
+  // no signature rows at all.
+  assert.equal(
+    rig.notifications.some((n) => /liveness backstop tripped/.test(n)),
+    false,
+    "a single exhausted budget must not mint a wedge",
+  );
+  const rows = loopSignatureRows(realpathSync(s.basePath));
+  assert.deepEqual(
+    rows.filter((row) => row.guard_id === "credential-cooldown"),
+    [],
+    "budgeted cooldown retries must leave no signature rows",
+  );
+  assert.deepEqual(
+    rows.filter((row) => row.guard_id === "credential-cooldown-exhausted"),
+    [{ guard_id: "credential-cooldown-exhausted", occurrence_count: 1 }],
+    "the exhausted terminal must record its signature",
+  );
+  const wedge = getOpenWedge(realpathSync(s.basePath));
+  assert.equal(wedge.ok, true);
+  assert.equal(wedge.ok ? wedge.wedge : null, null);
+});
+
+test("#2385: the adjacent unit-retry guard still trips on unchanged payloads", async (t) => {
+  _resetPendingResolve();
+
+  const ctx = makeMockCtx();
+  ctx.ui.setStatus = () => {};
+  const pi = makeMockPi();
+  const s = makeLoopSession({ currentMilestoneId: "M001" });
+  const rig = makeCooldownLoopRig(s, { maxAdvances: 5 });
+  s.orchestration = rig.orchestration;
+  openLoopDatabase(t, s);
+  const deps = makeMockDeps({
+    adjudicateNonAdvancingOutcome: undefined,
+    taskExecutionBoundary: async () => ({
+      action: "retry" as const,
+      reason: "unit-retry-boom",
+    }),
+    stopAuto: async (_ctx, _pi, reason) => {
+      rig.stopReasons.push(reason);
+      s.active = false;
+    },
+  });
+  ctx.ui.notify = (message: string) => rig.notifications.push(message);
+
+  await autoLoop(ctx, pi, s, deps);
+
+  // The nearest sibling finishTurn("retry", …) call site is unchanged: a
+  // non-advancing retry with a constant payload still trips at 2.
+  const wedge = getOpenWedge(realpathSync(s.basePath));
+  assert.equal(wedge.ok, true);
+  assert.ok(wedge.ok && wedge.wedge, "the unit-retry guard must still mint a wedge");
+  if (wedge.ok && wedge.wedge) {
+    assert.equal(wedge.wedge.guardId, "unit-retry");
+    assert.equal(wedge.wedge.occurrenceCount, 2);
+  }
+  assert.ok(
+    rig.stopReasons.some((reason) => /liveness backstop tripped: unit-retry/.test(reason ?? "")),
+    "the unit-retry wedge must surface as the blocked stop reason",
+  );
+});
