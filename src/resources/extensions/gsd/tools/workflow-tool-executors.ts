@@ -16,6 +16,7 @@ import {
   getUnresolvedBlockingReworkFindingsForTask,
   insertMilestone,
   insertAssessment,
+  insertAuditEvent,
   insertGateRun,
   readTransaction,
   saveGateResult,
@@ -43,6 +44,7 @@ import { generateRequirementsMd, saveArtifactToDb } from "../db-writer.js";
 import { clearPathCache, normalizeRealPath, relMilestoneFile, relSliceFile, relSlicePath, resolveGsdPathContract, resolveMilestoneFile, resolveSliceFile } from "../paths.js";
 import { saveFile, clearParseCache } from "../files.js";
 import { removeProjectionFileSync } from "../atomic-write.js";
+import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import type { CompleteMilestoneParams } from "./complete-milestone.js";
@@ -119,9 +121,10 @@ import {
   type UatResultSaveParams,
 } from "../uat-run.js";
 import { appendNotification } from "../notification-store.js";
-import { registerAutoWorker, markWorkerStopping, getAutoWorker } from "../db/auto-workers.js";
+import { registerAutoWorker, markWorkerStopping, getAutoWorker, isDeadLocalAutoWorker, markWorkerCrashed } from "../db/auto-workers.js";
 import {
   claimMilestoneLease,
+  forceReleaseLeasesForWorker,
   releaseMilestoneLease,
   getMilestoneLease,
   refreshMilestoneLease,
@@ -240,6 +243,65 @@ function milestoneLeaseConflictResult(
       milestoneId,
       byWorker,
       expiresAt,
+    },
+    isError: true,
+  };
+}
+
+/**
+ * Reclaim a milestone lease whose holder worker is a local process that is
+ * verifiably dead (#2375). Mirrors the crash-recovery force-release path:
+ * mark the worker crashed, then force-release its held leases. The holder
+ * row's status column is irrelevant — process liveness is the OS-verifiable
+ * fact — but markWorkerCrashed only flips active rows, so a stopping/crashed
+ * row is left as-is and the reclaim is journaled explicitly below. Returns
+ * false — leaving the lease untouched — for alive, remote, or otherwise
+ * unprobeable holders, and when the lease was concurrently re-taken.
+ */
+function reclaimDeadHolderMilestoneLease(
+  milestoneId: string,
+  heldLease: { worker_id: string },
+  basePath: string,
+): boolean {
+  if (!isDeadLocalAutoWorker(heldLease.worker_id, basePath)) return false;
+  markWorkerCrashed(heldLease.worker_id);
+  const freed = forceReleaseLeasesForWorker(heldLease.worker_id);
+  if (freed < 1) return false;
+  insertAuditEvent({
+    eventId: randomUUID(),
+    traceId: heldLease.worker_id,
+    category: "orchestration",
+    type: "milestone-lease-reclaimed",
+    ts: new Date().toISOString(),
+    payload: { workerId: heldLease.worker_id, milestoneId },
+  });
+  appendNotification(
+    `Reclaimed milestone ${milestoneId} lease from dead worker ${heldLease.worker_id} (#2375).`,
+    "warning",
+    "notify",
+    { kind: "milestone-lease-reclaim", scope: milestoneId },
+  );
+  return true;
+}
+
+/**
+ * A dead holder's lease was reclaimed but no active auto worker row exists to
+ * claim it under. Fail closed — never plan leaseless while auto is active.
+ */
+function milestoneLeaseReclaimedNoWorkerResult(
+  milestoneId: string,
+  reclaimedFrom: string,
+): ToolExecutionResult {
+  return {
+    content: [{
+      type: "text",
+      text: `Milestone ${milestoneId} lease held by dead worker ${reclaimedFrom} was reclaimed, but no active auto worker row exists to claim it. Re-run planning once auto-mode has an active worker.`,
+    }],
+    details: {
+      operation: "plan_milestone",
+      error: "milestone_lease_reclaimed_no_active_worker",
+      milestoneId,
+      reclaimedFrom,
     },
     isError: true,
   };
@@ -2260,7 +2322,34 @@ export async function executePlanMilestone(
         const holderIsReentrantPeer = !!holder
           && holder.host === hostname()
           && holder.pid === process.pid;
-        if (holder?.status === "active" && !isOurAutoLease) {
+        // A held lease whose holder process is verifiably dead must not wedge
+        // planning (#2375): reclaim regardless of the holder row's status —
+        // the status column is what wedged planning in the first place. Alive,
+        // remote, re-entrant, and own-lease holders keep the handling below.
+        if (!isOurAutoLease && !holderIsReentrantPeer
+          && reclaimDeadHolderMilestoneLease(params.milestoneId, heldLease, basePath)) {
+          if (isAutoActive()) {
+            // Mirror reclaimMissingMilestoneLease: an auto session must plan
+            // under its own claimed lease. The worker heartbeat owns refresh,
+            // and the lease must survive planning — nothing is released below.
+            if (!activeAutoWorkerId) {
+              // Fail closed on the HELD lease the bug created; the reclaim
+              // already freed it, and a follow-up planning call intentionally
+              // proceeds via the normal free-lease path — auto planning does
+              // no tool-level acquisition of a free lease (the orchestrator
+              // owns leasing at milestone entry), and write-time fencing
+              // still guards dispatches.
+              return milestoneLeaseReclaimedNoWorkerResult(params.milestoneId, heldLease.worker_id);
+            }
+            const claimed = claimMilestoneLease(activeAutoWorkerId, params.milestoneId);
+            if (!claimed.ok) {
+              return milestoneLeaseConflictResult(params.milestoneId, claimed.byWorker, claimed.expiresAt);
+            }
+            autoSession.currentMilestoneId = params.milestoneId;
+            autoSession.milestoneLeaseToken = claimed.token;
+          }
+          // One-shot: fall through to the normal acquisition block below.
+        } else if (holder?.status === "active" && !isOurAutoLease) {
           if (!holderIsReentrantPeer) {
             return milestoneLeaseConflictResult(params.milestoneId, heldLease.worker_id, heldLease.expires_at);
           }

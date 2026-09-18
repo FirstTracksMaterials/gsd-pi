@@ -1,8 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, rmSync, readFileSync, existsSync, symlinkSync, writeFileSync, unlinkSync } from "node:fs";
 import { join, relative } from "node:path";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 
 import {
@@ -20,8 +21,8 @@ import {
   getAllMilestones,
 } from "../gsd-db.ts";
 import { renderAllFromDb } from "../markdown-renderer.ts";
-import { getAutoWorker, registerAutoWorker } from "../db/auto-workers.ts";
-import { claimMilestoneLease, getMilestoneLease } from "../db/milestone-leases.ts";
+import { getAutoWorker, markWorkerCrashed, markWorkerStopping, registerAutoWorker } from "../db/auto-workers.ts";
+import { claimMilestoneLease, getMilestoneLease, refreshMilestoneLease, releaseMilestoneLease } from "../db/milestone-leases.ts";
 import { deriveState, invalidateStateCache } from "../state.ts";
 import { autoSession } from "../auto-runtime-state.ts";
 import { normalizeRealPath, relSliceFile, targetMilestoneFile } from "../paths.ts";
@@ -1271,6 +1272,297 @@ test("executePlanMilestone refuses a same-milestone lease conflict", async () =>
     closeDatabase();
     cleanup(base);
   }
+});
+
+// Seeds a holder worker row in this project whose (default) PID is the repo's
+// canonical dead-PID fixture value, so isDeadLocalAutoWorker treats it as a
+// dead local worker. Tests claim the lease over this row themselves.
+function seedLeaseHolder(
+  base: string,
+  overrides: { pid?: number; host?: string } = {},
+): string {
+  const holder = registerAutoWorker({ projectRootRealpath: normalizeRealPath(base) });
+  _getAdapter()!.prepare("UPDATE workers SET pid = :pid, host = :host WHERE worker_id = :worker_id")
+    .run({ ":pid": overrides.pid ?? -1, ":host": overrides.host ?? hostname(), ":worker_id": holder });
+  return holder;
+}
+
+test("executePlanMilestone reclaims a lease held by a dead local worker (#2375)", async (t) => {
+  const base = makeTmpBase();
+  t.after(() => {
+    _resetNotificationStore();
+    closeDatabase();
+    cleanup(base);
+  });
+  openTestDb(base);
+  initNotificationStore(base);
+  seedMilestone("M001", "Orphaned holder");
+  const holder = seedLeaseHolder(base);
+  const lease = claimMilestoneLease(holder, "M001");
+  assert.equal(lease.ok, true);
+
+  const result = await inProjectDir(base, () => executePlanMilestone(validMilestonePlan("M001"), base));
+
+  assert.equal(result.isError, undefined);
+  assert.equal(result.details.operation, "plan_milestone");
+  assert.equal(result.details.milestoneId, "M001");
+  assert.equal(getAutoWorker(holder)!.status, "crashed", "dead holder row must be marked crashed");
+  const reclaimed = getMilestoneLease("M001");
+  assert.ok(reclaimed, "planning must participate in lease coordination");
+  assert.notEqual(reclaimed!.worker_id, holder, "planning must re-acquire the lease under a new worker");
+  assert.equal(reclaimed!.status, "released");
+  const notifications = readNotifications(base, { kind: "milestone-lease-reclaim", scope: "M001" });
+  assert.equal(notifications.length, 1);
+  assert.equal(notifications[0].severity, "warning");
+  assert.ok(notifications[0].message.includes(holder), "reclaim notification must name the dead holder");
+});
+
+test("executePlanMilestone keeps the conflict for a live local lease holder (#2375)", async (t) => {
+  const base = makeTmpBase();
+  const live = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], { stdio: "ignore" });
+  assert.ok(live.pid !== undefined && live.pid > 0);
+  t.after(() => {
+    live.kill();
+    _resetNotificationStore();
+    closeDatabase();
+    cleanup(base);
+  });
+  openTestDb(base);
+  initNotificationStore(base);
+  seedMilestone("M001", "Live holder");
+  const holder = seedLeaseHolder(base, { pid: live.pid! });
+  const lease = claimMilestoneLease(holder, "M001");
+  assert.equal(lease.ok, true);
+
+  const result = await inProjectDir(base, () => executePlanMilestone(validMilestonePlan("M001"), base));
+
+  assert.equal(result.isError, true);
+  assert.equal(result.details.error, "milestone_lease_conflict");
+  assert.match(result.content[0].text, /Milestone M001 is currently leased/);
+  assert.equal(getAutoWorker(holder)!.status, "active", "live holder must not be marked crashed");
+  assert.equal(getMilestoneLease("M001")!.worker_id, holder);
+  assert.equal(readNotifications(base, { kind: "milestone-lease-reclaim", scope: "M001" }).length, 0);
+});
+
+test("executePlanMilestone keeps the conflict for a remote (unprobeable) lease holder (#2375)", async (t) => {
+  const base = makeTmpBase();
+  t.after(() => {
+    _resetNotificationStore();
+    closeDatabase();
+    cleanup(base);
+  });
+  openTestDb(base);
+  initNotificationStore(base);
+  seedMilestone("M001", "Remote holder");
+  const holder = seedLeaseHolder(base, { host: "remote-host" });
+  const lease = claimMilestoneLease(holder, "M001");
+  assert.equal(lease.ok, true);
+
+  const result = await inProjectDir(base, () => executePlanMilestone(validMilestonePlan("M001"), base));
+
+  assert.equal(result.isError, true);
+  assert.equal(result.details.error, "milestone_lease_conflict");
+  assert.match(result.content[0].text, /Milestone M001 is currently leased/);
+  assert.equal(getAutoWorker(holder)!.status, "active");
+  assert.equal(readNotifications(base, { kind: "milestone-lease-reclaim", scope: "M001" }).length, 0);
+});
+
+function startAutoSession(base: string, workerId: string | null): void {
+  autoSession.reset();
+  autoSession.active = true;
+  autoSession.basePath = base;
+  autoSession.workerId = workerId;
+}
+
+test("executePlanMilestone auto reclaim claims the lease under the active auto worker (#2375)", async (t) => {
+  const base = makeTmpBase();
+  t.after(() => {
+    autoSession.reset();
+    _resetNotificationStore();
+    closeDatabase();
+    cleanup(base);
+  });
+  openTestDb(base);
+  initNotificationStore(base);
+  seedMilestone("M001", "Orphaned holder");
+  const sessionWorker = registerAutoWorker({ projectRootRealpath: normalizeRealPath(base) });
+  startAutoSession(base, sessionWorker);
+  const holder = seedLeaseHolder(base);
+  const lease = claimMilestoneLease(holder, "M001");
+  assert.equal(lease.ok, true);
+  assert.equal(lease.ok && lease.token, 1);
+
+  const result = await inProjectDir(base, () => executePlanMilestone(validMilestonePlan("M001"), base));
+
+  assert.equal(result.isError, undefined, "auto-active planning must proceed after the reclaim");
+  const reclaimed = getMilestoneLease("M001");
+  assert.ok(reclaimed);
+  assert.equal(reclaimed!.status, "held", "the auto session must hold the lease while planning");
+  assert.equal(reclaimed!.worker_id, sessionWorker);
+  assert.equal(reclaimed!.fencing_token, 2, "takeover must advance the fencing token");
+  assert.equal(autoSession.milestoneLeaseToken, 2, "session must record the new fencing token");
+  assert.equal(autoSession.currentMilestoneId, "M001");
+});
+
+test("executePlanMilestone auto reclaim invalidates the dead holder's fencing token (#2375)", async (t) => {
+  const base = makeTmpBase();
+  t.after(() => {
+    autoSession.reset();
+    _resetNotificationStore();
+    closeDatabase();
+    cleanup(base);
+  });
+  openTestDb(base);
+  initNotificationStore(base);
+  seedMilestone("M001", "Orphaned holder");
+  const sessionWorker = registerAutoWorker({ projectRootRealpath: normalizeRealPath(base) });
+  startAutoSession(base, sessionWorker);
+  const holder = seedLeaseHolder(base);
+  const lease = claimMilestoneLease(holder, "M001");
+  assert.equal(lease.ok, true);
+
+  const result = await inProjectDir(base, () => executePlanMilestone(validMilestonePlan("M001"), base));
+  assert.equal(result.isError, undefined);
+
+  // A resurfaced dead holder with its pre-reclaim token must not be able to
+  // mutate the lease the session now holds under token 2.
+  assert.equal(getMilestoneLease("M001")!.fencing_token, 2);
+  assert.equal(refreshMilestoneLease(holder, "M001", 1), false, "old token must not refresh the reclaimed lease");
+  assert.equal(releaseMilestoneLease(holder, "M001", 1), false, "old token must not release the reclaimed lease");
+});
+
+test("executePlanMilestone auto reclaim fails closed without an active auto worker row (#2375)", async (t) => {
+  const base = makeTmpBase();
+  t.after(() => {
+    autoSession.reset();
+    _resetNotificationStore();
+    closeDatabase();
+    cleanup(base);
+  });
+  openTestDb(base);
+  initNotificationStore(base);
+  seedMilestone("M001", "Orphaned holder");
+  startAutoSession(base, null);
+  const holder = seedLeaseHolder(base);
+  const lease = claimMilestoneLease(holder, "M001");
+  assert.equal(lease.ok, true);
+
+  const result = await inProjectDir(base, () => executePlanMilestone(validMilestonePlan("M001"), base));
+
+  assert.equal(result.isError, true, "auto-active planning without a worker row must fail closed");
+  assert.equal(result.details.error, "milestone_lease_reclaimed_no_active_worker");
+  // The reclaim itself still happened: the lease is free, not held by a phantom.
+  const leaseRow = getMilestoneLease("M001");
+  assert.ok(leaseRow);
+  assert.equal(leaseRow!.status, "released");
+  assert.equal(leaseRow!.worker_id, holder);
+});
+
+test("executePlanMilestone auto retry after fail-closed reclaim plans on the free lease (#2375)", async (t) => {
+  const base = makeTmpBase();
+  t.after(() => {
+    autoSession.reset();
+    _resetNotificationStore();
+    closeDatabase();
+    cleanup(base);
+  });
+  openTestDb(base);
+  initNotificationStore(base);
+  seedMilestone("M001", "Orphaned holder");
+  startAutoSession(base, null);
+  const holder = seedLeaseHolder(base);
+  const lease = claimMilestoneLease(holder, "M001");
+  assert.equal(lease.ok, true);
+
+  // First call: reclaims the dead holder's lease, then fails closed because
+  // no active auto worker row exists to plan under.
+  const first = await inProjectDir(base, () => executePlanMilestone(validMilestonePlan("M001"), base));
+  assert.equal(first.isError, true);
+  assert.equal(first.details.error, "milestone_lease_reclaimed_no_active_worker");
+
+  // Second call: the lease is simply free now. Auto planning of a free
+  // milestone performs no tool-level acquisition on main (the orchestrator
+  // owns leasing at milestone entry; write-time fencing guards dispatches),
+  // so the retry must succeed without inventing a new acquisition rule.
+  const second = await inProjectDir(base, () => executePlanMilestone(validMilestonePlan("M001"), base));
+
+  assert.equal(second.isError, undefined);
+  assert.equal(second.details.operation, "plan_milestone");
+  assert.equal(second.details.milestoneId, "M001");
+  assert.equal(
+    getMilestoneLease("M001")!.status,
+    "released",
+    "free-lease auto planning must not create or claim a lease",
+  );
+});
+
+test("executePlanMilestone reclaims a lease held by a dead stopping worker (#2375)", async (t) => {
+  const base = makeTmpBase();
+  t.after(() => {
+    _resetNotificationStore();
+    closeDatabase();
+    cleanup(base);
+  });
+  openTestDb(base);
+  initNotificationStore(base);
+  seedMilestone("M001", "Stopping holder");
+  const holder = seedLeaseHolder(base);
+  markWorkerStopping(holder);
+  const lease = claimMilestoneLease(holder, "M001");
+  assert.equal(lease.ok, true);
+
+  const result = await inProjectDir(base, () => executePlanMilestone(validMilestonePlan("M001"), base));
+
+  assert.equal(result.isError, undefined, "a dead stopping holder must not wedge planning");
+  assert.equal(getAutoWorker(holder)!.status, "stopping", "markWorkerCrashed must not resurrect a stopping row");
+  assert.notEqual(getMilestoneLease("M001")!.worker_id, holder);
+});
+
+test("executePlanMilestone reclaims a lease held by a dead crashed worker (#2375)", async (t) => {
+  const base = makeTmpBase();
+  t.after(() => {
+    _resetNotificationStore();
+    closeDatabase();
+    cleanup(base);
+  });
+  openTestDb(base);
+  initNotificationStore(base);
+  seedMilestone("M001", "Crashed holder");
+  const holder = seedLeaseHolder(base);
+  markWorkerCrashed(holder);
+  const lease = claimMilestoneLease(holder, "M001");
+  assert.equal(lease.ok, true);
+
+  const result = await inProjectDir(base, () => executePlanMilestone(validMilestonePlan("M001"), base));
+
+  assert.equal(result.isError, undefined, "a dead crashed holder must not wedge planning");
+  assert.notEqual(getMilestoneLease("M001")!.worker_id, holder);
+});
+
+test("executePlanMilestone reclaims a lease held by a real exited worker process (#2375)", async (t) => {
+  const base = makeTmpBase();
+  t.after(() => {
+    _resetNotificationStore();
+    closeDatabase();
+    cleanup(base);
+  });
+  const exited = spawnSync(process.execPath, ["-e", ""]);
+  assert.ok(exited.pid !== undefined && exited.pid > 0, "fixture child must have spawned");
+  openTestDb(base);
+  initNotificationStore(base);
+  seedMilestone("M001", "Exited holder");
+  const holder = seedLeaseHolder(base, { pid: exited.pid });
+  const lease = claimMilestoneLease(holder, "M001");
+  assert.equal(lease.ok, true);
+
+  const result = await inProjectDir(base, () => executePlanMilestone(validMilestonePlan("M001"), base));
+
+  assert.equal(result.isError, undefined);
+  assert.equal(getAutoWorker(holder)!.status, "crashed");
+  assert.notEqual(getMilestoneLease("M001")!.worker_id, holder);
+  const notifications = readNotifications(base, { kind: "milestone-lease-reclaim", scope: "M001" });
+  assert.equal(notifications.length, 1);
+  assert.ok(notifications[0].message.includes(holder));
 });
 
 test("executePlanMilestone releases its one-shot milestone lease after planning", async () => {
