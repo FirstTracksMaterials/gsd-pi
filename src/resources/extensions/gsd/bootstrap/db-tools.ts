@@ -1997,15 +1997,16 @@ export function registerDbTools(pi: ExtensionAPI): void {
 								Type.String({
 									minLength: 1,
 									description:
-										"Required Slice binding when this evidence satisfies a browser-required Slice",
+										"ID of the Slice this evidence was produced for; required when it satisfies a browser-required Slice and must equal that Slice's ID",
 								}),
 							),
-							evidenceClass: StringEnum([
-								"command",
-								"runtime",
-								"browser",
-								"artifact",
-							]),
+							evidenceClass: StringEnum(
+								["command", "runtime", "browser", "artifact"],
+								{
+									description:
+										"All entries for one verification class must use the same evidence class; browser-required Slices are satisfied by 'browser' entries or 'runtime' entries running gsd_uat_exec",
+								},
+							),
 							rationale: Type.String({ minLength: 1 }),
 							commandOrTool: Type.String({ minLength: 1 }),
 							workingDirectory: Type.String({ minLength: 1 }),
@@ -2014,7 +2015,11 @@ export function registerDbTools(pi: ExtensionAPI): void {
 							exitCode: Type.Optional(Type.Number()),
 							observation: StringEnum(["passed", "failed", "inconclusive"]),
 							durableOutputRef: Type.String({ minLength: 1 }),
-							testedSourceRevision: Type.String({ minLength: 1 }),
+							testedSourceRevision: Type.String({
+								minLength: 1,
+								description:
+									"Aggregate source revision the evidence was tested against, formatted sha256:<hex>; it must equal the source snapshot the tool computes for a new validation attempt — on a stale-revision error, copy the revision from the message into every evidence entry only when the evidence genuinely reflects the current source, otherwise re-produce the evidence against current source",
+							}),
 							environment: Type.Record(Type.String(), Type.Unknown(), {
 								minProperties: 1,
 							}),
