@@ -36,6 +36,7 @@ import { LAYOUT_SEGMENTS } from "./layout-policy.js";
 import { resolveCanonicalMilestoneRoot } from "./worktree-manager.js";
 import { isCanonicalStagedTaskSummaryProjection } from "./task-summary-projection-classification.js";
 import { isMilestoneLifecycleAdopted, readMilestoneCloseoutAuthorization } from "./db/milestone-closeout-readiness.js";
+import { isDeadLocalAutoWorker } from "./db/auto-workers.js";
 import { loadEffectiveGSDPreferences } from "./preferences.js";
 import {
   captureMilestoneVerificationSourceRevision,
@@ -140,6 +141,41 @@ function reportOrphanedRunningAttempts(
       message:
         `Task ${unitId} has an orphaned running Attempt (${attempt.attempt_id}) with no live process or lease. ` +
         "Settle it with gsd_task_settle (dry-run first, then apply: true) — doctor --fix will not settle it for you.",
+      file: ".gsd/gsd.db",
+      fixable: false,
+    });
+  }
+}
+
+/**
+ * A held, non-expired milestone lease whose holder worker's local process is
+ * verifiably dead blocks gsd_plan_milestone with no live reclaimer (#2375).
+ * Reports the wedge; re-running gsd_plan_milestone reclaims the lease via the
+ * dead-holder reclaim path.
+ */
+function reportOrphanedMilestoneLeases(
+  adapter: ReturnType<typeof _getAdapter> & object,
+  basePath: string,
+  issues: DoctorIssue[],
+): void {
+  const held = adapter.prepare(`
+    SELECT milestone_id, worker_id
+    FROM milestone_leases
+    WHERE status = 'held'
+      AND expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    ORDER BY milestone_id
+  `).all() as unknown as Array<{ milestone_id: string; worker_id: string }>;
+
+  for (const lease of held) {
+    if (!isDeadLocalAutoWorker(lease.worker_id, basePath)) continue;
+    issues.push({
+      severity: "error",
+      code: "orphaned_milestone_lease",
+      scope: "milestone",
+      unitId: lease.milestone_id,
+      message:
+        `Milestone ${lease.milestone_id} is leased by worker ${lease.worker_id} whose local process is dead. ` +
+        "Re-running gsd_plan_milestone for this milestone reclaims the lease automatically.",
       file: ".gsd/gsd.db",
       fixable: false,
     });
@@ -837,6 +873,14 @@ export async function checkEngineHealth(
         reportOrphanedRunningAttempts(adapter, basePath, issues);
       } catch {
         // Non-fatal — orphaned running Attempt check failed
+      }
+
+      // Held, non-expired milestone leases whose holder worker process is
+      // dead (#2375): report only — the planning tool reclaims on its next run.
+      try {
+        reportOrphanedMilestoneLeases(adapter, basePath, issues);
+      } catch {
+        // Non-fatal — orphaned milestone lease check failed
       }
 
       // e. Completed milestone dispatch history but DB reopened without an explicit reopen event.
