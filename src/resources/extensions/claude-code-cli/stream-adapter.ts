@@ -28,6 +28,7 @@ import { homedir } from "node:os";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { PartialMessageBuilder, ZERO_USAGE, mapUsage } from "./partial-builder.js";
+import { createLegacySkillGuardHook, isLegacySkillGuardDisabled } from "./legacy-skill-guard.js";
 import {
 	attachExternalResultsToToolBlocks,
 	buildFinalAssistantContent,
@@ -2353,6 +2354,15 @@ export function buildSdkOptions(
 			: { thinking: { type: "disabled" } }
 		: undefined;
 
+	// Interactive runs load user settings, so legacy gsd-core v1 skills installed
+	// under ~/.claude/skills/ would be announced to the model and callable while
+	// bypassing the workflow MCP. #1395 excluded them from the pi skill catalog;
+	// gate the claude-code Skill tool surface the same way (#2369). Auto-mode
+	// runs already disallow Skill entirely and must not register the hook.
+	const legacySkillGuardHook = !gsdPhase && !isLegacySkillGuardDisabled()
+		? createLegacySkillGuardHook({ projectRoot, workflowServerName })
+		: undefined;
+
 	return {
 		pathToClaudeCodeExecutable: getClaudePath(),
 		model: modelId,
@@ -2365,6 +2375,9 @@ export function buildSdkOptions(
 		systemPrompt: { type: "preset", preset: "claude_code" },
 		disallowedTools,
 		...(allowedTools.length > 0 ? { allowedTools } : {}),
+		...(legacySkillGuardHook
+			? { hooks: { PreToolUse: [{ matcher: "Skill", hooks: [legacySkillGuardHook] }] } }
+			: {}),
 		...(sdkMcpServers ? { mcpServers: sdkMcpServers } : {}),
 		...(strictMcpConfig ? { strictMcpConfig: true } : {}),
 		betas: (
