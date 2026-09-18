@@ -13,6 +13,7 @@ import {
   resolveAgentEndCancelled,
   _resetPendingResolve,
   _hasPendingResolveForTest,
+  _getCurrentResolveForTest,
   _setActiveSession,
   _setSessionSwitchInFlight,
   _markSessionSwitchAbortGraceWindow,
@@ -24,6 +25,7 @@ import {
 import { runUnit, shouldDeferUnitFailsafeTimeout } from "../auto/run-unit.js";
 import { consumeAutoWakeup, scheduleAutoWakeup, _resetAutoWakeupsForTest } from "../auto/schedule-wakeup.js";
 import { writeUnitRuntimeRecord, readUnitRuntimeRecord } from "../unit-runtime.js";
+import { queryJournal } from "../journal.js";
 import { autoLoop as rawAutoLoop } from "../auto/loop.js";
 import { runPreDispatch } from "../auto/pre-dispatch.js";
 import { runDispatch } from "../auto/dispatch.js";
@@ -645,6 +647,327 @@ test("runUnit clears scheduled wakeups when the unit is cancelled", async () => 
     consumeAutoWakeup(s.basePath, "execute-task", "M001/S01/T02"),
     null,
     "cancelled units must not leave stale ScheduleWakeup prompts for later retries",
+  );
+});
+
+test("runUnit journals and notifies when a pending wakeup is discarded on a cancelled unit", async (t) => {
+  _resetPendingResolve();
+  _resetAutoWakeupsForTest();
+
+  const basePath = mkdtempSync(join(tmpdir(), "wakeup-discard-journal-"));
+  t.after(() => {
+    rmSync(basePath, { recursive: true, force: true });
+  });
+
+  const notifications: Array<{ message: string; level: string }> = [];
+  const ctx = {
+    ...makeMockCtx(),
+    ui: {
+      notify: (message: string, level: string) => {
+        notifications.push({ message, level });
+      },
+      setStatus: () => {},
+      setWorkingMessage: () => {},
+    },
+    sessionManager: {
+      getEntries: () => [],
+    },
+    modelRegistry: {
+      getProviderAuthMode: () => undefined,
+      isProviderRequestReady: () => true,
+    },
+  } as any;
+  const pi = makeMockPi();
+  const s = makeMockSession();
+  s.basePath = basePath;
+
+  const resultPromise = runUnit(
+    ctx,
+    pi,
+    s,
+    "execute-task",
+    "M001/S01/T03",
+    "submit external job",
+  );
+
+  await waitForMicrotasks(() => pi.calls.length === 1, "initial unit dispatch");
+  scheduleAutoWakeup({
+    basePath,
+    unitType: "execute-task",
+    unitId: "M001/S01/T03",
+    delayMs: 0,
+    prompt: "check external job and write the task summary if complete",
+    reason: "poll external job",
+    createdAt: Date.now(),
+  });
+  resolveAgentEndCancelled({
+    message: "Auto-mode paused",
+    category: "aborted",
+    isTransient: true,
+  });
+
+  const result = await resultPromise;
+  assert.equal(result.status, "cancelled");
+
+  // Journal records the discarded wakeup with the reason and prompt that
+  // would otherwise vanish with the process-local pending-wakeup Map.
+  const discarded = queryJournal(basePath, { eventType: "wakeup-discarded" });
+  assert.equal(discarded.length, 1, "discarded wakeup must be journaled");
+  assert.equal(discarded[0].data?.unitType, "execute-task");
+  assert.equal(discarded[0].data?.unitId, "M001/S01/T03");
+  assert.equal(discarded[0].data?.reason, "poll external job");
+  assert.equal(
+    discarded[0].data?.prompt,
+    "check external job and write the task summary if complete",
+  );
+
+  // Operator sees a warning naming the unit and the wakeup reason.
+  assert.equal(notifications.length, 1, "discarded wakeup must notify the operator");
+  assert.equal(notifications[0].level, "warning");
+  assert.ok(
+    notifications[0].message.includes("M001/S01/T03"),
+    "notify must name the unit",
+  );
+  assert.ok(
+    notifications[0].message.includes("poll external job"),
+    "notify must name the wakeup reason",
+  );
+
+  // #1148 contract preserved: the pending wakeup is still deleted.
+  assert.equal(
+    consumeAutoWakeup(basePath, "execute-task", "M001/S01/T03"),
+    null,
+    "cancelled units must not leave stale ScheduleWakeup prompts for later retries",
+  );
+});
+
+test("runUnit still clears a pending wakeup when the discard notify throws", async (t) => {
+  _resetPendingResolve();
+  _resetAutoWakeupsForTest();
+
+  const basePath = mkdtempSync(join(tmpdir(), "wakeup-notify-throw-"));
+  t.after(() => {
+    rmSync(basePath, { recursive: true, force: true });
+  });
+
+  const ctx = {
+    ...makeMockCtx(),
+    ui: {
+      notify: () => {
+        throw new Error("notify surface exploded");
+      },
+      setStatus: () => {},
+      setWorkingMessage: () => {},
+    },
+    sessionManager: {
+      getEntries: () => [],
+    },
+    modelRegistry: {
+      getProviderAuthMode: () => undefined,
+      isProviderRequestReady: () => true,
+    },
+  } as any;
+  const pi = makeMockPi();
+  const s = makeMockSession();
+  s.basePath = basePath;
+
+  const resultPromise = runUnit(
+    ctx,
+    pi,
+    s,
+    "execute-task",
+    "M001/S01/T05",
+    "submit external job",
+  );
+
+  await waitForMicrotasks(() => pi.calls.length === 1, "initial unit dispatch");
+  scheduleAutoWakeup({
+    basePath,
+    unitType: "execute-task",
+    unitId: "M001/S01/T05",
+    delayMs: 0,
+    prompt: "check external job and write the task summary if complete",
+    reason: "poll external job",
+    createdAt: Date.now(),
+  });
+  resolveAgentEndCancelled({
+    message: "Auto-mode paused",
+    category: "aborted",
+    isTransient: true,
+  });
+
+  // Reporting is best-effort: runUnit must settle normally even though
+  // ui.notify throws.
+  const result = await resultPromise;
+  assert.equal(result.status, "cancelled");
+
+  // The deletion still ran after the throwing notify.
+  assert.equal(
+    consumeAutoWakeup(basePath, "execute-task", "M001/S01/T05"),
+    null,
+    "a throwing notify must not leave the pending wakeup behind",
+  );
+
+  // The journal emit is best-effort and precedes the notify, so it still fired.
+  const discarded = queryJournal(basePath, { eventType: "wakeup-discarded" });
+  assert.equal(discarded.length, 1, "journal emit must fire independently of notify");
+  assert.equal(discarded[0].data?.reason, "poll external job");
+});
+
+test("runUnit journals and notifies when a pending wakeup is discarded on an errored unit", async (t) => {
+  _resetPendingResolve();
+  _resetAutoWakeupsForTest();
+
+  const basePath = mkdtempSync(join(tmpdir(), "wakeup-error-journal-"));
+  t.after(() => {
+    rmSync(basePath, { recursive: true, force: true });
+  });
+
+  const notifications: Array<{ message: string; level: string }> = [];
+  const ctx = {
+    ...makeMockCtx(),
+    ui: {
+      notify: (message: string, level: string) => {
+        notifications.push({ message, level });
+      },
+      setStatus: () => {},
+      setWorkingMessage: () => {},
+    },
+    sessionManager: {
+      getEntries: () => [],
+    },
+    modelRegistry: {
+      getProviderAuthMode: () => undefined,
+      isProviderRequestReady: () => true,
+    },
+  } as any;
+  const pi = makeMockPi();
+  const s = makeMockSession();
+  s.basePath = basePath;
+
+  const resultPromise = runUnit(
+    ctx,
+    pi,
+    s,
+    "execute-task",
+    "M001/S01/T06",
+    "submit external job",
+  );
+
+  await waitForMicrotasks(() => pi.calls.length === 1, "initial unit dispatch");
+  scheduleAutoWakeup({
+    basePath,
+    unitType: "execute-task",
+    unitId: "M001/S01/T06",
+    delayMs: 0,
+    prompt: "check external job and write the task summary if complete",
+    reason: "poll external job",
+    createdAt: Date.now(),
+  });
+  const resolveUnit = _getCurrentResolveForTest();
+  assert.ok(resolveUnit, "runUnit should have a pending unit resolver");
+  resolveUnit({
+    status: "error",
+    errorContext: {
+      message: "provider exploded",
+      category: "provider",
+      isTransient: false,
+    },
+  });
+
+  const result = await resultPromise;
+  assert.equal(result.status, "error");
+
+  const discarded = queryJournal(basePath, { eventType: "wakeup-discarded" });
+  assert.equal(discarded.length, 1, "discarded wakeup must be journaled on error");
+  assert.equal(discarded[0].data?.unitType, "execute-task");
+  assert.equal(discarded[0].data?.unitId, "M001/S01/T06");
+  assert.equal(discarded[0].data?.status, "error");
+  assert.equal(discarded[0].data?.reason, "poll external job");
+  assert.equal(
+    discarded[0].data?.prompt,
+    "check external job and write the task summary if complete",
+  );
+
+  assert.equal(notifications.length, 1, "errored unit must notify the operator");
+  assert.equal(notifications[0].level, "warning");
+  assert.ok(notifications[0].message.includes("M001/S01/T06"));
+  assert.ok(notifications[0].message.includes("poll external job"));
+
+  assert.equal(
+    consumeAutoWakeup(basePath, "execute-task", "M001/S01/T06"),
+    null,
+    "errored units must not leave stale ScheduleWakeup prompts for later retries",
+  );
+});
+
+test("runUnit does not emit a discard notice when a wakeup is consumed normally", async (t) => {
+  _resetPendingResolve();
+  _resetAutoWakeupsForTest();
+
+  const basePath = mkdtempSync(join(tmpdir(), "wakeup-consume-journal-"));
+  t.after(() => {
+    rmSync(basePath, { recursive: true, force: true });
+  });
+
+  const notifications: Array<{ message: string; level: string }> = [];
+  const ctx = {
+    ...makeMockCtx(),
+    ui: {
+      notify: (message: string, level: string) => {
+        notifications.push({ message, level });
+      },
+      setStatus: () => {},
+      setWorkingMessage: () => {},
+    },
+    sessionManager: {
+      getEntries: () => [],
+    },
+    modelRegistry: {
+      getProviderAuthMode: () => undefined,
+      isProviderRequestReady: () => true,
+    },
+  } as any;
+  const pi = makeMockPi();
+  const s = makeMockSession();
+  s.basePath = basePath;
+  const firstEvent = makeEvent([{ role: "assistant", content: "submitted job" }]);
+  const secondEvent = makeEvent([{ role: "assistant", content: "job finished" }]);
+
+  const resultPromise = runUnit(
+    ctx,
+    pi,
+    s,
+    "execute-task",
+    "M001/S01/T04",
+    "submit external job",
+  );
+
+  await waitForMicrotasks(() => pi.calls.length === 1, "initial unit dispatch");
+  scheduleAutoWakeup({
+    basePath,
+    unitType: "execute-task",
+    unitId: "M001/S01/T04",
+    delayMs: 0,
+    prompt: "check external job and write the task summary if complete",
+    reason: "poll external job",
+    createdAt: Date.now(),
+  });
+  resolveAgentEnd(firstEvent);
+
+  await waitForMicrotasks(() => pi.calls.length === 2, "scheduled wakeup dispatch");
+  resolveAgentEnd(secondEvent);
+
+  const result = await resultPromise;
+  assert.equal(result.status, "completed");
+  assert.equal(pi.calls.length, 2);
+
+  // Consumed-as-designed wakeups must not trip the discard notice.
+  assert.equal(notifications.length, 0, "completed units must not emit a discard warning");
+  assert.equal(
+    queryJournal(basePath, { eventType: "wakeup-discarded" }).length,
+    0,
+    "completed units must not journal wakeup-discarded",
   );
 });
 
