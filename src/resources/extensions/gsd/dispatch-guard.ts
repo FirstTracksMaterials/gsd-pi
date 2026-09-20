@@ -161,7 +161,17 @@ export function getPriorSliceCompletionBlocker(
   return null;
 }
 
+export function getMilestoneLockBlocker(unitType: string, unitId: string): string | null {
+  const lock = process.env.GSD_MILESTONE_LOCK;
+  if (!lock) return null;
+  const { milestone } = parseUnitId(unitId);
+  if (!milestone || milestone === lock) return null;
+  return `Cannot dispatch ${unitType} ${unitId}: scoped auto is locked to milestone ${lock}`;
+}
+
 export function getDispatchAuthorityBlocker(unitType: string, unitId: string): string | null {
+  const lockBlocker = getMilestoneLockBlocker(unitType, unitId);
+  if (lockBlocker) return lockBlocker;
   const { milestone } = parseUnitId(unitId);
   if (!MILESTONE_ID_RE.test(milestone)) return null;
   if (!isDbAvailable()) {

@@ -1575,6 +1575,16 @@ export function shouldBlockWorktreeWrite(
   currentUnitType?: string | null,
   effectiveIsolationMode?: ReturnType<typeof getIsolationMode>,
 ): { block: boolean; reason?: string } {
+  if (targetPath) {
+    try {
+      const { evaluateWrite } = require("../../../../runtime-control/workspace-profile.ts") as typeof import("../../../../runtime-control/workspace-profile.ts");
+      const absTarget = isAbsolute(targetPath) ? targetPath : resolve(effectiveBasePath, targetPath);
+      const neighbour = evaluateWrite(absTarget, effectiveBasePath);
+      if (!neighbour.allow) return { block: true, reason: neighbour.reason };
+    } catch {
+      // Profile module optional for non-runtime-control tests.
+    }
+  }
   const tool = canonicalToolName(toolName);
   if (!PLANNING_WRITE_TOOLS.has(tool)) return { block: false };
   if (process.env.GSD_DISABLE_WORKTREE_WRITE_GUARD === "1") return { block: false };

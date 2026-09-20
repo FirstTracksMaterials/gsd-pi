@@ -239,35 +239,22 @@ async function admitLocked(
   }
 
   const handler = getCommandHandler();
-  const admitted = { ...operation };
-  if (!handler) {
-    stored.operation.state = "failed";
-    stored.operation.updated_at = nowIso(control.clock);
-    stored.operation.error = {
-      code: "runtime_unavailable",
-      message: "Native command actions are not ready until C06",
-      retryable: true,
-      operation_id: operationId,
-    };
-    control.store.update(stored);
-    if (needsLease) control.lease.release(operationId);
-    return { ok: true, status: 202, operation: admitted };
-  }
-
   const result = await handler({
     operation: stored.operation,
     request,
     job,
     project,
+    host: control,
   });
+  const latest = control.store.read(operationId) ?? stored;
   if (result?.dispatch) {
-    stored.operation.updated_at = nowIso(control.clock);
-    control.store.writeDispatchIntent(stored);
+    latest.operation.updated_at = nowIso(control.clock);
+    control.store.writeDispatchIntent(latest);
   }
   if (result?.holdLease === false && needsLease) {
     control.lease.release(operationId);
   }
-  return { ok: true, status: 202, operation: control.store.read(operationId)?.operation ?? stored.operation };
+  return { ok: true, status: 202, operation: control.store.read(operationId)?.operation ?? latest.operation };
 }
 
 export function getOperation(control: AdmissionHost, operationId: string): AdmitResult {

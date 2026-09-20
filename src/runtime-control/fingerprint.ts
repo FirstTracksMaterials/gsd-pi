@@ -33,3 +33,35 @@ export function fingerprintCommand(input: {
   });
   return createHash("sha256").update(JSON.stringify(payload)).digest("hex");
 }
+
+export function fingerprintImport(input: {
+  project_id: string;
+  import_digest: string;
+  payload: unknown;
+}): string {
+  return createHash("sha256").update(JSON.stringify(canonical({
+    kind: "import",
+    project_id: input.project_id,
+    import_digest: input.import_digest,
+    payload: input.payload,
+  }))).digest("hex");
+}
+
+export function fingerprintAnswer(input: {
+  job_id: string;
+  question_id: string;
+  request_id: string;
+  expected_revision: number;
+  expected_epoch: number;
+  response: unknown;
+}): string {
+  return createHash("sha256").update(JSON.stringify(canonical({
+    kind: "answer",
+    job_id: input.job_id,
+    question_id: input.question_id,
+    request_id: input.request_id,
+    expected_revision: input.expected_revision,
+    expected_epoch: input.expected_epoch,
+    response: input.response,
+  }))).digest("hex");
+}

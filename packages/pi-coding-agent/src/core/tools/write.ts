@@ -39,6 +39,18 @@ export interface WriteToolOptions {
 	operations?: WriteOperations;
 }
 
+export type WritePathGuard = (absolutePath: string, cwd: string) => void;
+
+let writePathGuard: WritePathGuard | null = null;
+
+export function setWritePathGuard(guard: WritePathGuard | null): void {
+	writePathGuard = guard;
+}
+
+export function getWritePathGuard(): WritePathGuard | null {
+	return writePathGuard;
+}
+
 type WriteHighlightCache = {
 	rawPath: string | null;
 	lang: string;
@@ -202,6 +214,7 @@ export function createWriteToolDefinition(
 			_ctx?,
 		) {
 			const absolutePath = resolveToCwd(path, cwd);
+			writePathGuard?.(absolutePath, cwd);
 			const dir = dirname(absolutePath);
 			return withFileMutationQueue(absolutePath, async () => {
 				// Do not reject from an abort event listener here: that would release the

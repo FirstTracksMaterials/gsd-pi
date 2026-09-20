@@ -13,6 +13,7 @@ import {
   projectCanonicalStatusToLegacy,
 } from "../gsd-db.js";
 import { invalidateStateCache } from "../state.js";
+import { invalidateAffectedVerificationEvidence } from "../replan-evidence.js";
 import { isClosedStatus } from "../status-guards.js";
 import { isNonEmptyString, validateStringArray } from "../validation.js";
 import { renderPlanFromDb, renderReplanFromDb } from "../markdown-renderer.js";
@@ -435,6 +436,11 @@ export async function handleReplanSlice(
     // ── Invalidate caches ─────────────────────────────────────────
     invalidateStateCache();
     clearParseCache();
+    invalidateAffectedVerificationEvidence({
+      basePath,
+      milestoneId: params.milestoneId,
+      reason: typeof whatChanged === "string" ? whatChanged : "replan-slice",
+    });
 
     // ── Post-mutation hook: projections, manifest, event log ─────
     try {

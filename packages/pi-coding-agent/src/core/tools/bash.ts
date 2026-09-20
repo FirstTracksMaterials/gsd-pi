@@ -65,6 +65,18 @@ export interface BashOperations {
  * This is useful for extensions that intercept user_bash and still want pi's
  * standard local shell behavior while wrapping or rewriting commands.
  */
+export type BashArgvGuard = (
+	cwd: string,
+	file: string,
+	args: string[],
+) => { file: string; args: string[] } | { blocked: string };
+
+let bashArgvGuard: BashArgvGuard | null = null;
+
+export function setBashArgvGuard(guard: BashArgvGuard | null): void {
+	bashArgvGuard = guard;
+}
+
 export function createLocalBashOperations(options?: {
 	shellPath?: string;
 	loginShell?: boolean;
@@ -94,7 +106,18 @@ export function createLocalBashOperations(options?: {
 				throw new Error("aborted");
 			}
 
-			const child = spawn(shell, [...args, command], {
+			let spawnFile = shell;
+			let spawnArgs = [...args, command];
+			if (bashArgvGuard) {
+				const wrapped = bashArgvGuard(cwd, spawnFile, spawnArgs);
+				if ("blocked" in wrapped) {
+					throw new Error(wrapped.blocked);
+				}
+				spawnFile = wrapped.file;
+				spawnArgs = wrapped.args;
+			}
+
+			const child = spawn(spawnFile, spawnArgs, {
 				cwd,
 				detached: process.platform !== "win32",
 				env: env ?? getShellEnv(),

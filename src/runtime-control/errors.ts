@@ -64,6 +64,19 @@ export function runtimeUnavailable(message: string, operationId?: string | null)
   });
 }
 
+export function invalidContract(message: string): RuntimeControlError {
+  return new RuntimeControlError(422, { code: "invalid_contract", message, retryable: false });
+}
+
+export function recoveryRequired(message: string, operationId?: string | null): RuntimeControlError {
+  return new RuntimeControlError(409, {
+    code: "recovery_required",
+    message,
+    retryable: false,
+    operation_id: operationId ?? null,
+  });
+}
+
 export function notFound(code: RuntimeError["code"], message: string): RuntimeControlError {
   return new RuntimeControlError(404, { code, message, retryable: false });
 }

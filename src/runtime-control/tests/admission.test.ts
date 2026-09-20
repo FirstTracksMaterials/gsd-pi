@@ -271,23 +271,26 @@ test("AT-C03: crash after dispatch intent becomes recovery_required and is not r
   assert.equal(restarted.lease.isHeld(), true);
 });
 
-test("production command handlers report not-ready and never succeed", async () => {
+test("production command handlers dispatch native start without treating prompt ACK as success", async () => {
   const alpha = tempProject("alpha");
   const { control } = createControl({ projects: [{ project_id: "alpha", target: alpha }] });
   seedReadyProject(control, "alpha", alpha);
   const first = await admitCommand(control, "alpha:M001", startRequest(uuid(12)));
   assert.equal(first.ok, true);
   if (first.ok) {
-    assert.equal(first.operation.state, "accepted");
     assert.notEqual(first.operation.state, "succeeded");
   }
   const stored = getOperationByRequest(control, uuid(12));
   assert.equal(stored.ok, true);
   if (stored.ok) {
-    assert.equal(stored.operation.state, "failed");
-    assert.equal(stored.operation.error?.code, "runtime_unavailable");
+    assert.equal(stored.operation.state, "running");
+    assert.equal(stored.operation.result?.kind, "start");
+    assert.equal(stored.operation.result?.milestoneLock, "M001");
+    assert.equal(stored.operation.result?.scoped, true);
+    assert.equal(stored.operation.error, null);
   }
-  assert.equal(control.lease.isHeld(), false);
+  assert.equal(control.lease.isHeld(), true);
+  assert.equal(process.env.GSD_MILESTONE_LOCK, "M001");
 });
 
 test("unregistered project cwd is rejected on runtime-v1 commands", async () => {

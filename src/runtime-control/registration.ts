@@ -10,6 +10,7 @@ import {
 } from "../resources/extensions/gsd/required-policy.ts";
 import { invalidRequest, runtimeUnavailable } from "./errors.ts";
 import type { ProjectRegistration, RegistrationFile, ResolvedProject } from "./types.ts";
+import { buildWorkspaceProfile, registerWorkspaceProfile, unregisterWorkspaceProfile } from "./workspace-profile.ts";
 
 export const REGISTRATION_ENV = "GSD_RUNTIME_REGISTRATION";
 
@@ -81,7 +82,7 @@ function resolveProject(project: ProjectRegistration): ResolvedProject {
     target_realpath: target,
     contract_root: project.contract_root,
     reference_repositories: references,
-    writable_cache_roots: project.writable_cache_roots.map((root) => resolve(root)),
+    writable_cache_roots: project.writable_cache_roots.map((root) => canonicalRealpath(root)),
     required_policy: project.required_policy,
     provider: project.provider ?? null,
     backend_idle_probe: project.backend_idle_probe ?? null,
@@ -96,6 +97,24 @@ function assertNoOverlap(projects: ResolvedProject[]): void {
       throw invalidRequest(`Duplicate project_id ${project.project_id}`);
     }
     seenIds.add(project.project_id);
+    const local: Array<{ id: string; path: string }> = [
+      { id: "target", path: project.target_realpath },
+      ...project.reference_repositories.map((ref) => ({ id: `reference:${ref.project_id}`, path: ref.realpath })),
+    ];
+    for (let i = 0; i < local.length; i++) {
+      for (let j = i + 1; j < local.length; j++) {
+        const a = local[i]!;
+        const b = local[j]!;
+        if (a.path === b.path) {
+          throw invalidRequest(`Overlapping or aliased workspace roots ${a.id} and ${b.id} at ${a.path}`);
+        }
+        const aPrefix = a.path.endsWith("/") ? a.path : `${a.path}/`;
+        const bPrefix = b.path.endsWith("/") ? b.path : `${b.path}/`;
+        if (a.path.startsWith(bPrefix) || b.path.startsWith(aPrefix)) {
+          throw invalidRequest(`Nested workspace roots make the write target ambiguous: ${a.id} vs ${b.id}`);
+        }
+      }
+    }
     const roots = [project.target_realpath, ...project.reference_repositories.map((ref) => ref.realpath)];
     for (const root of roots) {
       const owner = seenRoots.get(root);
@@ -187,6 +206,7 @@ export class RegistrationRegistry {
   private replace(projects: ResolvedProject[], sourcePath: string | null, loadError: string | null): void {
     for (const existing of this.projects.values()) {
       clearProjectRequiredPolicy(existing.target_realpath);
+      unregisterWorkspaceProfile(existing.target_realpath);
     }
     this.projects.clear();
     this.byRealpath.clear();
@@ -196,6 +216,7 @@ export class RegistrationRegistry {
       this.projects.set(project.project_id, project);
       this.byRealpath.set(project.target_realpath, project);
       configureProjectRequiredPolicy(project.target_realpath, project.required_policy);
+      registerWorkspaceProfile(buildWorkspaceProfile(project, { phase: "implement" }));
     }
   }
 }

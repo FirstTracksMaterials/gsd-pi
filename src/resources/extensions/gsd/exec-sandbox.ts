@@ -15,6 +15,7 @@ import { resolve } from "node:path";
 import { getShellConfig, killProcessTree, SIGKILL_GRACE_MS, HARD_DEADLINE_MS } from "@gsd/pi-coding-agent";
 import { DEFAULT_COMMAND_TIMEOUT_MS } from "./constants.js";
 import { redactSecrets } from "./redact-secrets.js";
+import { wrapManagedCommand } from "../../../runtime-control/workspace-profile.ts";
 
 export interface ExecSandboxRequest {
   /** Interpreter to use. */
@@ -195,9 +196,36 @@ export function runExecSandbox(
     const useProcessGroup = process.platform !== "win32";
 
     const started = Date.now();
+    const wrapped = wrapManagedCommand(opts.baseDir, cmd, [...args, script]);
+    if (!wrapped.ok) {
+      const duration = Date.now() - started;
+      const message = wrapped.diagnostics;
+      writeFileSync(stdoutPath, "");
+      writeFileSync(stderrPath, `${message}\n`);
+      const result: ExecSandboxResult = {
+        id,
+        runtime: request.runtime,
+        exit_code: null,
+        signal: null,
+        timed_out: false,
+        force_resolved: false,
+        duration_ms: duration,
+        stdout_bytes: 0,
+        stderr_bytes: Buffer.byteLength(`${message}\n`),
+        stdout_truncated: false,
+        stderr_truncated: false,
+        stdout_path: stdoutPath,
+        stderr_path: stderrPath,
+        meta_path: metaPath,
+        digest: `[spawn error: ${message}]`,
+      };
+      writeMeta(metaPath, result, request, now);
+      resolveP(result);
+      return;
+    }
     let child;
     try {
-      child = spawn(cmd, [...args, script], {
+      child = spawn(wrapped.file, wrapped.args, {
         cwd: opts.baseDir,
         env,
         stdio: ["ignore", "pipe", "pipe"],

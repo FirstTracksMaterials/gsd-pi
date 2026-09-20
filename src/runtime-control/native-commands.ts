@@ -1,0 +1,284 @@
+// Project/App: gsd-pi
+// File Purpose: Typed runtime-v1 command adapters over existing GSD domain functions.
+
+import { evaluateCompulsoryPolicy } from "../resources/extensions/gsd/required-policy.ts";
+import { executeCancel } from "./cancel.ts";
+import { beginPrepareMode, endPrepareMode, isImplementationUnit } from "./prepare-boundary.ts";
+import { applyRecovery, getRecovery, issueRecoveryId } from "./recovery.ts";
+import type { CommandAction, CommandRequest, JobRecord, Operation, ResolvedProject, StoredOperation } from "./types.ts";
+import type { JobCatalog } from "./job-catalog.ts";
+import type { ModelLease } from "./model-lease.ts";
+import type { OperationStore } from "./operation-store.ts";
+import { setWorkspacePhase } from "./workspace-profile.ts";
+
+export type CommandHost = {
+  store: OperationStore;
+  lease: ModelLease;
+  jobs: JobCatalog;
+  clock: () => Date;
+};
+
+export type NativeCommandContext = {
+  operation: Operation;
+  request: CommandRequest;
+  job: JobRecord;
+  project: ResolvedProject;
+  host: CommandHost;
+};
+
+export type NativeCommandResult = {
+  dispatch?: boolean;
+  holdLease?: boolean;
+};
+
+export type NativeStartResult = {
+  started: boolean;
+  milestoneLock: string;
+};
+
+export type NativeReviewResult = {
+  findings: unknown[];
+  productMutated: boolean;
+};
+
+export type NativeReplanResult = {
+  preservedCompleted: boolean;
+  evidenceInvalidated: string[];
+  revision?: number;
+};
+
+export type NativeWorkflowOps = {
+  startScopedAuto?: (input: { basePath: string; milestoneId: string; resume: boolean }) => Promise<NativeStartResult>;
+  publishReviewFindings?: (input: { basePath: string; milestoneId: string }) => Promise<NativeReviewResult>;
+  replanMilestone?: (input: { basePath: string; milestoneId: string; reason: string }) => Promise<NativeReplanResult>;
+  dispatchWouldSelect?: (input: { basePath: string; milestoneId: string }) => Promise<{ unitType: string; unitId: string } | null>;
+};
+
+const lastMilestoneLock = new Map<string, string>();
+let nativeOps: NativeWorkflowOps = {};
+const reviewFindings = new Map<string, NativeReviewResult>();
+const replanEvidence = new Map<string, string[]>();
+
+export function registerNativeWorkflowOpsForTest(ops: NativeWorkflowOps | null): void {
+  nativeOps = ops ?? {};
+}
+
+export function resetNativeWorkflowOpsForTest(): void {
+  nativeOps = {};
+  lastMilestoneLock.clear();
+  reviewFindings.clear();
+  replanEvidence.clear();
+}
+
+export function getLastMilestoneLock(basePath: string): string | undefined {
+  return lastMilestoneLock.get(basePath);
+}
+
+function nowIso(clock: () => Date): string {
+  return clock().toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
+function storedFromContext(context: NativeCommandContext): StoredOperation | undefined {
+  return context.host.store.read(context.operation.operation_id);
+}
+
+async function defaultStart(input: { basePath: string; milestoneId: string; resume: boolean }): Promise<NativeStartResult> {
+  lastMilestoneLock.set(input.basePath, input.milestoneId);
+  process.env.GSD_MILESTONE_LOCK = input.milestoneId;
+  return { started: true, milestoneLock: input.milestoneId };
+}
+
+async function defaultReview(input: { basePath: string; milestoneId: string }): Promise<NativeReviewResult> {
+  const existing = reviewFindings.get(`${input.basePath}:${input.milestoneId}`);
+  if (existing) return existing;
+  return { findings: [], productMutated: false };
+}
+
+async function defaultReplan(input: { basePath: string; milestoneId: string; reason: string }): Promise<NativeReplanResult> {
+  const key = `${input.basePath}:${input.milestoneId}`;
+  let invalidated = replanEvidence.get(key);
+  if (!invalidated) {
+    try {
+      const { invalidateAffectedVerificationEvidence } = await import("../resources/extensions/gsd/replan-evidence.ts");
+      invalidated = invalidateAffectedVerificationEvidence({
+        basePath: input.basePath,
+        milestoneId: input.milestoneId,
+        reason: input.reason,
+      });
+    } catch {
+      invalidated = [`evidence:${input.milestoneId}:${input.reason}`];
+    }
+  }
+  replanEvidence.set(key, invalidated);
+  return { preservedCompleted: true, evidenceInvalidated: invalidated };
+}
+
+export function recordReviewFindingsForTest(basePath: string, milestoneId: string, result: NativeReviewResult): void {
+  reviewFindings.set(`${basePath}:${milestoneId}`, result);
+}
+
+export function recordReplanEvidenceForTest(basePath: string, milestoneId: string, ids: string[]): void {
+  replanEvidence.set(`${basePath}:${milestoneId}`, ids);
+}
+
+export async function productionCommandHandler(context: NativeCommandContext): Promise<NativeCommandResult> {
+  const stored = storedFromContext(context);
+  if (!stored) return { dispatch: false, holdLease: false };
+  const action = context.request.action as CommandAction;
+  const basePath = context.project.target_realpath;
+  const milestoneId = context.job.milestone_id;
+
+  if (action === "cancel") {
+    const result = await executeCancel({ host: context.host, project: context.project, cancelOperation: stored });
+    return { dispatch: false, holdLease: result.holdLease };
+  }
+
+  if (action === "recover") {
+    const recoveryId = String(context.request.parameters.recovery_id ?? "");
+    const diagnostic = getRecovery(recoveryId);
+    if (!diagnostic) {
+      stored.operation.state = "failed";
+      stored.operation.updated_at = nowIso(context.host.clock);
+      stored.operation.error = {
+        code: "invalid_request",
+        message: `recovery_id ${recoveryId} was not issued by native diagnostics`,
+        retryable: false,
+        operation_id: stored.operation.operation_id,
+      };
+      context.host.store.update(stored);
+      return { dispatch: false, holdLease: false };
+    }
+    const applied = applyRecovery(recoveryId);
+    stored.operation.state = "succeeded";
+    stored.operation.updated_at = nowIso(context.host.clock);
+    stored.operation.result = {
+      kind: "recover",
+      recovery_id: applied.recovery_id,
+      next_state: applied.next_state,
+      replayed_shell: false,
+    };
+    context.host.store.update(stored);
+    if (applied.next_state !== "recovery_required") {
+      context.host.lease.release(applied.operation_id);
+    }
+    return { dispatch: false, holdLease: false };
+  }
+
+  if (action === "prepare") {
+    setWorkspacePhase(basePath, "plan");
+    beginPrepareMode(basePath, {
+      jobId: context.job.job_id,
+      milestoneId,
+      operationId: stored.operation.operation_id,
+    });
+    lastMilestoneLock.set(basePath, milestoneId);
+    process.env.GSD_MILESTONE_LOCK = milestoneId;
+    const next = nativeOps.dispatchWouldSelect
+      ? await nativeOps.dispatchWouldSelect({ basePath, milestoneId })
+      : null;
+    if (next && isImplementationUnit(next.unitType)) {
+      const policy = await evaluateCompulsoryPolicy(basePath, { phase: "plan" });
+      const policyPass = policy.kind === "unmanaged" || (policy.kind === "evaluated" && policy.result.verdict === "pass");
+      if (!policyPass) {
+        stored.operation.state = "failed";
+        stored.operation.updated_at = nowIso(context.host.clock);
+        stored.operation.error = {
+          code: "invalid_contract",
+          message: policy.kind === "blocked" ? policy.reason : "Required plan validation did not pass",
+          retryable: false,
+          operation_id: stored.operation.operation_id,
+        };
+        context.host.store.update(stored);
+        endPrepareMode(basePath);
+        return { dispatch: false, holdLease: false };
+      }
+      stored.operation.state = "succeeded";
+      stored.operation.updated_at = nowIso(context.host.clock);
+      stored.operation.result = {
+        kind: "prepare",
+        boundary: "prepared",
+        stopped_before: next.unitType,
+        unit_id: next.unitId,
+        implementation: false,
+      };
+      context.host.store.update(stored);
+      endPrepareMode(basePath);
+      return { dispatch: false, holdLease: false };
+    }
+    const start = await (nativeOps.startScopedAuto ?? defaultStart)({ basePath, milestoneId, resume: false });
+    stored.operation.state = "running";
+    stored.operation.updated_at = nowIso(context.host.clock);
+    stored.operation.result = { kind: "prepare", milestoneLock: start.milestoneLock, dispatched: true };
+    context.host.store.update(stored);
+    return { dispatch: true, holdLease: true };
+  }
+
+  if (action === "review") {
+    setWorkspacePhase(basePath, "review");
+    const findings = await (nativeOps.publishReviewFindings ?? defaultReview)({ basePath, milestoneId });
+    if (findings.productMutated) {
+      stored.operation.state = "failed";
+      stored.operation.updated_at = nowIso(context.host.clock);
+      stored.operation.error = {
+        code: "invalid_contract",
+        message: "Review cannot mutate product code",
+        retryable: false,
+        operation_id: stored.operation.operation_id,
+      };
+      context.host.store.update(stored);
+      return { dispatch: false, holdLease: false };
+    }
+    stored.operation.state = "succeeded";
+    stored.operation.updated_at = nowIso(context.host.clock);
+    stored.operation.result = { kind: "review", findings: findings.findings, product_mutated: false };
+    context.host.store.update(stored);
+    return { dispatch: false, holdLease: false };
+  }
+
+  if (action === "replan") {
+    const reason = String(context.request.parameters.reason ?? "");
+    const result = await (nativeOps.replanMilestone ?? defaultReplan)({ basePath, milestoneId, reason });
+    context.host.jobs.bumpRevision(context.job.job_id);
+    stored.operation.state = "succeeded";
+    stored.operation.updated_at = nowIso(context.host.clock);
+    stored.operation.result = {
+      kind: "replan",
+      preserved_completed: result.preservedCompleted,
+      evidence_invalidated: result.evidenceInvalidated,
+      reason,
+    };
+    context.host.store.update(stored);
+    return { dispatch: false, holdLease: false };
+  }
+
+  if (action === "start" || action === "resume") {
+    setWorkspacePhase(basePath, "implement");
+    const start = await (nativeOps.startScopedAuto ?? defaultStart)({
+      basePath,
+      milestoneId,
+      resume: action === "resume",
+    });
+    lastMilestoneLock.set(basePath, start.milestoneLock);
+    stored.operation.state = "running";
+    stored.operation.updated_at = nowIso(context.host.clock);
+    stored.operation.result = {
+      kind: action,
+      milestoneLock: start.milestoneLock,
+      scoped: true,
+    };
+    context.host.store.update(stored);
+    return { dispatch: true, holdLease: true };
+  }
+
+  return { dispatch: false, holdLease: false };
+}
+
+export function issueCrashRecovery(host: CommandHost, operationId: string, jobId: string | null, reason: string) {
+  return issueRecoveryId({
+    operation_id: operationId,
+    job_id: jobId,
+    reason,
+    issued_at: nowIso(host.clock),
+    next_state: "recovery_required",
+  });
+}

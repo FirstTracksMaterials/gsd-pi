@@ -5,6 +5,38 @@ Save-point for future agents. This is the GSD fork worktree
 Do not write raid-night, product, or quake-cockpit from a gsd-pi C05/C06
 session unless the prompt names that repo.
 
+## C06 native commands and workspace (2026-09-20)
+
+Portable C06 in worktree `migration/raidnight-native` starting at
+`6ed641dce9ac6797cd28ef5cbe08b1ad9010ba9f` (C05). Schema SHA256
+`0643f017003901c73859db55ae74dbc0bb67b270e43554a7111ca8038d8aca01`
+unchanged. No schema edits. Proceeded under the Mac addendum portable
+C01-C15 exception: C00/C02 remain overall BLOCKED (Linux/RDKit). Those
+are allowed deferrals. C06 overall is BLOCKED only for Linux AT-W01/W02
+kernel RO-bind; `development_status` is READY.
+
+- Report: `docs/migration/reports/C06.md` Status BLOCKED; development_status READY; acceptance_status BLOCKED
+- Native handlers: `src/runtime-control/native-commands.ts`
+  - prepare uses existing resolveDispatch policy; research/plan only; halt before execute-task; validatePlan; product files unchanged
+  - review succeeds on typed findings only; workspace plan/review makes product RO
+  - replan uses DomainOperationResult writers plus `replan-evidence.ts` (does not delete evidence)
+  - start/resume set `GSD_MILESTONE_LOCK`; dispatch-guard refuses other milestones
+  - cancel: immediate cancelling, stop/abort, C03 TERM 10s / KILL 5s budgets, idle-probe-before-lease-release
+  - recover: explicit `recovery_id` from diagnostics; never auto-replay shell
+  - Production default is native; C05 tests still inject `registerCommandHandlerForTest`
+- Import: POST `/projects/{id}/jobs` (`import-jobs.ts`). JobImport is not `applyLegacyImport` (markdown Import Application). Identity is insertMilestone plus `.gsd/imports/<digest>/` and durable `jobs.json`. Same digest+payload is idempotent; changed data is 409 and requires replan. No model lease.
+- Answers: POST `/jobs/{id}/answers`. Scope, request-id, epoch/revision; duplicate same value returns receipt; no second lease.
+- S6 workspace: `workspace-profile.ts`. Canonical write guard on write/edit; bwrap wrap on bash/exec/host-check; Darwin fail-closed; trusted Git host ops; post-exec contract diff rejects without delete. `milestone_scope` and `readonly_references` true. Snapshots/history still false (C07).
+- Tests: AT-C05, AT-C06, AT-C07, AT-C08, AT-W01, AT-W02 plus C05 AT-C01-C04.
+  `npx --yes pnpm@10.12.1 run typecheck:extensions` exit 0.
+  Targeted node tests: 38 + 34 + 84 passed (runtime-control, dispatch-guard/required-policy, exec-sandbox/post-execution).
+- Linux kernel RO-bind of neighbours: NOT_RUN. Do not label Mac fail-closed as that host verification.
+- Next portable task: C07 snapshots/SSE/history. Do not start C08 FTM chemistry,
+  live GSD/monitor/inference, production services, or Mac sandbox/launchd
+  substitutes in a C06 session.
+- C00/C02 overall remain BLOCKED (Linux bwrap/systemd/model/legacy/Quake;
+  RDKit lockfile wheel). Those are not C06 portable failures.
+
 ## C05 HTTP admission (2026-09-20)
 
 Portable C05 in worktree `migration/raidnight-native` starting at

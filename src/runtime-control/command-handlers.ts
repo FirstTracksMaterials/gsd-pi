@@ -1,13 +1,16 @@
 // Project/App: gsd-pi
-// File Purpose: Command handler registry. Test handlers only; production is not-ready until C06.
+// File Purpose: Command handler registry. Production wires native domain; tests may inject.
 
+import { productionCommandHandler } from "./native-commands.ts";
 import type { CommandRequest, JobRecord, Operation, ResolvedProject } from "./types.ts";
+import type { CommandHost } from "./native-commands.ts";
 
 export type CommandHandlerContext = {
   operation: Operation;
   request: CommandRequest;
   job: JobRecord;
   project: ResolvedProject;
+  host: CommandHost;
 };
 
 export type CommandHandlerResult = {
@@ -25,8 +28,8 @@ export function registerCommandHandlerForTest(handler: CommandHandler | null): v
   testHandler = handler;
 }
 
-export function getCommandHandler(): CommandHandler | null {
-  return testHandler;
+export function getCommandHandler(): CommandHandler {
+  return testHandler ?? productionCommandHandler;
 }
 
 export function resetCommandHandlerForTest(): void {

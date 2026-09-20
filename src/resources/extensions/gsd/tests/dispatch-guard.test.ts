@@ -566,4 +566,9 @@ test("dispatch guard skips cross-milestone check when GSD_MILESTONE_LOCK is set 
     getPriorSliceCompletionBlocker(repo, "main", "execute-task", "M012/S02/T01"),
     "Cannot dispatch execute-task M012/S02/T01: dependency slice M012/S01 is not complete.",
   );
+
+  assert.match(
+    getPriorSliceCompletionBlocker(repo, "main", "execute-task", "M010/S01/T01") ?? "",
+    /locked to milestone M012/,
+  );
 });

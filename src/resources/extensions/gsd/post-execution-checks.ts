@@ -23,8 +23,8 @@ import type { TaskRow } from "./db-task-slice-rows.js";
 // ─── Result Types ────────────────────────────────────────────────────────────
 
 export interface PostExecutionCheckJSON {
-  /** Check category: import, signature, pattern */
-  category: "import" | "signature" | "pattern";
+  /** Check category: import, signature, pattern, contract */
+  category: "import" | "signature" | "pattern" | "contract";
   /** What was checked (e.g., file path, function name) */
   target: string;
   /** Whether the check passed */
@@ -658,6 +658,27 @@ function checkNamingConsistency(
   return results;
 }
 
+function checkContractWriteScope(taskRow: TaskRow, basePath: string): PostExecutionCheckJSON[] {
+  try {
+    const {
+      getWorkspaceProfileByTarget,
+      rejectOutOfContractTargetChanges,
+    } = require("../../../runtime-control/workspace-profile.ts") as typeof import("../../../runtime-control/workspace-profile.ts");
+    const profile = getWorkspaceProfileByTarget(basePath);
+    if (!profile) return [];
+    const findings = rejectOutOfContractTargetChanges(profile, taskRow.key_files ?? []);
+    return findings.map((finding) => ({
+      category: "contract" as const,
+      target: finding.path,
+      passed: false,
+      message: finding.reason,
+      blocking: true,
+    }));
+  } catch {
+    return [];
+  }
+}
+
 // ─── Main Entry Point ────────────────────────────────────────────────────────
 
 /**
@@ -680,8 +701,9 @@ export function runPostExecutionChecks(
   const importChecks = checkImportResolution(taskRow, priorTasks, basePath);
   const signatureChecks = checkCrossTaskSignatures(taskRow, priorTasks, basePath);
   const patternChecks = checkPatternConsistency(taskRow, priorTasks, basePath);
+  const contractChecks = checkContractWriteScope(taskRow, basePath);
 
-  allChecks.push(...importChecks, ...signatureChecks, ...patternChecks);
+  allChecks.push(...importChecks, ...signatureChecks, ...patternChecks, ...contractChecks);
 
   const durationMs = Date.now() - startTime;
 

@@ -94,7 +94,7 @@ export interface PreExecutionCheckJSON {
 
 export interface PostExecutionCheckJSON {
   /** Check category: import, signature, pattern */
-  category: "import" | "signature" | "pattern";
+  category: "import" | "signature" | "pattern" | "contract";
   /** What was checked (e.g., file:line, function name) */
   target: string;
   /** Whether the check passed */

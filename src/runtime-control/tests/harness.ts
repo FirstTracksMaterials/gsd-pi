@@ -12,6 +12,15 @@ import {
 } from "../../resources/extensions/gsd/tests/required-policy-test-harness.ts";
 import { resetCommandHandlerForTest } from "../command-handlers.ts";
 import { RuntimeControl, resetRuntimeControlForTest, setRuntimeControlForTest } from "../control.ts";
+import { resetNativeWorkflowOpsForTest } from "../native-commands.ts";
+import { resetIdleProbeForTest } from "../idle-probe.ts";
+import { resetCancelNativeOpsForTest } from "../cancel.ts";
+import { resetAnswersForTest } from "../answers.ts";
+import { resetImportWriterForTest } from "../import-jobs.ts";
+import { resetRecoveryForTest } from "../recovery.ts";
+import { resetPrepareModeForTest } from "../prepare-boundary.ts";
+import { resetWorkspaceProfilesForTest } from "../workspace-profile.ts";
+import { resetAutoCancellationForTest } from "../../resources/extensions/gsd/auto-cancellation.ts";
 import type { CommandRequest, JobRecord, RegistrationFile } from "../types.ts";
 
 export function uuid(n: number): string {
@@ -51,7 +60,14 @@ export function seedReadyProject(control: RuntimeControl, projectId: string, tar
 }
 
 export function createControl(options: {
-  projects: Array<{ project_id: string; target: string; required_policy?: string }>;
+  projects: Array<{
+    project_id: string;
+    target: string;
+    required_policy?: string;
+    references?: Array<{ project_id: string; root: string }>;
+    writable_cache_roots?: string[];
+    backend_idle_probe?: string | null;
+  }>;
   readyPolicy?: boolean;
   stateRoot?: string;
 }): { control: RuntimeControl; stateRoot: string } {
@@ -63,9 +79,10 @@ export function createControl(options: {
       project_id: project.project_id,
       target_worktree: project.target,
       contract_root: ".gsd/ftm/contracts",
-      reference_repositories: [],
-      writable_cache_roots: [],
+      reference_repositories: project.references ?? [],
+      writable_cache_roots: project.writable_cache_roots ?? [],
       required_policy: project.required_policy ?? TEST_REQUIRED_POLICY_ID,
+      backend_idle_probe: project.backend_idle_probe ?? null,
     })),
   };
   writeFileSync(join(stateRoot, "registration.json"), JSON.stringify(registration), "utf-8");
@@ -105,4 +122,14 @@ export function resetC05(): void {
   resetRequiredPolicyRegistryForTest();
   resetCommandHandlerForTest();
   resetRuntimeControlForTest();
+  resetNativeWorkflowOpsForTest();
+  resetIdleProbeForTest();
+  resetCancelNativeOpsForTest();
+  resetAnswersForTest();
+  resetImportWriterForTest();
+  resetRecoveryForTest();
+  resetPrepareModeForTest();
+  resetWorkspaceProfilesForTest();
+  resetAutoCancellationForTest();
+  delete process.env.GSD_MILESTONE_LOCK;
 }

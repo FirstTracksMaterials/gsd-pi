@@ -24,6 +24,7 @@ import {
 import type { PendingVerificationRetry } from "./session.js";
 import type { IterationContext, IterationData, LoopState, PhaseResult, PreDispatchData } from "./types.js";
 import { shouldRefuseNewWork } from "../auto-cancellation.js";
+import { applyPrepareDispatchBoundary, isPrepareMode } from "../../../../runtime-control/prepare-boundary.ts";
 
 export function getAlreadyClosedDispatchReason(unitType: string, unitId: string): string | null {
   if (!isDbAvailable()) return null;
@@ -64,6 +65,34 @@ function isUnhandledPhaseWarning(dispatchResult: DispatchAction): dispatchResult
 }
 
 export { isUnhandledPhaseWarning };
+
+function applyManagedPrepareBoundary(
+  dispatchResult: DispatchAction,
+  basePath: string,
+  milestoneLock?: string | null,
+): DispatchAction {
+  const bounded = applyPrepareDispatchBoundary(dispatchResult, {
+    prepareMode: isPrepareMode(basePath),
+    milestoneLock,
+  });
+  if (bounded.kind === "prepared") {
+    return {
+      action: "stop",
+      reason: bounded.reason,
+      level: "info",
+      matchedRule: "runtime-v1-prepare-boundary",
+    };
+  }
+  if (bounded.kind === "refuse") {
+    return {
+      action: "stop",
+      reason: bounded.reason,
+      level: "error",
+      matchedRule: "runtime-v1-prepare-boundary",
+    };
+  }
+  return dispatchResult;
+}
 
 /**
  * Phase 3: Dispatch resolution — resolve the next unit, then run local guards
@@ -124,6 +153,8 @@ export async function runDispatch(
     sessionBaseUrl: ctx.model?.baseUrl,
     sessionAuthMode: authMode,
   });
+  dispatchResult = applyManagedPrepareBoundary(dispatchResult, s.basePath, s.sessionMilestoneLock);
+
   if (isUnhandledPhaseWarning(dispatchResult)) {
     deps.invalidateAllCaches();
     const freshState = await deps.deriveState(s.canonicalProjectRoot);
@@ -151,6 +182,7 @@ export async function runDispatch(
       sessionBaseUrl: ctx.model?.baseUrl,
       sessionAuthMode: authMode,
     });
+    dispatchResult = applyManagedPrepareBoundary(dispatchResult, s.basePath, s.sessionMilestoneLock);
   }
 
   if (dispatchResult.action === "stop") {

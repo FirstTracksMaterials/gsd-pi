@@ -10,10 +10,14 @@ import {
   openSync,
   readFileSync,
   readSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
+import {
+  wrapManagedCommand,
+} from "../../../runtime-control/workspace-profile.ts";
 
 /** R8 graceful SIGTERM budget (ms). Tests may shorten this. */
 export const DEFAULT_TERM_GRACE_MS = 10_000;
@@ -349,6 +353,26 @@ export async function runHostCheck(request: HostCheckRequest): Promise<HostCheck
     }
     : shellInvocation(request.shellCommand!);
 
+  const wrapped = wrapManagedCommand(cwd, invocation.file, invocation.args);
+  if (!wrapped.ok) {
+    writeFileSync(stderrPath, wrapped.diagnostics, "utf-8");
+    return {
+      exitCode: 1,
+      signal: null,
+      stdout: "",
+      stderr: wrapped.diagnostics,
+      durationMs: Date.now() - started,
+      timedOut: false,
+      cancelled: false,
+      durableOutputRef,
+      stdoutPath,
+      stderrPath,
+      failureClass: "command-not-found",
+    };
+  }
+  const spawnFile = wrapped.file;
+  const spawnArgs = wrapped.args;
+
   const stdoutFd = openSync(stdoutPath, "w");
   const stderrFd = openSync(stderrPath, "w");
   let child: ChildProcess | undefined;
@@ -359,7 +383,7 @@ export async function runHostCheck(request: HostCheckRequest): Promise<HostCheck
   let abortListener: (() => void) | undefined;
 
   try {
-    child = spawn(invocation.file, invocation.args, {
+    child = spawn(spawnFile, spawnArgs, {
       cwd,
       env: request.env ?? { ...process.env },
       stdio: ["ignore", stdoutFd, stderrFd],

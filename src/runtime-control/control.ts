@@ -9,6 +9,7 @@ import { JobCatalog } from "./job-catalog.ts";
 import { ModelLease } from "./model-lease.ts";
 import { OperationStore } from "./operation-store.ts";
 import { RegistrationRegistry } from "./registration.ts";
+import { configureRecoveryStore, issueRecoveryId } from "./recovery.ts";
 import type { CrashHook, JobRecord, RegistrationFile } from "./types.ts";
 
 export type RuntimeControlOptions = {
@@ -32,12 +33,28 @@ export class RuntimeControl {
     mkdirSync(join(options.stateRoot, "runtime-control"), { recursive: true });
     this.lease = new ModelLease(options.stateRoot);
     this.registration = new RegistrationRegistry(() => this.lease.isHeld());
-    this.jobs = new JobCatalog();
+    this.jobs = new JobCatalog(options.stateRoot);
     this.store = new OperationStore(options.stateRoot);
     this.clock = options.clock ?? (() => new Date());
+    configureRecoveryStore(options.stateRoot);
     const recovered = this.store.reconcile();
     for (const operationId of recovered.recoveryRequired) {
       this.lease.retainForRecovery(operationId);
+      const stored = this.store.read(operationId);
+      if (!stored) continue;
+      const existingId = stored.operation.result && typeof stored.operation.result.recovery_id === "string"
+        ? stored.operation.result.recovery_id
+        : null;
+      if (existingId) continue;
+      const recovery = issueRecoveryId({
+        operation_id: operationId,
+        job_id: stored.operation.job_id,
+        reason: stored.operation.error?.message ?? "Dispatch was interrupted",
+        issued_at: (this.clock() ?? new Date()).toISOString().replace(/\.\d{3}Z$/, "Z"),
+        next_state: "recovery_required",
+      });
+      stored.operation.result = { ...(stored.operation.result ?? {}), recovery_id: recovery.recovery_id };
+      this.store.update(stored);
     }
     if (options.registration) {
       this.registration.loadFromObject(options.registration, options.registrationPath ?? "<memory>");

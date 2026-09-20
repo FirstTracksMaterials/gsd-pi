@@ -6,6 +6,7 @@ import {
   upsertTaskPlanning,
 } from "../gsd-db.js";
 import { invalidateStateCache } from "../state.js";
+import { invalidateAffectedVerificationEvidence } from "../replan-evidence.js";
 import { isClosedStatus } from "../status-guards.js";
 import { isNonEmptyString, validateStringArray } from "../validation.js";
 import { assertVerifyIsShellCheckable, validateVerificationCommand } from "../verification-gate.js";
@@ -262,6 +263,11 @@ export async function handleReplanTask(
 
     invalidateStateCache();
     clearParseCache();
+    invalidateAffectedVerificationEvidence({
+      basePath,
+      milestoneId: params.milestoneId,
+      reason: replanSummary(params),
+    });
 
     try {
       await flushWorkflowProjections(basePath, { milestoneId: params.milestoneId });

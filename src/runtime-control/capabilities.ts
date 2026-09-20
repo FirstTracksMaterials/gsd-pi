@@ -68,12 +68,12 @@ export async function buildCapabilities(registration: RegistrationRegistry): Pro
 
   const features: FeatureFlags = {
     durable_operations: true,
-    milestone_scope: false,
+    milestone_scope: true,
     required_policy_gate: true,
     cancellable_verification: true,
     project_snapshots: false,
     event_history: false,
-    readonly_references: false,
+    readonly_references: true,
     single_model_admission: true,
   };
 

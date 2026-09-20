@@ -125,6 +125,10 @@ export type JobRecord = {
   milestone_id: string;
   revision: number;
   authority_epoch: number;
+  spec_id?: string | null;
+  import_digest?: string | null;
+  import_fingerprint?: string | null;
+  status?: string;
 };
 
 export type CrashHook =

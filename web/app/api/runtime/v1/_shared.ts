@@ -1,16 +1,17 @@
 // Project/App: gsd-pi
 // File Purpose: Shared runtime-v1 HTTP helpers.
 
-import type { AdmitResult } from "../../../../../src/runtime-control/admission.ts";
 import {
+  admitAnswer,
   admitCommand,
+  admitImport,
   getOperation,
   getOperationByRequest,
   getRuntimeControl,
 } from "../../../../../src/runtime-control/index.ts";
-import type { RuntimeError } from "../../../../../src/runtime-control/types.ts";
+import type { Operation, RuntimeError } from "../../../../../src/runtime-control/types.ts";
 
-export { admitCommand, getOperation, getOperationByRequest };
+export { admitAnswer, admitCommand, admitImport, getOperation, getOperationByRequest };
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
@@ -32,7 +33,15 @@ export function errorResponse(status: number, error: RuntimeError): Response {
   );
 }
 
-export function admitResponse(result: AdmitResult): Response {
+export function admitResponse(result: {
+  ok: true;
+  status: number;
+  operation: Operation;
+} | {
+  ok: false;
+  status: number;
+  body: { error: RuntimeError };
+}): Response {
   if (!result.ok) {
     return Response.json(result.body, {
       status: result.status,
