@@ -1,0 +1,52 @@
+{
+  "synthetic": true,
+  "case": "stream_events",
+  "note": "One display lane per logical event. No run_complete from execution_complete.",
+  "events": [
+    {
+      "spec_id": "demo--M001",
+      "job_id": "demo:M001",
+      "kind": "assistant_text_delta",
+      "event_id": "90b395b2-9234-497d-97ed-a543a9adf8a8",
+      "message_id": "message-example",
+      "cursor": "epoch1:sequence1",
+      "payload": {
+        "text": "Inspecting the fixture.",
+        "offset": 0
+      }
+    },
+    {
+      "spec_id": "demo--M001",
+      "job_id": "demo:M001",
+      "kind": "assistant",
+      "event_id": "90b395b2-9234-497d-97ed-a543a9adf8a9",
+      "message_id": "message-example",
+      "cursor": "epoch1:sequence2",
+      "payload": {
+        "text": "Inspecting the fixture."
+      }
+    },
+    {
+      "spec_id": "demo--M001",
+      "job_id": "demo:M001",
+      "kind": "tool_started",
+      "event_id": "90b395b2-9234-497d-97ed-a543a9adf8aa",
+      "cursor": "epoch1:sequence3",
+      "payload": {
+        "tool": "Read",
+        "summary": "README.md"
+      }
+    },
+    {
+      "spec_id": "demo--M001",
+      "job_id": "demo:M001",
+      "kind": "tool_completed",
+      "event_id": "90b395b2-9234-497d-97ed-a543a9adf8ab",
+      "cursor": "epoch1:sequence4",
+      "payload": {
+        "tool": "Read",
+        "summary": "README.md"
+      }
+    }
+  ]
+}

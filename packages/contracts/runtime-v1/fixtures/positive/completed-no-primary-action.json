@@ -1,0 +1,46 @@
+{
+  "synthetic": true,
+  "expect": "pass",
+  "rule": "primary_action",
+  "def": "JobSnapshot",
+  "payload": {
+    "protocol_version": 1,
+    "job_id": "demo:M001",
+    "spec_id": "demo--M001",
+    "project_id": "demo",
+    "milestone_id": "M001",
+    "revision": 12,
+    "authority_epoch": 1,
+    "state": "completed",
+    "phase": "completed",
+    "observed_at": "2026-09-19T12:30:00Z",
+    "active_operation_id": null,
+    "active_task": null,
+    "progress": {
+      "tasks_completed": 1,
+      "tasks_total": 1,
+      "label": "1 of 1 tasks"
+    },
+    "actions": [
+      {
+        "id": "review",
+        "label": "Review",
+        "enabled": false,
+        "reason": "Job is complete."
+      },
+      {
+        "id": "replan",
+        "label": "Replan",
+        "enabled": false,
+        "reason": "Job is complete."
+      }
+    ],
+    "primary_action": null,
+    "blockers": [],
+    "pending_input": null,
+    "scientific_status": "NOT_SIGNED_OFF",
+    "source_revision": null,
+    "references": [],
+    "timeline": []
+  }
+}

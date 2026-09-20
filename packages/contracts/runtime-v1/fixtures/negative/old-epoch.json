@@ -1,0 +1,54 @@
+{
+  "synthetic": true,
+  "expect": "fail",
+  "rule": "stale_epoch",
+  "intended_kind": "semantic",
+  "snapshot": {
+    "def": "JobSnapshot",
+    "payload": {
+      "protocol_version": 1,
+      "job_id": "demo:M001",
+      "spec_id": "demo--M001",
+      "project_id": "demo",
+      "milestone_id": "M001",
+      "revision": 5,
+      "authority_epoch": 2,
+      "state": "prepared",
+      "phase": "prepared",
+      "observed_at": "2026-09-19T12:00:00Z",
+      "active_operation_id": null,
+      "active_task": null,
+      "progress": {
+        "tasks_completed": 0,
+        "tasks_total": 1,
+        "label": "0 of 1 tasks"
+      },
+      "actions": [
+        {
+          "id": "start",
+          "label": "Launch job",
+          "enabled": true,
+          "reason": null
+        }
+      ],
+      "primary_action": "start",
+      "blockers": [],
+      "pending_input": null,
+      "scientific_status": "NOT_SIGNED_OFF",
+      "source_revision": null,
+      "references": [],
+      "timeline": []
+    }
+  },
+  "command": {
+    "def": "CommandRequest",
+    "payload": {
+      "protocol_version": 1,
+      "request_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "expected_revision": 99,
+      "expected_epoch": 1,
+      "action": "start",
+      "parameters": {}
+    }
+  }
+}

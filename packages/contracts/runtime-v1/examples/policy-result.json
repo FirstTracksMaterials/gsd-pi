@@ -1,0 +1,12 @@
+{
+  "policy_id": "ftm-science/v1",
+  "contract_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+  "source_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+  "reference_hashes": [],
+  "verdict": "inconclusive",
+  "checks": [],
+  "evidence": [],
+  "scientific_status": "NOT_SIGNED_OFF",
+  "started_at": "2026-09-19T12:00:00Z",
+  "finished_at": "2026-09-19T12:00:01Z"
+}

@@ -1,0 +1,21 @@
+{
+  "protocol_version": 1,
+  "event_id": "90b395b2-9234-497d-97ed-a543a9adf8a8",
+  "cursor": "epoch1:sequence1",
+  "sequence": 1,
+  "authority_epoch": 1,
+  "project_id": "demo",
+  "job_id": "demo:M001",
+  "operation_id": "18d46e1d-0dce-4a82-a9c3-8b04c7b7f7b7",
+  "run_id": "run-example",
+  "attempt_id": "attempt-example",
+  "task_id": "M001/S01/T01",
+  "message_id": "message-example",
+  "type": "assistant_delta",
+  "timestamp": "2026-09-19T12:00:01Z",
+  "revision": 8,
+  "payload": {
+    "text": "Inspecting the fixture.",
+    "offset": 0
+  }
+}

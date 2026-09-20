@@ -1,0 +1,58 @@
+{
+  "http_status": 200,
+  "body": {
+    "spec_id": "new-job",
+    "run_id": null,
+    "objective": null,
+    "status": "not_yet_started",
+    "state_label": "Not Yet Started",
+    "lifecycle_state": "not_yet_started",
+    "active_work_item_id": null,
+    "completed_work_items": 0,
+    "total_work_items": 0,
+    "updated_at": "2026-09-19T20:32:42.960786",
+    "next_action_label": "Submit From Prompt Unavailable: Add a Repo: Line to the Prompt Header or Prefix the Slug With a Repo Name.",
+    "progress": {
+      "summary": "Not started",
+      "bar_plain": "\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588",
+      "stage": "pending",
+      "label": "Not started",
+      "current_step": 0,
+      "total_steps": 4,
+      "prep_completed": 0,
+      "prep_active": false,
+      "exec_completed": 0,
+      "exec_total": 0,
+      "review_cycle": null,
+      "in_review_loop": false,
+      "prep_slots": 10,
+      "exec_slots": 2,
+      "prep_done": 0,
+      "exec_done": 0,
+      "exec_active": false,
+      "width": 12
+    },
+    "updated": {
+      "relative": "Yesterday",
+      "absolute": "Sep 19, 2:32 PM"
+    },
+    "archived": false,
+    "contract_version": 3,
+    "execution": null,
+    "effective_status": {
+      "state": "waiting",
+      "phase": "Not started",
+      "title": "Not started",
+      "work_item_id": null,
+      "started_at": null,
+      "elapsed_ms": null,
+      "last_update": "2026-09-19T20:32:42.960786",
+      "source": "durable_state",
+      "freshness": "durable",
+      "cause": null,
+      "failure": null,
+      "next_action": "Submit From Prompt Unavailable: Add a Repo: Line to the Prompt Header or Prefix the Slug With a Repo Name."
+    }
+  },
+  "note": "Genuine current waiting/not_yet_started list payload from in-process ASGI. Detail route was not separately frozen; list+effective_status is the supported waiting shape."
+}

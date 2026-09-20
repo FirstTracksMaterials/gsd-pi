@@ -1,0 +1,47 @@
+{
+  "contract_version": 1,
+  "job_id": "demo:M001",
+  "task_id": "M001/S01/T01",
+  "task_class": "implementation",
+  "target_project_id": "demo",
+  "goal": "Implement documented unit conversion using the approved fixture.",
+  "allowed_edits": [
+    "src/fixture.py",
+    "tests/test_fixture.py"
+  ],
+  "inputs": [
+    {
+      "path": "README.md",
+      "sha256": null
+    }
+  ],
+  "outputs": [
+    {
+      "path": "src/fixture.py"
+    },
+    {
+      "path": "tests/test_fixture.py"
+    }
+  ],
+  "checks": [
+    {
+      "id": "fixture-regression",
+      "category": "regression",
+      "argv": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_fixture.py"
+      ],
+      "cwd": ".",
+      "timeout_seconds": 600,
+      "expected": {
+        "exit_code": 0
+      }
+    }
+  ],
+  "assumptions": [],
+  "references": [],
+  "signoff_requirement": "preserve"
+}

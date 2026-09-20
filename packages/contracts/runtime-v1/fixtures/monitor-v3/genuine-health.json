@@ -1,0 +1,10 @@
+{
+  "workspace": "<workspace>",
+  "version": "0.2.0",
+  "spec_roots": [
+    "specs/active"
+  ],
+  "include_completed": true,
+  "api_version": 3,
+  "build_id": "raidnight-monitor-v3"
+}

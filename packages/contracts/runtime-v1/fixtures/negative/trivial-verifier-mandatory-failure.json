@@ -1,0 +1,90 @@
+{
+  "synthetic": true,
+  "expect": "fail",
+  "rule": "trivial_verifier_mandatory_failure",
+  "intended_kind": "semantic",
+  "contract": {
+    "def": "ScientificContract",
+    "payload": {
+      "contract_version": 1,
+      "job_id": "demo:M001",
+      "task_id": "M001/S01/T01",
+      "task_class": "scientific",
+      "target_project_id": "demo",
+      "goal": "Keep identity and arithmetic obligations; a trivial task verifier cannot skip them.",
+      "allowed_edits": [
+        "src/fixture.py"
+      ],
+      "inputs": [
+        {
+          "path": "README.md",
+          "sha256": null
+        }
+      ],
+      "outputs": [
+        {
+          "path": "src/fixture.py"
+        }
+      ],
+      "checks": [
+        {
+          "id": "mandatory-identity",
+          "category": "identity",
+          "argv": [
+            "python",
+            "-m",
+            "pytest",
+            "-q",
+            "tests/test_identity.py"
+          ],
+          "cwd": ".",
+          "timeout_seconds": 120,
+          "expected": {
+            "exit_code": 0
+          }
+        },
+        {
+          "id": "trivial-task",
+          "category": "regression",
+          "argv": [
+            "true"
+          ],
+          "cwd": ".",
+          "timeout_seconds": 10,
+          "expected": {
+            "exit_code": 0
+          }
+        }
+      ],
+      "assumptions": [],
+      "references": [],
+      "signoff_requirement": "preserve"
+    }
+  },
+  "policy_result": {
+    "def": "PolicyResult",
+    "payload": {
+      "policy_id": "ftm-science/v1",
+      "contract_hash": "2222222222222222222222222222222222222222222222222222222222222222",
+      "source_hash": "3333333333333333333333333333333333333333333333333333333333333333",
+      "reference_hashes": [],
+      "verdict": "pass",
+      "checks": [
+        {
+          "id": "trivial-task",
+          "category": "regression",
+          "exit_code": 0
+        },
+        {
+          "id": "mandatory-identity",
+          "category": "identity",
+          "exit_code": 1
+        }
+      ],
+      "evidence": [],
+      "scientific_status": "NOT_SIGNED_OFF",
+      "started_at": "2026-09-19T12:00:00Z",
+      "finished_at": "2026-09-19T12:00:02Z"
+    }
+  }
+}

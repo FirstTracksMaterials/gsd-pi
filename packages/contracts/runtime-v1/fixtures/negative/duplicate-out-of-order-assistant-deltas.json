@@ -1,0 +1,92 @@
+{
+  "synthetic": true,
+  "expect": "fail",
+  "rule": "assistant_delta_order",
+  "intended_kind": "semantic",
+  "events": [
+    {
+      "protocol_version": 1,
+      "event_id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+      "cursor": "epoch1:sequence1",
+      "sequence": 1,
+      "authority_epoch": 1,
+      "project_id": "demo",
+      "job_id": "demo:M001",
+      "operation_id": "18d46e1d-0dce-4a82-a9c3-8b04c7b7f7b7",
+      "run_id": "run-example",
+      "attempt_id": "attempt-example",
+      "task_id": "M001/S01/T01",
+      "message_id": "message-delta",
+      "type": "assistant_delta",
+      "timestamp": "2026-09-19T12:00:01Z",
+      "revision": 8,
+      "payload": {
+        "text": "Hel",
+        "offset": 0
+      }
+    },
+    {
+      "protocol_version": 1,
+      "event_id": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+      "cursor": "epoch1:sequence2",
+      "sequence": 2,
+      "authority_epoch": 1,
+      "project_id": "demo",
+      "job_id": "demo:M001",
+      "operation_id": "18d46e1d-0dce-4a82-a9c3-8b04c7b7f7b7",
+      "run_id": "run-example",
+      "attempt_id": "attempt-example",
+      "task_id": "M001/S01/T01",
+      "message_id": "message-delta",
+      "type": "assistant_delta",
+      "timestamp": "2026-09-19T12:00:01Z",
+      "revision": 8,
+      "payload": {
+        "text": "Hel",
+        "offset": 0
+      }
+    },
+    {
+      "protocol_version": 1,
+      "event_id": "ffffffff-ffff-4fff-8fff-ffffffffffff",
+      "cursor": "epoch1:sequence3",
+      "sequence": 3,
+      "authority_epoch": 1,
+      "project_id": "demo",
+      "job_id": "demo:M001",
+      "operation_id": "18d46e1d-0dce-4a82-a9c3-8b04c7b7f7b7",
+      "run_id": "run-example",
+      "attempt_id": "attempt-example",
+      "task_id": "M001/S01/T01",
+      "message_id": "message-delta",
+      "type": "assistant_delta",
+      "timestamp": "2026-09-19T12:00:01Z",
+      "revision": 8,
+      "payload": {
+        "text": "XYZ",
+        "offset": 0
+      }
+    },
+    {
+      "protocol_version": 1,
+      "event_id": "12345678-1234-4234-8234-123456789abc",
+      "cursor": "epoch1:sequence4",
+      "sequence": 4,
+      "authority_epoch": 1,
+      "project_id": "demo",
+      "job_id": "demo:M001",
+      "operation_id": "18d46e1d-0dce-4a82-a9c3-8b04c7b7f7b7",
+      "run_id": "run-example",
+      "attempt_id": "attempt-example",
+      "task_id": "M001/S01/T01",
+      "message_id": "message-delta",
+      "type": "assistant_delta",
+      "timestamp": "2026-09-19T12:00:02Z",
+      "revision": 8,
+      "payload": {
+        "text": " too far",
+        "offset": 9
+      }
+    }
+  ]
+}

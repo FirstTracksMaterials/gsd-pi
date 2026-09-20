@@ -1,0 +1,136 @@
+{
+  "pack_version": "1.0.0",
+  "source": "C01 expansion of C00 baseline monitor-v3 captures",
+  "required_cases": [
+    "action_receipts",
+    "stale_running",
+    "waiting_for_input",
+    "cancelling",
+    "recovery_required",
+    "historical_only",
+    "genuine_health",
+    "genuine_jobs_list",
+    "genuine_prepared",
+    "genuine_active",
+    "genuine_failed",
+    "genuine_completed",
+    "genuine_historical",
+    "genuine_waiting",
+    "genuine_events",
+    "stream_events"
+  ],
+  "fixtures": [
+    {
+      "case": "genuine_health",
+      "path": "fixtures/monitor-v3/genuine-health.json",
+      "kind": "genuine",
+      "synthetic": false,
+      "route": "GET /api/health"
+    },
+    {
+      "case": "genuine_jobs_list",
+      "path": "fixtures/monitor-v3/genuine-jobs-list.json",
+      "kind": "genuine",
+      "synthetic": false,
+      "route": "GET /api/jobs"
+    },
+    {
+      "case": "genuine_prepared",
+      "path": "fixtures/monitor-v3/genuine-job-prepared.json",
+      "kind": "genuine",
+      "synthetic": false,
+      "route": "GET /api/jobs/spec-prepared"
+    },
+    {
+      "case": "genuine_active",
+      "path": "fixtures/monitor-v3/genuine-job-active.json",
+      "kind": "genuine",
+      "synthetic": false,
+      "route": "serializer overlay of a live execution"
+    },
+    {
+      "case": "genuine_failed",
+      "path": "fixtures/monitor-v3/genuine-job-failed.json",
+      "kind": "genuine",
+      "synthetic": false,
+      "route": "GET /api/jobs/spec-failed"
+    },
+    {
+      "case": "genuine_completed",
+      "path": "fixtures/monitor-v3/genuine-job-completed.json",
+      "kind": "genuine",
+      "synthetic": false,
+      "route": "GET /api/jobs/spec-complete"
+    },
+    {
+      "case": "genuine_historical",
+      "path": "fixtures/monitor-v3/genuine-job-historical.json",
+      "kind": "genuine",
+      "synthetic": false,
+      "route": "GET /api/jobs/spec-historical"
+    },
+    {
+      "case": "genuine_waiting",
+      "path": "fixtures/monitor-v3/genuine-job-waiting.json",
+      "kind": "genuine",
+      "synthetic": false,
+      "route": "GET /api/jobs list item"
+    },
+    {
+      "case": "genuine_events",
+      "path": "fixtures/monitor-v3/genuine-events.json",
+      "kind": "genuine",
+      "synthetic": false,
+      "route": "existing stream envelopes"
+    },
+    {
+      "case": "action_receipts",
+      "path": "fixtures/monitor-v3/synthetic-action-receipt.json",
+      "kind": "synthetic",
+      "synthetic": true,
+      "route": "POST /api/jobs/{id}/actions (202 admission)"
+    },
+    {
+      "case": "stale_running",
+      "path": "fixtures/monitor-v3/synthetic-stale-running.json",
+      "kind": "synthetic",
+      "synthetic": true,
+      "route": "GET /api/jobs/{id}"
+    },
+    {
+      "case": "waiting_for_input",
+      "path": "fixtures/monitor-v3/synthetic-waiting-for-input.json",
+      "kind": "synthetic",
+      "synthetic": true,
+      "route": "GET /api/jobs/{id}"
+    },
+    {
+      "case": "cancelling",
+      "path": "fixtures/monitor-v3/synthetic-cancelling.json",
+      "kind": "synthetic",
+      "synthetic": true,
+      "route": "GET /api/jobs/{id}"
+    },
+    {
+      "case": "recovery_required",
+      "path": "fixtures/monitor-v3/synthetic-recovery-required.json",
+      "kind": "synthetic",
+      "synthetic": true,
+      "route": "GET /api/jobs/{id}"
+    },
+    {
+      "case": "historical_only",
+      "path": "fixtures/monitor-v3/synthetic-historical-only.json",
+      "kind": "synthetic",
+      "synthetic": true,
+      "route": "GET /api/jobs/{id}"
+    },
+    {
+      "case": "stream_events",
+      "path": "fixtures/monitor-v3/synthetic-stream-events.json",
+      "kind": "synthetic",
+      "synthetic": true,
+      "route": "GET /api/runtime/events"
+    }
+  ]
+}

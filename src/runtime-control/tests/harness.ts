@@ -1,0 +1,108 @@
+// Project/App: gsd-pi
+// File Purpose: Shared C05 admission test fixtures. Test-only.
+
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { resetRequiredPolicyRegistryForTest } from "../../resources/extensions/gsd/required-policy.ts";
+import {
+  installTestRequiredPolicy,
+  TEST_REQUIRED_POLICY_ID,
+} from "../../resources/extensions/gsd/tests/required-policy-test-harness.ts";
+import { resetCommandHandlerForTest } from "../command-handlers.ts";
+import { RuntimeControl, resetRuntimeControlForTest, setRuntimeControlForTest } from "../control.ts";
+import type { CommandRequest, JobRecord, RegistrationFile } from "../types.ts";
+
+export function uuid(n: number): string {
+  return `aaaaaaaa-aaaa-4aaa-8aaa-${String(n).padStart(12, "0")}`;
+}
+
+export function startRequest(requestId: string, revision = 1, epoch = 1): CommandRequest {
+  return {
+    protocol_version: 1,
+    request_id: requestId,
+    expected_revision: revision,
+    expected_epoch: epoch,
+    action: "start",
+    parameters: {},
+  };
+}
+
+export function tempState(): string {
+  return mkdtempSync(join(tmpdir(), "gsd-c05-state-"));
+}
+
+export function tempProject(label: string): string {
+  const dir = mkdtempSync(join(tmpdir(), `gsd-c05-${label}-`));
+  mkdirSync(join(dir, ".gsd"), { recursive: true });
+  return dir;
+}
+
+export function seedReadyProject(control: RuntimeControl, projectId: string, target: string, milestone = "M001"): JobRecord {
+  installTestRequiredPolicy(target, { selfCheckReady: true });
+  return control.seedJob({
+    job_id: `${projectId}:${milestone}`,
+    project_id: projectId,
+    milestone_id: milestone,
+    revision: 1,
+    authority_epoch: 1,
+  });
+}
+
+export function createControl(options: {
+  projects: Array<{ project_id: string; target: string; required_policy?: string }>;
+  readyPolicy?: boolean;
+  stateRoot?: string;
+}): { control: RuntimeControl; stateRoot: string } {
+  resetRequiredPolicyRegistryForTest();
+  resetCommandHandlerForTest();
+  const stateRoot = options.stateRoot ?? tempState();
+  const registration: RegistrationFile = {
+    projects: options.projects.map((project) => ({
+      project_id: project.project_id,
+      target_worktree: project.target,
+      contract_root: ".gsd/ftm/contracts",
+      reference_repositories: [],
+      writable_cache_roots: [],
+      required_policy: project.required_policy ?? TEST_REQUIRED_POLICY_ID,
+    })),
+  };
+  writeFileSync(join(stateRoot, "registration.json"), JSON.stringify(registration), "utf-8");
+  const control = RuntimeControl.createForTest({
+    stateRoot,
+    registration,
+    registrationPath: join(stateRoot, "registration.json"),
+  });
+  if (options.readyPolicy !== false) {
+    for (const project of options.projects) {
+      if ((project.required_policy ?? TEST_REQUIRED_POLICY_ID) === TEST_REQUIRED_POLICY_ID) {
+        installTestRequiredPolicy(project.target, { selfCheckReady: true });
+      }
+    }
+  }
+  setRuntimeControlForTest(control);
+  return { control, stateRoot };
+}
+
+export function reopenControl(stateRoot: string, projects: Array<{ project_id: string; target: string; required_policy?: string }>): RuntimeControl {
+  const registration: RegistrationFile = {
+    projects: projects.map((project) => ({
+      project_id: project.project_id,
+      target_worktree: project.target,
+      contract_root: ".gsd/ftm/contracts",
+      reference_repositories: [],
+      writable_cache_roots: [],
+      required_policy: project.required_policy ?? TEST_REQUIRED_POLICY_ID,
+    })),
+  };
+  const control = RuntimeControl.reopen(stateRoot, { registration });
+  setRuntimeControlForTest(control);
+  return control;
+}
+
+export function resetC05(): void {
+  resetRequiredPolicyRegistryForTest();
+  resetCommandHandlerForTest();
+  resetRuntimeControlForTest();
+}

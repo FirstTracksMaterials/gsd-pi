@@ -1,0 +1,13 @@
+{
+  "protocol_version": 1,
+  "operation_id": "18d46e1d-0dce-4a82-a9c3-8b04c7b7f7b7",
+  "request_id": "84408d67-40aa-4618-b8cd-d2fa7bba1c48",
+  "job_id": "demo:M001",
+  "action": "start",
+  "state": "accepted",
+  "admitted_at": "2026-09-19T12:00:00Z",
+  "updated_at": "2026-09-19T12:00:00Z",
+  "result": null,
+  "error": null,
+  "target_operation_id": null
+}

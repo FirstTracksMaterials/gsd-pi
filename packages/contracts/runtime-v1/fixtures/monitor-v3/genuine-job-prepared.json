@@ -1,0 +1,152 @@
+{
+  "http_status": 200,
+  "body": {
+    "spec_id": "spec-prepared",
+    "lifecycle_state": "prepared",
+    "state_label": "Prepared",
+    "submit_summary": "Prepared",
+    "run_summary": "Not Started / 0 of 2 Items",
+    "next_action_label": "Launch Work Items",
+    "actions": [
+      {
+        "id": "launch",
+        "label": "Launch Work Items",
+        "enabled": true,
+        "reason": null
+      },
+      {
+        "id": "review-current",
+        "label": "Review Current Spec",
+        "enabled": false,
+        "reason": "Spec files are incomplete."
+      },
+      {
+        "id": "regenerate",
+        "label": "Regenerate From Prompt",
+        "enabled": false,
+        "reason": "Prompt file is missing."
+      },
+      {
+        "id": "about",
+        "label": "About This Job",
+        "enabled": true,
+        "reason": null
+      },
+      {
+        "id": "state",
+        "label": "Show State",
+        "enabled": true,
+        "reason": null
+      },
+      {
+        "id": "events",
+        "label": "Show Events",
+        "enabled": true,
+        "reason": null
+      },
+      {
+        "id": "artefacts",
+        "label": "Show Artefacts",
+        "enabled": true,
+        "reason": null
+      }
+    ],
+    "prompt_display": null,
+    "target": null,
+    "submit_status": "prepared",
+    "submit_reason": "",
+    "failed_stage": null,
+    "active_submit_stage": null,
+    "latest_review_verdict": null,
+    "latest_review_reason": null,
+    "review_cycle_count": 0,
+    "amend_cycle_count": 0,
+    "submit_stages": [
+      {
+        "stage": "dry-run",
+        "status": "pass"
+      }
+    ],
+    "review_cycles": [],
+    "work_item_timeline": [],
+    "recent_events": [],
+    "artefact_paths": [],
+    "repair_hints": [],
+    "updated_at": "2026-06-06T12:00:00+00:00",
+    "run_id": null,
+    "objective": null,
+    "status": "prepared",
+    "active_work_item_id": null,
+    "completed_work_items": 0,
+    "total_work_items": 2,
+    "worktree_path": null,
+    "branch": null,
+    "blockers": [],
+    "validation_status": null,
+    "backend_activity": null,
+    "resume_action": null,
+    "resume_cycle": null,
+    "archived": false,
+    "failure": null,
+    "submit_history": [],
+    "contract_version": 3,
+    "progress": {
+      "summary": "Step 4/6 \u00b7 Ready to run",
+      "bar_plain": "\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588",
+      "stage": "preparation",
+      "label": "Ready to run",
+      "current_step": 4,
+      "total_steps": 6,
+      "prep_completed": 4,
+      "prep_active": false,
+      "exec_completed": 0,
+      "exec_total": 2,
+      "review_cycle": null,
+      "in_review_loop": false,
+      "prep_slots": 8,
+      "exec_slots": 4,
+      "prep_done": 8,
+      "exec_done": 0,
+      "exec_active": false,
+      "width": 12
+    },
+    "work_timeline": [
+      {
+        "label": "Dry run",
+        "status": "pass",
+        "detail": "",
+        "symbol": "\u2713",
+        "elapsed": "",
+        "elapsed_ms": null,
+        "turns": null,
+        "expected_turns": null,
+        "turn_unit": "model_turn",
+        "item_id": "dry-run",
+        "source": "submit"
+      }
+    ],
+    "updated": {
+      "relative": "Jun 6",
+      "absolute": "Jun 6, 6:00 AM"
+    },
+    "metrics_lines": [],
+    "detail_text": "Job: spec-prepared\nState: Prepared\nPrompt: -\nTarget: -\nNext: Launch Work Items\nUpdated: Jun 6 (Jun 6, 6:00 AM)\nWorktree: -\nBranch: -\n\nAvailable:\n- :run - Launch Work Items\n- :review-current - unavailable: Spec files are incomplete.\n- :regenerate - unavailable: Prompt file is missing.\n- :about - About This Job\n- :state - Show State\n- :events - Show Events\n- :artefacts - Show Artefacts\n\nProgress:\n- summary: Step 4/6 \u00b7 Ready to run\nWork Timeline:\n\u2713 Dry run (Pass)\n\nArtefacts:\n- none\n\nRecent Events:\n- none",
+    "total_elapsed_ms": null,
+    "total_elapsed": "",
+    "execution": null,
+    "effective_status": {
+      "state": "ready",
+      "phase": "Ready to run",
+      "title": "Ready to run",
+      "work_item_id": null,
+      "started_at": null,
+      "elapsed_ms": null,
+      "last_update": "2026-06-06T12:00:00+00:00",
+      "source": "durable_state",
+      "freshness": "durable",
+      "cause": null,
+      "failure": null,
+      "next_action": "Launch Work Items"
+    }
+  }
+}

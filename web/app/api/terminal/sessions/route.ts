@@ -13,6 +13,7 @@ import {
   isAllowedTerminalCommand,
 } from "../../../../lib/pty-manager";
 import { requireProjectCwd } from "../../../../../src/web/bridge-service.ts";
+import { guardManagedEntry } from "../../../../../src/runtime-control/index.ts";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -44,6 +45,16 @@ export async function POST(request: Request): Promise<Response> {
       { error: `Command not allowed: ${command}` },
       { status: 403 },
     );
+  }
+
+  if (command === "gsd") {
+    const guard = await guardManagedEntry(projectCwd, "terminal");
+    if (!guard.allow) {
+      return Response.json(guard.body, {
+        status: guard.status,
+        headers: { "Cache-Control": "no-store" },
+      });
+    }
   }
 
   getOrCreateSession(id, projectCwd, command);

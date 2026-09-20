@@ -1,0 +1,280 @@
+{
+  "pack_version": "1.0.0",
+  "schema": {
+    "path": "interface.schema.json",
+    "sha256": "0643f017003901c73859db55ae74dbc0bb67b270e43554a7111ca8038d8aca01",
+    "id": "https://firsttracksmaterials.invalid/raidnight/runtime-control-v1.schema.json"
+  },
+  "examples": [
+    {
+      "path": "examples/command-request.json",
+      "def": "CommandRequest",
+      "sha256": "3865cdbae8867473f7cb0b7f5e0418f188a830a1fda69028dc1a683293dec358",
+      "synthetic": false,
+      "expect": "pass",
+      "rule": "schema_example"
+    },
+    {
+      "path": "examples/event.json",
+      "def": "Event",
+      "sha256": "a3ecfc89443e1463b7eec65812f01428296869622640d4423036e4f7bcfaf3fe",
+      "synthetic": false,
+      "expect": "pass",
+      "rule": "schema_example"
+    },
+    {
+      "path": "examples/job-snapshot.json",
+      "def": "JobSnapshot",
+      "sha256": "1f7b4e671d3f4c4eb20ebdb3b3698c9d8e59fb963818a0528b5786d22daf2ed7",
+      "synthetic": false,
+      "expect": "pass",
+      "rule": "schema_example"
+    },
+    {
+      "path": "examples/operation.json",
+      "def": "Operation",
+      "sha256": "12292f0622804e60213d81eae737205a7c7d3928398f1c607ae9e7f7c7ed79bc",
+      "synthetic": false,
+      "expect": "pass",
+      "rule": "schema_example"
+    },
+    {
+      "path": "examples/policy-result.json",
+      "def": "PolicyResult",
+      "sha256": "1dde0cc09c56b1779c1dbb7e721300197ea4ec89ef70cbcd0b0df8fc6f6e47c5",
+      "synthetic": false,
+      "expect": "pass",
+      "rule": "schema_example"
+    },
+    {
+      "path": "examples/scientific-contract.json",
+      "def": "ScientificContract",
+      "sha256": "d719e55834bc1cb2fc60574089430f3f6cc397b5973d228e12a26248a3a679bd",
+      "synthetic": false,
+      "expect": "pass",
+      "rule": "schema_example"
+    }
+  ],
+  "fixtures": [
+    {
+      "path": "fixtures/positive/completed-no-primary-action.json",
+      "def": "JobSnapshot",
+      "sha256": "ab947c49cdab588072ede7484283128c4bcdf78a77a36cc62c4495efccda8073",
+      "synthetic": true,
+      "expect": "pass",
+      "rule": "primary_action",
+      "intended_kind": null
+    },
+    {
+      "path": "fixtures/positive/documentation-not-applicable.json",
+      "def": "ScientificContract",
+      "sha256": "643b21262d7907238fc70336dec3197129312da1ca7256da51929e6f1feaad02",
+      "synthetic": true,
+      "expect": "pass",
+      "rule": "signoff",
+      "intended_kind": null
+    },
+    {
+      "path": "fixtures/positive/recover-recovery-id.json",
+      "def": "CommandRequest",
+      "sha256": "5b574c7a54a6df23bf1904f3a7d15de38b0d31e8417eddcd189aff2a38fad74d",
+      "synthetic": true,
+      "expect": "pass",
+      "rule": "action_parameters",
+      "intended_kind": null
+    },
+    {
+      "path": "fixtures/positive/replan-reason.json",
+      "def": "CommandRequest",
+      "sha256": "b02dc353d9051551b45e7d41e809c6a0cb0c5023558517242929196473733a11",
+      "synthetic": true,
+      "expect": "pass",
+      "rule": "action_parameters",
+      "intended_kind": null
+    },
+    {
+      "path": "fixtures/negative/duplicate-out-of-order-assistant-deltas.json",
+      "def": null,
+      "sha256": "e6aa075f7afeaa4f049bf52d63aa733a7edfd9faadf2c4c0d491fdc48285dba7",
+      "synthetic": true,
+      "expect": "fail",
+      "rule": "assistant_delta_order",
+      "intended_kind": "semantic"
+    },
+    {
+      "path": "fixtures/negative/false-execution-complete.json",
+      "def": null,
+      "sha256": "0fdfb5d3ed9490fab195ff45cf7a8c5baeda6eacfc55765a38519800c92aa6cc",
+      "synthetic": true,
+      "expect": "fail",
+      "rule": "false_execution_complete",
+      "intended_kind": "semantic"
+    },
+    {
+      "path": "fixtures/negative/malformed-policy-output.json",
+      "def": null,
+      "sha256": "c3ca81b874416fecb0e62ee47fb4c89242e2964a518db8001a48f02e7aeaaf30",
+      "synthetic": true,
+      "expect": "fail",
+      "rule": "malformed_policy_output",
+      "intended_kind": "structural"
+    },
+    {
+      "path": "fixtures/negative/old-epoch.json",
+      "def": null,
+      "sha256": "e72f881d5901e5987d923eaa72f5f473e10c92ad96739b0d97eb775e3ef23ce2",
+      "synthetic": true,
+      "expect": "fail",
+      "rule": "stale_epoch",
+      "intended_kind": "semantic"
+    },
+    {
+      "path": "fixtures/negative/reference-drift.json",
+      "def": null,
+      "sha256": "ddfdddc6e8e3bed590dcc66545a38afc24d73cc0cac06f31d6e5cb91feebb214",
+      "synthetic": true,
+      "expect": "fail",
+      "rule": "reference_drift",
+      "intended_kind": "semantic"
+    },
+    {
+      "path": "fixtures/negative/same-request-id-different-payload.json",
+      "def": null,
+      "sha256": "93f5282a500f59914d4ef0ccf2756d295b888cc367979706b4921440ab790816",
+      "synthetic": true,
+      "expect": "fail",
+      "rule": "request_id_conflict",
+      "intended_kind": "semantic"
+    },
+    {
+      "path": "fixtures/negative/trivial-verifier-mandatory-failure.json",
+      "def": null,
+      "sha256": "9e9d8fd45015b68aa5a49838b7145b0c4cc72f9045fb235a5784087757570c1c",
+      "synthetic": true,
+      "expect": "fail",
+      "rule": "trivial_verifier_mandatory_failure",
+      "intended_kind": "semantic"
+    }
+  ],
+  "monitor_v3": [
+    {
+      "path": "fixtures/monitor-v3/genuine-health.json",
+      "case": "genuine_health",
+      "kind": "genuine",
+      "synthetic": false,
+      "sha256": "b93052b11701d994987504830002e7787d8edd228da5fb5e8bd3fe00fad0598b"
+    },
+    {
+      "path": "fixtures/monitor-v3/genuine-jobs-list.json",
+      "case": "genuine_jobs_list",
+      "kind": "genuine",
+      "synthetic": false,
+      "sha256": "957bbb6860b811f5814c921a689c6aeb1efb4372e51e79b35776b74ac951cc61"
+    },
+    {
+      "path": "fixtures/monitor-v3/genuine-job-prepared.json",
+      "case": "genuine_prepared",
+      "kind": "genuine",
+      "synthetic": false,
+      "sha256": "44bea577d3394c1f22a1d3207240e1d4b6db79e27212215ab32cfc3605ce879d"
+    },
+    {
+      "path": "fixtures/monitor-v3/genuine-job-active.json",
+      "case": "genuine_active",
+      "kind": "genuine",
+      "synthetic": false,
+      "sha256": "f36dce5e820594a7084c34d4c1d24969f251c90328af212dde4d083d651fb2b4"
+    },
+    {
+      "path": "fixtures/monitor-v3/genuine-job-failed.json",
+      "case": "genuine_failed",
+      "kind": "genuine",
+      "synthetic": false,
+      "sha256": "932a34c2a02b605c90ecbd1f435b09f9ef986515dc75d6a895d1ce77a2631c01"
+    },
+    {
+      "path": "fixtures/monitor-v3/genuine-job-completed.json",
+      "case": "genuine_completed",
+      "kind": "genuine",
+      "synthetic": false,
+      "sha256": "749aaa4c0f9f69357305069da97a801efc0fdd74e09fe2b651ff0db453bbe865"
+    },
+    {
+      "path": "fixtures/monitor-v3/genuine-job-historical.json",
+      "case": "genuine_historical",
+      "kind": "genuine",
+      "synthetic": false,
+      "sha256": "2e2bca88950fba204968082af9e68ef378a891488398970a8f38111ad1f3618b"
+    },
+    {
+      "path": "fixtures/monitor-v3/genuine-job-waiting.json",
+      "case": "genuine_waiting",
+      "kind": "genuine",
+      "synthetic": false,
+      "sha256": "a121b2970eaf67ac79de4edcf3cf85d0b8fbecdc0f2d7f1fc39e5c4fe22806ea"
+    },
+    {
+      "path": "fixtures/monitor-v3/genuine-events.json",
+      "case": "genuine_events",
+      "kind": "genuine",
+      "synthetic": false,
+      "sha256": "192685cc5d306ddcfe766ebeb4cb05072e0cd9437354326e9fa4d40e1dc83363"
+    },
+    {
+      "path": "fixtures/monitor-v3/synthetic-action-receipt.json",
+      "case": "action_receipts",
+      "kind": "synthetic",
+      "synthetic": true,
+      "sha256": "215f03b20c545c5f10e3045c836bf57cacfe8fa80aa340083d1ea2a5d05d8b90"
+    },
+    {
+      "path": "fixtures/monitor-v3/synthetic-stale-running.json",
+      "case": "stale_running",
+      "kind": "synthetic",
+      "synthetic": true,
+      "sha256": "bad0bc48f5696614d20b3c2848b18154d02549ae788588cbe51aba768e57d083"
+    },
+    {
+      "path": "fixtures/monitor-v3/synthetic-waiting-for-input.json",
+      "case": "waiting_for_input",
+      "kind": "synthetic",
+      "synthetic": true,
+      "sha256": "1f8400c981ecc66a910ddfffffe5612c7f37c39678708dded3c8ff78bd661bb3"
+    },
+    {
+      "path": "fixtures/monitor-v3/synthetic-cancelling.json",
+      "case": "cancelling",
+      "kind": "synthetic",
+      "synthetic": true,
+      "sha256": "23e80f47e5fea7eeea752de6717fece6d934d0fe5c2e01d1df204908bc0c8c4b"
+    },
+    {
+      "path": "fixtures/monitor-v3/synthetic-recovery-required.json",
+      "case": "recovery_required",
+      "kind": "synthetic",
+      "synthetic": true,
+      "sha256": "0808da15bf8f03c3e1532102e468a82f627e1ab58f8a012598815ef9fd280fe3"
+    },
+    {
+      "path": "fixtures/monitor-v3/synthetic-historical-only.json",
+      "case": "historical_only",
+      "kind": "synthetic",
+      "synthetic": true,
+      "sha256": "a8a3b0ba79461dc13ed8f82f1262bfe3f3afead6e1b469dfedffa3296af7e43e"
+    },
+    {
+      "path": "fixtures/monitor-v3/synthetic-stream-events.json",
+      "case": "stream_events",
+      "kind": "synthetic",
+      "synthetic": true,
+      "sha256": "14e7658d0cad7f847541ffdebd002d4c40f44d7ae1d5846490da60758761eeac"
+    },
+    {
+      "path": "fixtures/monitor-v3/inventory.json",
+      "case": "inventory",
+      "kind": "index",
+      "synthetic": false,
+      "sha256": "79214b3fe151c14f2bfbea13196201854a55dc09e8b2b2aff64351c8b014575f"
+    }
+  ]
+}

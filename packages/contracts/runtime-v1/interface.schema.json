@@ -1,0 +1,953 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://firsttracksmaterials.invalid/raidnight/runtime-control-v1.schema.json",
+  "title": "RaidNight GSD migration contract v1",
+  "description": "Validate a specific $defs entry; semantic rules in 04 and 05 are additional normative requirements.",
+  "$defs": {
+    "Action": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "enum": [
+            "prepare",
+            "review",
+            "replan",
+            "start",
+            "resume",
+            "cancel",
+            "recover"
+          ]
+        },
+        "label": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "enabled",
+        "reason"
+      ],
+      "additionalProperties": false
+    },
+    "CommandRequest": {
+      "type": "object",
+      "properties": {
+        "protocol_version": {
+          "const": 1
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "expected_revision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "expected_epoch": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "action": {
+          "enum": [
+            "prepare",
+            "review",
+            "replan",
+            "start",
+            "resume",
+            "cancel",
+            "recover"
+          ]
+        },
+        "parameters": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "protocol_version",
+        "request_id",
+        "expected_revision",
+        "expected_epoch",
+        "action",
+        "parameters"
+      ],
+      "additionalProperties": false
+    },
+    "Error": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "retryable": {
+          "type": "boolean"
+        },
+        "operation_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "code",
+        "message",
+        "retryable"
+      ],
+      "additionalProperties": false
+    },
+    "Operation": {
+      "type": "object",
+      "properties": {
+        "protocol_version": {
+          "const": 1
+        },
+        "operation_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "job_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "action": {
+          "enum": [
+            "import",
+            "answer",
+            "prepare",
+            "review",
+            "replan",
+            "start",
+            "resume",
+            "cancel",
+            "recover"
+          ]
+        },
+        "state": {
+          "enum": [
+            "accepted",
+            "running",
+            "awaiting_input",
+            "cancelling",
+            "succeeded",
+            "failed",
+            "cancelled",
+            "recovery_required"
+          ]
+        },
+        "admitted_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "result": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Error"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "target_operation_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "protocol_version",
+        "operation_id",
+        "request_id",
+        "job_id",
+        "action",
+        "state",
+        "admitted_at",
+        "updated_at",
+        "result",
+        "error",
+        "target_operation_id"
+      ],
+      "additionalProperties": false
+    },
+    "Reference": {
+      "type": "object",
+      "properties": {
+        "project_id": {
+          "type": "string"
+        },
+        "root": {
+          "type": "string"
+        },
+        "head": {
+          "type": "string"
+        },
+        "dirty": {
+          "type": "boolean"
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              }
+            },
+            "required": [
+              "path",
+              "sha256"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "project_id",
+        "root",
+        "head",
+        "dirty",
+        "files"
+      ],
+      "additionalProperties": false
+    },
+    "JobSnapshot": {
+      "type": "object",
+      "properties": {
+        "protocol_version": {
+          "const": 1
+        },
+        "job_id": {
+          "type": "string"
+        },
+        "spec_id": {
+          "type": "string"
+        },
+        "project_id": {
+          "type": "string"
+        },
+        "milestone_id": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "authority_epoch": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "state": {
+          "enum": [
+            "idle",
+            "planning",
+            "prepared",
+            "running",
+            "verifying",
+            "waiting_for_input",
+            "blocked",
+            "cancelling",
+            "cancelled",
+            "failed",
+            "completed",
+            "recovery_required"
+          ]
+        },
+        "phase": {
+          "type": "string"
+        },
+        "observed_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "active_operation_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "active_task": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "started_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "turns": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "id",
+                "title",
+                "started_at",
+                "turns"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "progress": {
+          "type": "object",
+          "properties": {
+            "tasks_completed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "tasks_total": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "label": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "tasks_completed",
+            "tasks_total",
+            "label"
+          ],
+          "additionalProperties": false
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Action"
+          }
+        },
+        "primary_action": {
+          "anyOf": [
+            {
+              "enum": [
+                "prepare",
+                "review",
+                "replan",
+                "start",
+                "resume",
+                "cancel",
+                "recover"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "blockers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "pending_input": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "question_id": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "summary": {
+                  "type": "string"
+                },
+                "method": {
+                  "enum": [
+                    "select",
+                    "confirm",
+                    "input",
+                    "editor"
+                  ]
+                },
+                "session_id": {
+                  "type": "string"
+                },
+                "url": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "question_id",
+                "title",
+                "summary",
+                "method",
+                "session_id",
+                "url"
+              ],
+              "additionalProperties": true
+            }
+          ]
+        },
+        "scientific_status": {
+          "enum": [
+            "NOT_SIGNED_OFF",
+            "SIGNED_OFF",
+            "NOT_APPLICABLE"
+          ]
+        },
+        "source_revision": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "references": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Reference"
+          }
+        },
+        "timeline": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
+      },
+      "required": [
+        "protocol_version",
+        "job_id",
+        "spec_id",
+        "project_id",
+        "milestone_id",
+        "revision",
+        "authority_epoch",
+        "state",
+        "phase",
+        "observed_at",
+        "active_operation_id",
+        "active_task",
+        "progress",
+        "actions",
+        "primary_action",
+        "blockers",
+        "pending_input",
+        "scientific_status",
+        "source_revision",
+        "references",
+        "timeline"
+      ],
+      "additionalProperties": true
+    },
+    "Event": {
+      "type": "object",
+      "properties": {
+        "protocol_version": {
+          "const": 1
+        },
+        "event_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "cursor": {
+          "type": "string"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "authority_epoch": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "project_id": {
+          "type": "string"
+        },
+        "job_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "operation_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "run_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "attempt_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "task_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "message_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "type": {
+          "enum": [
+            "snapshot_invalidated",
+            "operation_updated",
+            "job_updated",
+            "assistant_delta",
+            "assistant_message",
+            "tool_started",
+            "tool_finished",
+            "verification_updated",
+            "input_required",
+            "input_resolved",
+            "recovery_required",
+            "stream_gap"
+          ]
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "payload": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "protocol_version",
+        "event_id",
+        "cursor",
+        "sequence",
+        "authority_epoch",
+        "project_id",
+        "job_id",
+        "operation_id",
+        "run_id",
+        "attempt_id",
+        "task_id",
+        "message_id",
+        "type",
+        "timestamp",
+        "revision",
+        "payload"
+      ],
+      "additionalProperties": false
+    },
+    "Check": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "category": {
+          "enum": [
+            "identity",
+            "arithmetic",
+            "units",
+            "limiting_case",
+            "numerical",
+            "schema",
+            "regression",
+            "provenance",
+            "documentation"
+          ]
+        },
+        "argv": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "timeout_seconds": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "expected": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "category",
+        "argv",
+        "cwd",
+        "timeout_seconds",
+        "expected"
+      ],
+      "additionalProperties": false
+    },
+    "ScientificContract": {
+      "type": "object",
+      "properties": {
+        "contract_version": {
+          "const": 1
+        },
+        "job_id": {
+          "type": "string"
+        },
+        "task_id": {
+          "type": "string"
+        },
+        "task_class": {
+          "enum": [
+            "implementation",
+            "scientific",
+            "documentation"
+          ]
+        },
+        "target_project_id": {
+          "type": "string"
+        },
+        "goal": {
+          "type": "string",
+          "minLength": 1
+        },
+        "allowed_edits": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "inputs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "sha256": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "units": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "path"
+            ],
+            "additionalProperties": true
+          }
+        },
+        "outputs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "units": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "path"
+            ],
+            "additionalProperties": true
+          }
+        },
+        "checks": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/Check"
+          }
+        },
+        "assumptions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "references": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Reference"
+          }
+        },
+        "signoff_requirement": {
+          "enum": [
+            "preserve",
+            "required",
+            "not_applicable"
+          ]
+        }
+      },
+      "required": [
+        "contract_version",
+        "job_id",
+        "task_id",
+        "task_class",
+        "target_project_id",
+        "goal",
+        "allowed_edits",
+        "inputs",
+        "outputs",
+        "checks",
+        "assumptions",
+        "references",
+        "signoff_requirement"
+      ],
+      "additionalProperties": true
+    },
+    "PolicyResult": {
+      "type": "object",
+      "properties": {
+        "policy_id": {
+          "const": "ftm-science/v1"
+        },
+        "contract_hash": {
+          "type": "string"
+        },
+        "source_hash": {
+          "type": "string"
+        },
+        "reference_hashes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "project_id": {
+                "type": "string"
+              },
+              "hash": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "project_id",
+              "hash"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "verdict": {
+          "enum": [
+            "pass",
+            "fail",
+            "inconclusive",
+            "cancelled"
+          ]
+        },
+        "checks": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "scientific_status": {
+          "enum": [
+            "NOT_SIGNED_OFF",
+            "SIGNED_OFF",
+            "NOT_APPLICABLE"
+          ]
+        },
+        "started_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "finished_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "policy_id",
+        "contract_hash",
+        "source_hash",
+        "reference_hashes",
+        "verdict",
+        "checks",
+        "evidence",
+        "scientific_status",
+        "started_at",
+        "finished_at"
+      ],
+      "additionalProperties": false
+    },
+    "JobImport": {
+      "type": "object",
+      "properties": {
+        "protocol_version": {
+          "const": 1
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "import_digest": {
+          "type": "string"
+        },
+        "spec_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "type": "string"
+        },
+        "source": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "enum": [
+                "prompt",
+                "legacy"
+              ]
+            },
+            "path": {
+              "type": "string"
+            },
+            "sha256": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "path",
+            "sha256"
+          ],
+          "additionalProperties": false
+        },
+        "tasks": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "source_job_status": {
+          "type": "string"
+        },
+        "documents": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "content": {
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              }
+            },
+            "required": [
+              "path",
+              "content",
+              "sha256"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "protocol_version",
+        "request_id",
+        "import_digest",
+        "spec_id",
+        "title",
+        "source",
+        "tasks",
+        "source_job_status",
+        "documents"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

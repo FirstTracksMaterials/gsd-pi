@@ -1,0 +1,16 @@
+{
+  "synthetic": true,
+  "expect": "pass",
+  "rule": "action_parameters",
+  "def": "CommandRequest",
+  "payload": {
+    "protocol_version": 1,
+    "request_id": "22222222-2222-4222-8222-222222222222",
+    "expected_revision": 9,
+    "expected_epoch": 2,
+    "action": "recover",
+    "parameters": {
+      "recovery_id": "recovery-diagnostic-1"
+    }
+  }
+}

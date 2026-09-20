@@ -31,7 +31,7 @@
   ],
   "scripts": {
     "build": "node ../../scripts/clean-package-dist.cjs && tsc -p tsconfig.json --incremental false",
-    "test": "node --test dist/rpc.test.js"
+    "test": "node --test dist/rpc.test.js dist/runtime-v1-manifest.test.js"
   },
   "engines": {
     "node": ">=22.0.0"

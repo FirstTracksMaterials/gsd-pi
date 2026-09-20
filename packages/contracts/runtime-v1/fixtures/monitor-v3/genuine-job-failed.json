@@ -1,0 +1,162 @@
+{
+  "http_status": 200,
+  "body": {
+    "spec_id": "spec-failed",
+    "lifecycle_state": "work_item_failed",
+    "state_label": "Work Item Failed",
+    "submit_summary": "Not Submitted",
+    "run_summary": "Failed / 1 of 2 Items",
+    "next_action_label": "Resume Work Items",
+    "actions": [
+      {
+        "id": "resume",
+        "label": "Resume Work Items",
+        "enabled": true,
+        "reason": null
+      },
+      {
+        "id": "about",
+        "label": "About This Job",
+        "enabled": true,
+        "reason": null
+      },
+      {
+        "id": "state",
+        "label": "Show State",
+        "enabled": true,
+        "reason": null
+      },
+      {
+        "id": "events",
+        "label": "Show Events",
+        "enabled": true,
+        "reason": null
+      },
+      {
+        "id": "artefacts",
+        "label": "Show Artefacts",
+        "enabled": true,
+        "reason": null
+      }
+    ],
+    "prompt_display": null,
+    "target": null,
+    "submit_status": null,
+    "submit_reason": null,
+    "failed_stage": null,
+    "active_submit_stage": null,
+    "latest_review_verdict": null,
+    "latest_review_reason": null,
+    "review_cycle_count": 0,
+    "amend_cycle_count": 0,
+    "submit_stages": [],
+    "review_cycles": [],
+    "work_item_timeline": [
+      {
+        "id": "phase-0",
+        "status": "passed",
+        "started_at": "2026-06-06T12:00:00+00:00",
+        "ended_at": "2026-06-06T12:02:05+00:00"
+      },
+      {
+        "id": "phase-1",
+        "title": "Ranking constants module",
+        "status": "failed",
+        "started_at": "2026-06-06T12:02:05+00:00",
+        "ended_at": "2026-06-06T12:06:00+00:00"
+      }
+    ],
+    "recent_events": [],
+    "artefact_paths": [],
+    "repair_hints": [],
+    "updated_at": "2026-06-06T12:10:00+00:00",
+    "run_id": "r1",
+    "objective": null,
+    "status": "work_item_failed",
+    "active_work_item_id": "phase-1",
+    "completed_work_items": 1,
+    "total_work_items": 2,
+    "worktree_path": null,
+    "branch": null,
+    "blockers": [],
+    "validation_status": null,
+    "backend_activity": "phase-1",
+    "resume_action": null,
+    "resume_cycle": null,
+    "archived": false,
+    "failure": null,
+    "submit_history": [],
+    "contract_version": 3,
+    "progress": {
+      "summary": "Step 5/6 \u00b7 Failed at Ranking constants module",
+      "bar_plain": "\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588",
+      "stage": "execution",
+      "label": "Failed at Ranking constants module",
+      "current_step": 5,
+      "total_steps": 6,
+      "prep_completed": 4,
+      "prep_active": false,
+      "exec_completed": 1,
+      "exec_total": 2,
+      "review_cycle": null,
+      "in_review_loop": false,
+      "prep_slots": 8,
+      "exec_slots": 4,
+      "prep_done": 8,
+      "exec_done": 2,
+      "exec_active": true,
+      "width": 12
+    },
+    "work_timeline": [
+      {
+        "label": "Work item 0",
+        "status": "passed",
+        "detail": "",
+        "symbol": "\u2713",
+        "elapsed": "2m 5s",
+        "elapsed_ms": 125000,
+        "turns": null,
+        "expected_turns": 100,
+        "turn_unit": "model_turn",
+        "item_id": "phase-0",
+        "source": "work_item"
+      },
+      {
+        "label": "Ranking constants module",
+        "status": "failed",
+        "detail": "",
+        "symbol": "\u2717",
+        "elapsed": "3m 55s",
+        "elapsed_ms": 235000,
+        "turns": null,
+        "expected_turns": 100,
+        "turn_unit": "model_turn",
+        "item_id": "phase-1",
+        "source": "work_item"
+      }
+    ],
+    "updated": {
+      "relative": "Jun 6",
+      "absolute": "Jun 6, 6:10 AM"
+    },
+    "metrics_lines": [],
+    "detail_text": "Job: spec-failed\nState: Work Item Failed\nPrompt: -\nTarget: -\nNext: Resume Work Items\nUpdated: Jun 6 (Jun 6, 6:10 AM)\nWorktree: -\nBranch: -\n\nAvailable:\n- :run - Resume Work Items\n- :about - About This Job\n- :state - Show State\n- :events - Show Events\n- :artefacts - Show Artefacts\n\nProgress:\n- summary: Step 5/6 \u00b7 Failed at Ranking constants module\nWork Timeline:\n\u2713 Work item 0 (Passed \u00b7 2m 5s)\n\u2717 Ranking constants module (Failed \u00b7 3m 55s)\n\nArtefacts:\n- none\n\nRecent Events:\n- none",
+    "total_elapsed_ms": 360000,
+    "total_elapsed": "6m",
+    "execution": null,
+    "effective_status": {
+      "state": "failed",
+      "phase": "Failed at Ranking constants module",
+      "title": "Ranking constants module",
+      "work_item_id": "phase-1",
+      "started_at": "2026-06-06T12:02:05+00:00",
+      "elapsed_ms": null,
+      "last_update": "2026-06-06T12:10:00+00:00",
+      "source": "durable_state",
+      "freshness": "durable",
+      "cause": "Job failed",
+      "failure": null,
+      "next_action": "Resume Work Items"
+    }
+  }
+}

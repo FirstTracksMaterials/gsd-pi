@@ -1,0 +1,60 @@
+{
+  "assistant_full_message": {
+    "mode": "assistant",
+    "title": "Assistant",
+    "text": "Amendment cycle complete.\n\n**Amended files:**\n- `technical-spec.md`",
+    "tone": "default"
+  },
+  "tool_used": {
+    "mode": "event",
+    "icon": "\u2713",
+    "label": "Tool Done",
+    "summary": "Read specs/active/foo/spec.md",
+    "detail": null,
+    "tone": "success"
+  },
+  "waiting_for_events": {
+    "mode": "event",
+    "icon": "\u2026",
+    "label": "Waiting",
+    "summary": "No run-events.jsonl yet.",
+    "detail": null,
+    "tone": "muted"
+  },
+  "background_task_started": {
+    "mode": "event",
+    "icon": "\u25cf",
+    "label": "Task Started",
+    "summary": "ftm-spec-review cycle 2",
+    "detail": "Stage: spec-review-2 \u00b7 Attempt: 1 \u00b7 Detail: model stage running",
+    "tone": "default"
+  },
+  "quake_e2e_runtime_sse_examples": [
+    {
+      "spec_id": "spec-x",
+      "kind": "assistant_text_delta",
+      "unit_id": "phase-plan",
+      "payload": {
+        "text": "Runtime first message."
+      }
+    },
+    {
+      "spec_id": "spec-x",
+      "kind": "assistant",
+      "unit_id": "phase-plan",
+      "payload": {
+        "text": "Runtime first message."
+      }
+    },
+    {
+      "spec_id": "spec-x",
+      "kind": "tool_started",
+      "unit_id": "phase-plan",
+      "display": {
+        "mode": "event",
+        "label": "Tool",
+        "summary": "Read"
+      }
+    }
+  ]
+}

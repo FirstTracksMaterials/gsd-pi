@@ -1,0 +1,60 @@
+{
+  "synthetic": true,
+  "expect": "fail",
+  "rule": "false_execution_complete",
+  "intended_kind": "semantic",
+  "event": {
+    "def": "Event",
+    "payload": {
+      "protocol_version": 1,
+      "event_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      "cursor": "epoch1:sequence9",
+      "sequence": 9,
+      "authority_epoch": 1,
+      "project_id": "demo",
+      "job_id": "demo:M001",
+      "operation_id": "18d46e1d-0dce-4a82-a9c3-8b04c7b7f7b7",
+      "run_id": "run-example",
+      "attempt_id": "attempt-example",
+      "task_id": "M001/S01/T01",
+      "message_id": null,
+      "type": "job_updated",
+      "timestamp": "2026-09-19T12:01:00Z",
+      "revision": 8,
+      "payload": {
+        "source": "execution_complete",
+        "run_complete": true
+      }
+    }
+  },
+  "snapshot": {
+    "def": "JobSnapshot",
+    "payload": {
+      "protocol_version": 1,
+      "job_id": "demo:M001",
+      "spec_id": "demo--M001",
+      "project_id": "demo",
+      "milestone_id": "M001",
+      "revision": 8,
+      "authority_epoch": 1,
+      "state": "completed",
+      "phase": "completed",
+      "observed_at": "2026-09-19T12:01:00Z",
+      "active_operation_id": null,
+      "active_task": null,
+      "progress": {
+        "tasks_completed": 1,
+        "tasks_total": 1,
+        "label": "1 of 1 tasks"
+      },
+      "actions": [],
+      "primary_action": null,
+      "blockers": [],
+      "pending_input": null,
+      "scientific_status": "SIGNED_OFF",
+      "source_revision": null,
+      "references": [],
+      "timeline": []
+    }
+  }
+}

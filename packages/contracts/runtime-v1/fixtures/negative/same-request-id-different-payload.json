@@ -1,0 +1,31 @@
+{
+  "synthetic": true,
+  "expect": "fail",
+  "rule": "request_id_conflict",
+  "intended_kind": "semantic",
+  "job_id": "demo:M001",
+  "documents": [
+    {
+      "def": "CommandRequest",
+      "payload": {
+        "protocol_version": 1,
+        "request_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "expected_revision": 7,
+        "expected_epoch": 1,
+        "action": "start",
+        "parameters": {}
+      }
+    },
+    {
+      "def": "CommandRequest",
+      "payload": {
+        "protocol_version": 1,
+        "request_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "expected_revision": 7,
+        "expected_epoch": 1,
+        "action": "cancel",
+        "parameters": {}
+      }
+    }
+  ]
+}

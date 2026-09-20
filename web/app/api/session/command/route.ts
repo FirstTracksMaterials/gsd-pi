@@ -3,6 +3,7 @@ import {
   requireProjectCwd,
   sendBridgeInput,
 } from "../../../../../src/web/bridge-service.ts";
+import { guardManagedEntry, isReadOnlyRpcType } from "../../../../../src/runtime-control/index.ts";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -33,6 +34,14 @@ export async function POST(request: Request): Promise<Response> {
 
   try {
     const projectCwd = requireProjectCwd(request);
+    const kind = isReadOnlyRpcType(payload.type) ? "readonly" : "prompt";
+    const guard = await guardManagedEntry(projectCwd, kind);
+    if (!guard.allow) {
+      return Response.json(guard.body, {
+        status: guard.status,
+        headers: { "Cache-Control": "no-store" },
+      });
+    }
     const response = await sendBridgeInput(payload as Parameters<typeof sendBridgeInput>[0], projectCwd);
     if (response === null) {
       return Response.json({ ok: true }, { status: 202 });

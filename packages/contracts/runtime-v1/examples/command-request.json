@@ -1,0 +1,8 @@
+{
+  "protocol_version": 1,
+  "request_id": "84408d67-40aa-4618-b8cd-d2fa7bba1c48",
+  "expected_revision": 7,
+  "expected_epoch": 1,
+  "action": "start",
+  "parameters": {}
+}

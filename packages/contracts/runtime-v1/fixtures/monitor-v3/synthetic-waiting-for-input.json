@@ -1,0 +1,184 @@
+{
+  "synthetic": true,
+  "case": "waiting_for_input",
+  "http_status": 200,
+  "body": {
+    "spec_id": "demo--waiting",
+    "api_version": 3,
+    "runtime_protocol_version": 1,
+    "build_id": "raidnight-monitor-v3-gsd-c01",
+    "capabilities": {
+      "durable_operations": true,
+      "milestone_scope": true,
+      "required_policy_gate": true,
+      "cancellable_verification": true,
+      "project_snapshots": true,
+      "event_history": true,
+      "readonly_references": true,
+      "single_model_admission": true
+    },
+    "lifecycle_state": "running",
+    "state_label": "Waiting for input",
+    "status": "running",
+    "next_action_label": "Answer in runtime UI",
+    "actions": [
+      {
+        "id": "launch",
+        "label": "Launch",
+        "enabled": false,
+        "reason": "Waiting for native input."
+      },
+      {
+        "id": "resume",
+        "label": "Resume",
+        "enabled": false,
+        "reason": "Waiting for native input."
+      },
+      {
+        "id": "cancel",
+        "label": "Cancel",
+        "enabled": true,
+        "reason": null
+      },
+      {
+        "id": "about",
+        "label": "About This Job",
+        "enabled": true,
+        "reason": null
+      }
+    ],
+    "primary_action": null,
+    "prompt_display": null,
+    "target": "air-hockey",
+    "branch": "migration/gsd-acceptance",
+    "worktree_path": "/registered/air-hockey",
+    "submit_status": null,
+    "submit_reason": null,
+    "failed_stage": null,
+    "active_submit_stage": null,
+    "latest_review_verdict": null,
+    "latest_review_reason": null,
+    "review_cycle_count": 0,
+    "amend_cycle_count": 0,
+    "submit_stages": [],
+    "review_cycles": [],
+    "work_item_timeline": [
+      {
+        "id": "task-a",
+        "status": "passed",
+        "title": "Identity repair"
+      },
+      {
+        "id": "task-b",
+        "status": "waiting",
+        "title": "Unit conversion"
+      }
+    ],
+    "recent_events": [],
+    "artefact_paths": [],
+    "repair_hints": [],
+    "updated_at": "2026-09-19T12:00:00+00:00",
+    "run_id": "run-example",
+    "objective": null,
+    "active_work_item_id": "task-b",
+    "completed_work_items": 1,
+    "total_work_items": 2,
+    "blockers": [],
+    "validation_status": null,
+    "backend_activity": null,
+    "resume_action": null,
+    "resume_cycle": null,
+    "archived": false,
+    "failure": null,
+    "submit_history": [],
+    "contract_version": 3,
+    "progress": {
+      "summary": "Step 5/6 \u00b7 Waiting for input",
+      "bar_plain": "\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588",
+      "stage": "execution",
+      "label": "Waiting for input",
+      "current_step": 5,
+      "total_steps": 6,
+      "prep_completed": 4,
+      "prep_active": false,
+      "exec_completed": 1,
+      "exec_total": 2,
+      "review_cycle": null,
+      "in_review_loop": false,
+      "prep_slots": 8,
+      "exec_slots": 4,
+      "prep_done": 8,
+      "exec_done": 1,
+      "exec_active": true,
+      "width": 12
+    },
+    "work_timeline": [
+      {
+        "label": "Identity repair",
+        "status": "passed",
+        "detail": "",
+        "symbol": "\u2713",
+        "elapsed": "",
+        "elapsed_ms": null,
+        "turns": null,
+        "expected_turns": 100,
+        "turn_unit": "model_turn",
+        "item_id": "task-a",
+        "source": "native_plan"
+      },
+      {
+        "label": "Unit conversion",
+        "status": "waiting",
+        "detail": "native question pending",
+        "symbol": "\u2026",
+        "elapsed": "",
+        "elapsed_ms": null,
+        "turns": 3,
+        "expected_turns": 100,
+        "turn_unit": "model_turn",
+        "item_id": "task-b",
+        "source": "native_plan"
+      }
+    ],
+    "updated": {
+      "relative": "now",
+      "absolute": "Sep 19, 12:00 PM"
+    },
+    "metrics_lines": [],
+    "detail_text": "Job: demo--waiting\nState: Waiting for input\nNext: Answer in runtime UI",
+    "total_elapsed_ms": 120000,
+    "total_elapsed": "2m",
+    "execution": {
+      "active": true,
+      "unit_id": "task-b",
+      "unit_turns": 4
+    },
+    "pending_input": {
+      "question_id": "q-1",
+      "title": "Select output unit",
+      "summary": "Runtime is waiting for a typed answer in the native session.",
+      "method": "select",
+      "session_id": "session-demo",
+      "url": "http://127.0.0.1:18365/"
+    },
+    "scientific_status": "NOT_SIGNED_OFF",
+    "runtime": {
+      "ready": true,
+      "reasons": []
+    },
+    "effective_status": {
+      "state": "waiting_for_input",
+      "source": "gsd_runtime",
+      "freshness": "live",
+      "last_update": "2026-09-19T12:00:00+00:00",
+      "phase": "implementation",
+      "title": "Waiting for input",
+      "work_item_id": "task-b",
+      "started_at": "2026-09-19T11:58:00+00:00",
+      "elapsed_ms": 120000,
+      "cause": null,
+      "failure": null,
+      "next_action": "Answer in runtime UI"
+    }
+  }
+}

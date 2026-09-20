@@ -1,0 +1,59 @@
+{
+  "synthetic": true,
+  "expect": "fail",
+  "rule": "reference_drift",
+  "intended_kind": "semantic",
+  "declared": [
+    {
+      "project_id": "load-screen",
+      "root": "/registered/load-screen",
+      "head": "70809fe414f06c0f3896b06e38c522d86a9ab442",
+      "dirty": false,
+      "files": [
+        {
+          "path": "src/units.py",
+          "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    }
+  ],
+  "consumed": [
+    {
+      "project_id": "load-screen",
+      "root": "/registered/load-screen",
+      "head": "70809fe414f06c0f3896b06e38c522d86a9ab442",
+      "dirty": true,
+      "files": [
+        {
+          "path": "src/units.py",
+          "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      ]
+    }
+  ],
+  "policy_result": {
+    "def": "PolicyResult",
+    "payload": {
+      "policy_id": "ftm-science/v1",
+      "contract_hash": "4444444444444444444444444444444444444444444444444444444444444444",
+      "source_hash": "5555555555555555555555555555555555555555555555555555555555555555",
+      "reference_hashes": [
+        {
+          "project_id": "load-screen",
+          "hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "verdict": "pass",
+      "checks": [
+        {
+          "id": "fixture-regression",
+          "exit_code": 0
+        }
+      ],
+      "evidence": [],
+      "scientific_status": "NOT_SIGNED_OFF",
+      "started_at": "2026-09-19T12:00:00Z",
+      "finished_at": "2026-09-19T12:00:03Z"
+    }
+  }
+}

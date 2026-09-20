@@ -1,0 +1,49 @@
+{
+  "synthetic": true,
+  "expect": "pass",
+  "rule": "signoff",
+  "def": "ScientificContract",
+  "payload": {
+    "contract_version": 1,
+    "job_id": "demo:M001",
+    "task_id": "M001/S01/T-docs",
+    "task_class": "documentation",
+    "target_project_id": "demo",
+    "goal": "Document the fixture conversion and record required outputs.",
+    "allowed_edits": [
+      "docs/fixture.md"
+    ],
+    "inputs": [
+      {
+        "path": "README.md",
+        "sha256": null
+      }
+    ],
+    "outputs": [
+      {
+        "path": "docs/fixture.md"
+      }
+    ],
+    "checks": [
+      {
+        "id": "docs-exist",
+        "category": "documentation",
+        "argv": [
+          "test",
+          "-f",
+          "docs/fixture.md"
+        ],
+        "cwd": ".",
+        "timeout_seconds": 30,
+        "expected": {
+          "exit_code": 0
+        }
+      }
+    ],
+    "assumptions": [
+      "No numerical acceptance required."
+    ],
+    "references": [],
+    "signoff_requirement": "not_applicable"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "synthetic": true,
+  "case": "action_receipts",
+  "http_status": 202,
+  "note": "202 is durable admission only, not task success.",
+  "body": {
+    "accepted": true,
+    "spec_id": "demo--M001",
+    "action_id": "launch",
+    "message": "Start admitted.",
+    "execution": null,
+    "operation_id": "18d46e1d-0dce-4a82-a9c3-8b04c7b7f7b7",
+    "request_id": "84408d67-40aa-4618-b8cd-d2fa7bba1c48"
+  }
+}

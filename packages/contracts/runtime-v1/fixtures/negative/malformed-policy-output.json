@@ -1,0 +1,12 @@
+{
+  "synthetic": true,
+  "expect": "fail",
+  "rule": "malformed_policy_output",
+  "intended_kind": "structural",
+  "claimed_exit_code": 0,
+  "payload": {
+    "policy_id": "ftm-science/v1",
+    "verdict": "pass",
+    "scientific_status": "SIGNED_OFF"
+  }
+}
