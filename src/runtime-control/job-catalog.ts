@@ -26,6 +26,7 @@ export function defaultSpecId(projectId: string, milestoneId: string): string {
 export class JobCatalog {
   private jobs = new Map<string, JobRecord>();
   private readonly path: string;
+  private revisionListener: ((job: JobRecord) => void) | null = null;
 
   constructor(stateRoot?: string) {
     this.path = stateRoot ? join(stateRoot, "runtime-control", "jobs.json") : "";
@@ -60,12 +61,25 @@ export class JobCatalog {
     return stored;
   }
 
+  onRevisionBump(listener: ((job: JobRecord) => void) | null): void {
+    this.revisionListener = listener;
+  }
+
   bumpRevision(jobId: string): JobRecord {
     const job = this.require(jobId);
     job.revision += 1;
     this.jobs.set(jobId, job);
     this.persist();
+    this.revisionListener?.(job);
     return job;
+  }
+
+  patch(jobId: string, fields: Partial<JobRecord>): JobRecord {
+    const job = this.require(jobId);
+    const next = { ...job, ...fields, job_id: job.job_id, project_id: job.project_id, milestone_id: job.milestone_id };
+    this.jobs.set(jobId, next);
+    this.persist();
+    return next;
   }
 
   get(jobId: string): JobRecord | undefined {

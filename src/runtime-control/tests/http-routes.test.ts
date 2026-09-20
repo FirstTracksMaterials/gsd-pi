@@ -9,9 +9,7 @@ import { GET as capabilitiesGet } from "../../../web/app/api/runtime/v1/capabili
 import { POST as commandsPost } from "../../../web/app/api/runtime/v1/jobs/[job_id]/commands/route.ts";
 import { GET as jobGet } from "../../../web/app/api/runtime/v1/jobs/[job_id]/route.ts";
 import { POST as answersPost } from "../../../web/app/api/runtime/v1/jobs/[job_id]/answers/route.ts";
-import { GET as historyGet } from "../../../web/app/api/runtime/v1/jobs/[job_id]/history/route.ts";
 import { GET as importGet, POST as importPost } from "../../../web/app/api/runtime/v1/projects/[project_id]/jobs/route.ts";
-import { GET as eventsGet } from "../../../web/app/api/runtime/v1/projects/[project_id]/events/route.ts";
 import { GET as byRequestGet } from "../../../web/app/api/runtime/v1/operations/by-request/[request_id]/route.ts";
 import { registerCommandHandlerForTest } from "../command-handlers.ts";
 import { registerPendingQuestion } from "../answers.ts";
@@ -25,17 +23,25 @@ function sha256(content: string): string {
   return createHash("sha256").update(content, "utf-8").digest("hex");
 }
 
-test("C07 runtime-v1 snapshot routes report not-ready instead of fake success", async () => {
-  const listResponse = await importGet();
-  assert.equal(listResponse.status, 503);
-  const snapshot = await jobGet();
-  assert.equal(snapshot.status, 503);
-  const events = await eventsGet();
-  assert.equal(events.status, 503);
-  const history = await historyGet();
-  assert.equal(history.status, 503);
-  const listBody = await listResponse.json() as { error?: { code?: string } };
-  assert.equal(listBody.error?.code, "runtime_unavailable");
+test("C07 runtime-v1 snapshot list and detail are read-only 200s", async () => {
+  const alpha = tempProject("http-snap");
+  const { control } = createControl({ projects: [{ project_id: "alpha", target: alpha }] });
+  seedReadyProject(control, "alpha", alpha);
+  const listResponse = await importGet(
+    new Request("http://127.0.0.1/api/runtime/v1/projects/alpha/jobs"),
+    { params: { project_id: "alpha" } },
+  );
+  assert.equal(listResponse.status, 200);
+  const listBody = await listResponse.json() as { jobs: Array<{ job_id: string }>; revision: number };
+  assert.equal(listBody.jobs[0]?.job_id, "alpha:M001");
+  const snapshot = await jobGet(
+    new Request("http://127.0.0.1/api/runtime/v1/jobs/alpha%3AM001"),
+    { params: { job_id: "alpha%3AM001" } },
+  );
+  assert.equal(snapshot.status, 200);
+  const body = await snapshot.json() as { protocol_version: number; job_id: string; revision: number };
+  assert.equal(body.protocol_version, 1);
+  assert.equal(body.job_id, "alpha:M001");
 });
 
 test("POST import admits a JobImport and stays idempotent on the same digest", async () => {
@@ -150,5 +156,5 @@ test("GET capabilities uses existing control registration", async () => {
   assert.equal(body.policy_ready, false);
   assert.equal(body.features.milestone_scope, true);
   assert.equal(body.features.readonly_references, true);
-  assert.equal(body.features.project_snapshots, false);
+  assert.equal(body.features.project_snapshots, true);
 });

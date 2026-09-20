@@ -110,6 +110,10 @@ export function setWorkspacePhase(targetRealpath: string, phase: WorkspacePhase)
   if (existing) existing.phase = phase;
 }
 
+export function getWorkspacePhase(targetRealpath: string): WorkspacePhase | undefined {
+  return phases.get(canonicalRealpath(targetRealpath)) ?? profiles.get(canonicalRealpath(targetRealpath))?.phase;
+}
+
 export function getWorkspaceProfileForPath(absolutePath: string): WorkspaceProfile | undefined {
   const real = canonicalRealpath(absolutePath);
   for (const profile of profiles.values()) {

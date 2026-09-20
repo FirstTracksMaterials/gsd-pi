@@ -71,8 +71,8 @@ export async function buildCapabilities(registration: RegistrationRegistry): Pro
     milestone_scope: true,
     required_policy_gate: true,
     cancellable_verification: true,
-    project_snapshots: false,
-    event_history: false,
+    project_snapshots: true,
+    event_history: true,
     readonly_references: true,
     single_model_admission: true,
   };

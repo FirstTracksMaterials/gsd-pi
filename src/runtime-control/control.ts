@@ -10,6 +10,7 @@ import { ModelLease } from "./model-lease.ts";
 import { OperationStore } from "./operation-store.ts";
 import { RegistrationRegistry } from "./registration.ts";
 import { configureRecoveryStore, issueRecoveryId } from "./recovery.ts";
+import { publishOperationUpdated, publishSnapshotInvalidated } from "./event-hub.ts";
 import type { CrashHook, JobRecord, RegistrationFile } from "./types.ts";
 
 export type RuntimeControlOptions = {
@@ -36,6 +37,19 @@ export class RuntimeControl {
     this.jobs = new JobCatalog(options.stateRoot);
     this.store = new OperationStore(options.stateRoot);
     this.clock = options.clock ?? (() => new Date());
+    this.store.onChange((stored) => {
+      const jobId = stored.operation.job_id;
+      const job = jobId ? this.jobs.get(jobId) : undefined;
+      publishOperationUpdated(this, job?.project_id ?? "unknown", { operation: stored.operation }, {
+        job_id: jobId,
+        operation_id: stored.operation.operation_id,
+        revision: job?.revision ?? 0,
+        authority_epoch: job?.authority_epoch ?? 1,
+      });
+    });
+    this.jobs.onRevisionBump((job) => {
+      publishSnapshotInvalidated(this, job.project_id, job.job_id, job.revision, job.authority_epoch);
+    });
     configureRecoveryStore(options.stateRoot);
     const recovered = this.store.reconcile();
     for (const operationId of recovered.recoveryRequired) {

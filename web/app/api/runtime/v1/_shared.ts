@@ -5,13 +5,20 @@ import {
   admitAnswer,
   admitCommand,
   admitImport,
+  buildJobSnapshot,
   getOperation,
   getOperationByRequest,
   getRuntimeControl,
+  listProjectJobs,
+  readJobHistory,
+  subscribeProjectEvents,
 } from "../../../../../src/runtime-control/index.ts";
+import { RuntimeControlError } from "../../../../../src/runtime-control/errors.ts";
 import type { Operation, RuntimeError } from "../../../../../src/runtime-control/types.ts";
 
 export { admitAnswer, admitCommand, admitImport, getOperation, getOperationByRequest };
+export { buildJobSnapshot, listProjectJobs, readJobHistory, subscribeProjectEvents };
+export { RuntimeControlError };
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
@@ -64,6 +71,18 @@ export async function readJson(request: Request): Promise<unknown> {
 
 export function control() {
   return getRuntimeControl();
+}
+
+export function controlError(error: unknown): Response {
+  if (error instanceof RuntimeControlError) {
+    return errorResponse(error.status, error.body.error);
+  }
+  const status = error && typeof error === "object" && "status" in error ? Number((error as { status: number }).status) : 400;
+  return errorResponse(status, {
+    code: "invalid_request",
+    message: error instanceof Error ? error.message : String(error),
+    retryable: false,
+  });
 }
 
 export async function routeParam(

@@ -116,8 +116,8 @@ test("GET capabilities and projects make no model calls and report honest featur
   assert.equal(capabilities.features.required_policy_gate, true);
   assert.equal(capabilities.features.cancellable_verification, true);
   assert.equal(capabilities.features.milestone_scope, true);
-  assert.equal(capabilities.features.project_snapshots, false);
-  assert.equal(capabilities.features.event_history, false);
+  assert.equal(capabilities.features.project_snapshots, true);
+  assert.equal(capabilities.features.event_history, true);
   assert.equal(capabilities.features.readonly_references, true);
   const projects = await buildProjectList(control.registration);
   assert.equal(projects.projects.length, 1);

@@ -20,6 +20,9 @@ export type PendingQuestion = {
   question_id: string;
   job_id: string;
   session_id: string;
+  title?: string;
+  summary?: string;
+  method?: "select" | "confirm" | "input" | "editor";
 };
 
 export type NativeAnswerRouter = (input: {
@@ -33,6 +36,18 @@ let nativeRouter: NativeAnswerRouter | null = null;
 
 export function registerPendingQuestion(question: PendingQuestion): void {
   pending.set(`${question.job_id}:${question.question_id}`, question);
+}
+
+export function listPendingForJob(jobId: string): PendingQuestion[] {
+  return [...pending.values()].filter((question) => question.job_id === jobId);
+}
+
+export function getPendingForJob(jobId: string): PendingQuestion | undefined {
+  return listPendingForJob(jobId)[0];
+}
+
+export function clearPendingQuestion(jobId: string, questionId: string): void {
+  pending.delete(`${jobId}:${questionId}`);
 }
 
 export function registerNativeAnswerRouterForTest(router: NativeAnswerRouter | null): void {

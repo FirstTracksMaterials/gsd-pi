@@ -21,6 +21,12 @@ import { resetRecoveryForTest } from "../recovery.ts";
 import { resetPrepareModeForTest } from "../prepare-boundary.ts";
 import { resetWorkspaceProfilesForTest } from "../workspace-profile.ts";
 import { resetAutoCancellationForTest } from "../../resources/extensions/gsd/auto-cancellation.ts";
+import { resetJournalsForTest } from "../event-journal.ts";
+import { resetEventHubForTest } from "../event-hub.ts";
+import { resetObservationsForTest } from "../observation.ts";
+import { resetSnapshotsForTest } from "../snapshots.ts";
+import { resetWorkersForTest } from "../deep-links.ts";
+import { resetModelCallsForTest } from "../model-calls.ts";
 import type { CommandRequest, JobRecord, RegistrationFile } from "../types.ts";
 
 export function uuid(n: number): string {
@@ -131,5 +137,11 @@ export function resetC05(): void {
   resetPrepareModeForTest();
   resetWorkspaceProfilesForTest();
   resetAutoCancellationForTest();
+  resetJournalsForTest();
+  resetEventHubForTest();
+  resetObservationsForTest();
+  resetSnapshotsForTest();
+  resetWorkersForTest();
+  resetModelCallsForTest();
   delete process.env.GSD_MILESTONE_LOCK;
 }

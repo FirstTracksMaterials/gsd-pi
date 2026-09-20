@@ -2,10 +2,42 @@
 
 Save-point for future agents. This is the GSD fork worktree
 (`migration/raidnight-native`) used for RaidNight native migration.
-Do not write raid-night, product, or quake-cockpit from a gsd-pi C05/C06
+Do not write raid-night, product, or quake-cockpit from a gsd-pi C07
 session unless the prompt names that repo.
 
+## C07 snapshots and events (2026-09-20)
+
+Portable C07 in worktree `migration/raidnight-native` starting at
+`374e0440db55adcf614d29189c99ce2f92ed59f3` (C06). Schema SHA256
+`0643f017003901c73859db55ae74dbc0bb67b270e43554a7111ca8038d8aca01`
+unchanged. No schema edits. Proceeded under the Mac addendum portable
+C01-C15 exception: C00/C02/C06 remain overall BLOCKED (Linux/RDKit).
+Those are allowed deferrals and are not C07 failures. C07 AT-E01-E05
+are portable; overall status PASS.
+
+- Report: `docs/migration/reports/C07.md` Status PASS; development_status READY; acceptance_status PASS
+- Projections: `src/runtime-control/snapshots.ts`
+  - GET `/projects/{id}/jobs` and GET `/jobs/{id}` from native snapshot/progress plus JobCatalog/operations
+  - `readMetadata` db-authoritative vs projection-fallback; fallback cannot claim `completed`/`SIGNED_OFF`
+  - No model calls on any read; `project_snapshots` and `event_history` true
+  - Durations, turns, log refs null when unavailable; no cloud prices
+- Events: R9 journal/SSE/history
+  - Journal under GSD state root, 50 MiB / five segments, cursor `epochN:sequenceM`
+  - Translator reuses BridgeService/native identities; message_id joins deltas/finals
+  - `completed` only from canonical verified milestone, never agent_end/execution_complete
+  - stream_gap on unknown cursor (`job_id=null`); heartbeat 15s; history default 100 max 500
+- Deep links: `pending_input.url` is `/?project=<cwd>&session=&question=` so the existing GSD web UI reuses the same worker
+- Tests: AT-E01, AT-E02, AT-E03, AT-E04, AT-E05 plus C05/C06 regressions
+  `npx --yes pnpm@10.12.1 run typecheck:extensions` exit 0
+  Targeted node tests: 44 + 118 passed
+- Next portable task: C08 FTM native extension. Do not start C08, C09, live
+  GSD/monitor/inference, production services, or Mac sandbox/launchd
+  substitutes in a C07 session.
+- C00/C02/C06 overall remain BLOCKED (Linux bwrap/systemd/model/legacy/Quake;
+  RDKit lockfile wheel; C06 kernel RO-bind). Those are not C07 portable failures.
+
 ## C06 native commands and workspace (2026-09-20)
+
 
 Portable C06 in worktree `migration/raidnight-native` starting at
 `6ed641dce9ac6797cd28ef5cbe08b1ad9010ba9f` (C05). Schema SHA256

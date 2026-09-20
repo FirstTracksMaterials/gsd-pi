@@ -1,9 +1,19 @@
-import { admitImport, admitResponse, control, dynamic, errorResponse, notReady, runtime } from "../../../_shared.ts";
+import { admitImport, admitResponse, control, controlError, dynamic, errorResponse, listProjectJobs, runtime } from "../../../_shared.ts";
 
 export { dynamic, runtime };
 
-export async function GET(): Promise<Response> {
-  return notReady("Job list snapshots are not ready until C07");
+export async function GET(
+  _request: Request,
+  context: { params: Promise<{ project_id: string }> | { project_id: string } },
+): Promise<Response> {
+  try {
+    const resolved = await Promise.resolve(context.params);
+    const projectId = decodeURIComponent(resolved.project_id ?? "");
+    const body = await listProjectJobs(control(), projectId);
+    return Response.json(body, { headers: { "Cache-Control": "no-store" } });
+  } catch (error) {
+    return controlError(error);
+  }
 }
 
 export async function POST(
@@ -28,11 +38,6 @@ export async function POST(
     const result = await admitImport(control(), projectId, body, bodyBytes);
     return admitResponse(result);
   } catch (error) {
-    const status = error && typeof error === "object" && "status" in error ? Number((error as { status: number }).status) : 400;
-    return errorResponse(status, {
-      code: "invalid_request",
-      message: error instanceof Error ? error.message : String(error),
-      retryable: false,
-    });
+    return controlError(error);
   }
 }

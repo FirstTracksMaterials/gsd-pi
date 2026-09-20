@@ -13,6 +13,7 @@ export class OperationStore {
   readonly requestsDir: string;
   private crashHook: CrashHook = null;
   private writeChain: Promise<void> = Promise.resolve();
+  private changeListener: ((stored: StoredOperation) => void) | null = null;
 
   constructor(stateRoot: string) {
     this.stateRoot = stateRoot;
@@ -24,6 +25,10 @@ export class OperationStore {
 
   setCrashHookForTest(hook: CrashHook): void {
     this.crashHook = hook;
+  }
+
+  onChange(listener: ((stored: StoredOperation) => void) | null): void {
+    this.changeListener = listener;
   }
 
   async withWriter<T>(fn: () => Promise<T> | T): Promise<T> {
@@ -118,12 +123,14 @@ export class OperationStore {
       operation_id: stored.operation.operation_id,
       fingerprint: stored.fingerprint,
     });
+    this.changeListener?.(stored);
   }
 
   writeDispatchIntent(stored: StoredOperation): void {
     stored.dispatch_intent = true;
     if (stored.operation.state === "accepted") stored.operation.state = "running";
     atomicWriteJson(this.operationPath(stored.operation.operation_id), stored);
+    this.changeListener?.(stored);
     if (this.crashHook === "after_dispatch_intent") {
       throw new CrashWindowError("after_dispatch_intent");
     }
@@ -131,6 +138,22 @@ export class OperationStore {
 
   update(stored: StoredOperation): void {
     atomicWriteJson(this.operationPath(stored.operation.operation_id), stored);
+    this.changeListener?.(stored);
+  }
+
+  list(): StoredOperation[] {
+    if (!existsSync(this.operationsDir)) return [];
+    const out: StoredOperation[] = [];
+    for (const name of readdirSync(this.operationsDir)) {
+      if (!name.endsWith(".json")) continue;
+      const stored = this.readOperationFile(join(this.operationsDir, name));
+      if (stored) out.push(stored);
+    }
+    return out;
+  }
+
+  listForJob(jobId: string): StoredOperation[] {
+    return this.list().filter((stored) => stored.operation.job_id === jobId);
   }
 
   publicOperation(stored: StoredOperation): Operation {

@@ -76,6 +76,15 @@ function persist(record: RecoveryRecord): void {
   atomicWriteJson(join(diagnosticsDir, `${record.recovery_id}.json`), record);
 }
 
+export function listRecoveries(): RecoveryRecord[] {
+  return [...records.values()];
+}
+
+export function latestOpenRecoveryForJob(jobId: string): RecoveryRecord | undefined {
+  const matches = listRecoveries().filter((record) => record.job_id === jobId && !record.applied);
+  return matches.at(-1);
+}
+
 export function resetRecoveryForTest(): void {
   records.clear();
   diagnosticsDir = null;

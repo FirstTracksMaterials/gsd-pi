@@ -17,6 +17,11 @@ export { fingerprintAnswer, fingerprintCommand, fingerprintImport } from "./fing
 export { REGISTRATION_ENV } from "./registration.ts";
 export { admitImport } from "./import-jobs.ts";
 export { admitAnswer, registerPendingQuestion } from "./answers.ts";
+export { buildJobSnapshot, listProjectJobs, registerNativeSnapshotReaderForTest, reconcileBufferedEvents } from "./snapshots.ts";
+export { subscribeProjectEvents, ingestNativeEvent, ingestVerifiedMilestone, cursorSemantics, configureEventHubForTest } from "./event-hub.ts";
+export { readJobHistory } from "./history.ts";
+export { attachSameWorker, buildQuestionSessionUrl, workerKeyForCwd } from "./deep-links.ts";
+export { modelCallCount, resetModelCallsForTest } from "./model-calls.ts";
 export {
   applyPrepareDispatchBoundary,
   beginPrepareMode,
