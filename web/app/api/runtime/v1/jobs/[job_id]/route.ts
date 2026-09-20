@@ -9,7 +9,7 @@ export async function GET(
   try {
     const resolved = await Promise.resolve(context.params);
     const jobId = decodeURIComponent(resolved.job_id ?? "");
-    const snapshot = await buildJobSnapshot(control(), jobId);
+    const snapshot = await buildJobSnapshot(await control(), jobId);
     return Response.json(snapshot, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     return controlError(error);

@@ -9,7 +9,7 @@ export async function POST(
   try {
     const jobId = await routeParam(context.params, "job_id");
     const body = await readJson(request);
-    const result = await admitCommand(control(), jobId, body);
+    const result = await admitCommand(await control(), jobId, body);
     return admitResponse(result);
   } catch (error) {
     const status = error && typeof error === "object" && "status" in error ? Number((error as { status: number }).status) : 400;

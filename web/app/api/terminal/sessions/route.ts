@@ -13,7 +13,7 @@ import {
   isAllowedTerminalCommand,
 } from "../../../../lib/pty-manager";
 import { requireProjectCwd } from "../../../../../src/web/bridge-service.ts";
-import { guardManagedEntry } from "../../../../../src/runtime-control/index.ts";
+import { guardManagedEntry } from "../../../../../src/runtime-control/entry-guard.ts";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";

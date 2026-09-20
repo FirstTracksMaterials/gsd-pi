@@ -13,10 +13,11 @@ export async function GET(
     const projectId = decodeURIComponent(resolved.project_id ?? "");
     const url = new URL(request.url);
     const after = url.searchParams.get("after");
+    const runtimeControl = await control();
     let unsubscribe: (() => void) | null = null;
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
-        unsubscribe = subscribeProjectEvents(control(), projectId, after, (frame) => {
+        unsubscribe = subscribeProjectEvents(runtimeControl, projectId, after, (frame) => {
           try {
             if (frame.kind === "comment") {
               controller.enqueue(encoder.encode(`: ${frame.comment}\n\n`));

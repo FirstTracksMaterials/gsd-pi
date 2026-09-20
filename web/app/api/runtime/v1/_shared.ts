@@ -2,17 +2,16 @@
 // File Purpose: Shared runtime-v1 HTTP helpers.
 
 import {
-  admitAnswer,
   admitCommand,
-  admitImport,
-  buildJobSnapshot,
   getOperation,
   getOperationByRequest,
-  getRuntimeControl,
-  listProjectJobs,
-  readJobHistory,
-  subscribeProjectEvents,
-} from "../../../../../src/runtime-control/index.ts";
+} from "../../../../../src/runtime-control/admission.ts";
+import { admitAnswer } from "../../../../../src/runtime-control/answers.ts";
+import { admitImport } from "../../../../../src/runtime-control/import-jobs.ts";
+import { buildJobSnapshot, listProjectJobs } from "../../../../../src/runtime-control/snapshots.ts";
+import { ensureRuntimeControl } from "../../../../../src/runtime-control/control.ts";
+import { readJobHistory } from "../../../../../src/runtime-control/history.ts";
+import { subscribeProjectEvents } from "../../../../../src/runtime-control/event-hub.ts";
 import { RuntimeControlError } from "../../../../../src/runtime-control/errors.ts";
 import type { Operation, RuntimeError } from "../../../../../src/runtime-control/types.ts";
 
@@ -69,8 +68,8 @@ export async function readJson(request: Request): Promise<unknown> {
   }
 }
 
-export function control() {
-  return getRuntimeControl();
+export async function control() {
+  return ensureRuntimeControl();
 }
 
 export function controlError(error: unknown): Response {

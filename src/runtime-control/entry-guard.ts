@@ -7,7 +7,7 @@ import { resolve } from "node:path";
 import { isRequiredPolicyReady } from "../resources/extensions/gsd/required-policy.ts";
 import { modelBusy, policyUnavailable, RuntimeControlError } from "./errors.ts";
 import type { RuntimeControl } from "./control.ts";
-import { getRuntimeControl } from "./control.ts";
+import { ensureRuntimeControl } from "./control.ts";
 
 export type ManagedEntryKind = "readonly" | "prompt" | "terminal";
 
@@ -43,9 +43,10 @@ function canonicalCwd(cwd: string): string {
 export async function guardManagedEntry(
   cwd: string,
   kind: ManagedEntryKind,
-  control: RuntimeControl = getRuntimeControl(),
+  control?: RuntimeControl,
 ): Promise<EntryGuardResult> {
-  const project = control.registration.getByCwd(canonicalCwd(cwd));
+  const resolved = control ?? await ensureRuntimeControl();
+  const project = resolved.registration.getByCwd(canonicalCwd(cwd));
   if (!project) return { allow: true };
 
   if (kind === "readonly") return { allow: true };
@@ -57,7 +58,7 @@ export async function guardManagedEntry(
         policy.reason ?? `Required policy ${project.required_policy} is not registered or not ready`,
       );
     }
-    const lease = control.lease.current();
+    const lease = resolved.lease.current();
     if (lease) {
       throw modelBusy("A model-producing operation already owns admission", lease.operation_id);
     }

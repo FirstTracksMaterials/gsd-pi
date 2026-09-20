@@ -13,7 +13,7 @@ export async function GET(
     const cursor = url.searchParams.get("cursor");
     const limitParam = url.searchParams.get("limit");
     const limit = limitParam ? Number(limitParam) : undefined;
-    const page = readJobHistory(control(), jobId, { cursor, limit });
+    const page = readJobHistory(await control(), jobId, { cursor, limit });
     return Response.json(page, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     return controlError(error);

@@ -5,7 +5,11 @@ export { admitCommand, getOperation, getOperationByRequest, parseCommandRequest 
 export { buildCapabilities, buildProjectList } from "./capabilities.ts";
 export { registerCommandHandlerForTest, resetCommandHandlerForTest } from "./command-handlers.ts";
 export {
+  ensureRuntimeControl,
   getRuntimeControl,
+  loadRequiredPolicyModule,
+  REQUIRED_POLICY_MODULE_ENV,
+  requiredPolicyModuleError,
   resetRuntimeControlForTest,
   resolveStateRoot,
   RuntimeControl,

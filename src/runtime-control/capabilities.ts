@@ -7,6 +7,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { isRequiredPolicyReady } from "../resources/extensions/gsd/required-policy.ts";
+import { requiredPolicyModuleError } from "./control.ts";
 import type { RegistrationRegistry } from "./registration.ts";
 import { PROTOCOL_VERSION } from "./types.ts";
 
@@ -53,6 +54,8 @@ export async function buildCapabilities(registration: RegistrationRegistry): Pro
   const diagnostics: string[] = [];
   if (registration.error) diagnostics.push(registration.error);
   if (!registration.path) diagnostics.push("No GSD_RUNTIME_REGISTRATION file configured");
+  const moduleError = requiredPolicyModuleError();
+  if (moduleError) diagnostics.push(moduleError);
 
   let requiredPolicy: string | null = null;
   let policyReady = !registration.error;
@@ -65,6 +68,7 @@ export async function buildCapabilities(registration: RegistrationRegistry): Pro
     }
   }
   if (projects.length === 0 && !registration.error) policyReady = true;
+  if (moduleError) policyReady = false;
 
   const features: FeatureFlags = {
     durable_operations: true,

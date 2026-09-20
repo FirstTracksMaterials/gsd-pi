@@ -9,7 +9,7 @@ export async function GET(
   try {
     const resolved = await Promise.resolve(context.params);
     const projectId = decodeURIComponent(resolved.project_id ?? "");
-    const body = await listProjectJobs(control(), projectId);
+    const body = await listProjectJobs(await control(), projectId);
     return Response.json(body, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     return controlError(error);
@@ -35,7 +35,7 @@ export async function POST(
         retryable: false,
       });
     }
-    const result = await admitImport(control(), projectId, body, bodyBytes);
+    const result = await admitImport(await control(), projectId, body, bodyBytes);
     return admitResponse(result);
   } catch (error) {
     return controlError(error);

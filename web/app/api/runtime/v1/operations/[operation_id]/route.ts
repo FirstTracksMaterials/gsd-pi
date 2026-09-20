@@ -7,5 +7,5 @@ export async function GET(
   context: { params: Promise<{ operation_id: string }> | { operation_id: string } },
 ): Promise<Response> {
   const operationId = await routeParam(context.params, "operation_id");
-  return admitResponse(getOperation(control(), operationId));
+  return admitResponse(getOperation(await control(), operationId));
 }

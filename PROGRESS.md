@@ -5,6 +5,25 @@ Save-point for future agents. This is the GSD fork worktree
 Do not write raid-night, product, or quake-cockpit from a gsd-pi C07
 session unless the prompt names that repo.
 
+## C14 / C03 required-policy module loader (2026-09-20)
+
+Narrow C03 correction used by C14's real packaged daemon. Starting HEAD
+`7d875980b7a63b68cb1dd01b69618483a36cbd87`. Schema unchanged.
+
+- `GSD_REQUIRED_POLICY_MODULE` is loaded once in `ensureRuntimeControl()` and
+  the exported default `RequiredPolicy` is registered into the in-process Map.
+  Unset or missing file fail-closes (`policy_ready=false`). `--import` side
+  effects are not required.
+- Runtime-v1 routes `await control()` so capabilities/commands see the loaded
+  policy. Barrel splits avoid webpack pulling `cancel.ts` -> MCP CLI URL.
+- Cancel loads `src/runtime-control/cancel.ts` from `GSD_WEB_PACKAGE_ROOT`
+  (owner C06 wiring) because `webpackIgnore` of `./cancel.ts` resolved a
+  missing chunk path in `dist/web/standalone`.
+- Tests: `required-policy-module.test.ts` plus focused admission/http-routes/
+  entry-guard/c06-native/c07-events. `pnpm run build:web-host` produces
+  `dist/web/standalone/server.js` (gitignored).
+- Do not start C15, live llama.cpp, or production services from this tree.
+
 ## C07 snapshots and events (2026-09-20)
 
 Portable C07 in worktree `migration/raidnight-native` starting at

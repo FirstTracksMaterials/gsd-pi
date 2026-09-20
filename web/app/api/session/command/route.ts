@@ -3,7 +3,7 @@ import {
   requireProjectCwd,
   sendBridgeInput,
 } from "../../../../../src/web/bridge-service.ts";
-import { guardManagedEntry, isReadOnlyRpcType } from "../../../../../src/runtime-control/index.ts";
+import { guardManagedEntry, isReadOnlyRpcType } from "../../../../../src/runtime-control/entry-guard.ts";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";

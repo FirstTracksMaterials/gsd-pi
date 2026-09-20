@@ -1,10 +1,12 @@
 // Project/App: gsd-pi
 // File Purpose: Daemon runtime-control singleton. Reconstruct from the same state root to simulate restart.
 
-import { mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync } from "node:fs";
+import { isAbsolute, resolve, join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { gsdHome } from "../resources/extensions/gsd/gsd-home.ts";
+import { registerRequiredPolicy, type RequiredPolicy } from "../resources/extensions/gsd/required-policy.ts";
 import { JobCatalog } from "./job-catalog.ts";
 import { ModelLease } from "./model-lease.ts";
 import { OperationStore } from "./operation-store.ts";
@@ -97,10 +99,66 @@ export class RuntimeControl {
 }
 
 let daemon: RuntimeControl | null = null;
+let policyModuleLoad: Promise<void> | null = null;
+let policyModuleError: string | null = null;
+
+export const REQUIRED_POLICY_MODULE_ENV = "GSD_REQUIRED_POLICY_MODULE";
 
 export function resolveStateRoot(env: NodeJS.ProcessEnv = process.env): string {
   if (env.GSD_STATE_DIR && env.GSD_STATE_DIR.trim()) return env.GSD_STATE_DIR.trim();
   return gsdHome();
+}
+
+export function requiredPolicyModuleError(): string | null {
+  return policyModuleError;
+}
+
+function asRequiredPolicy(value: unknown): RequiredPolicy | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Partial<RequiredPolicy>;
+  if (typeof record.id !== "string" || !record.id.trim()) return null;
+  if (typeof record.version !== "string" || !record.version.trim()) return null;
+  if (typeof record.selfCheck !== "function") return null;
+  if (typeof record.validatePlan !== "function") return null;
+  if (typeof record.verifyTask !== "function") return null;
+  return record as RequiredPolicy;
+}
+
+export async function loadRequiredPolicyModule(env: NodeJS.ProcessEnv = process.env): Promise<void> {
+  const spec = env[REQUIRED_POLICY_MODULE_ENV]?.trim();
+  if (!spec) {
+    return;
+  }
+  const resolved = isAbsolute(spec) ? spec : resolve(spec);
+  if (!existsSync(resolved)) {
+    policyModuleError = `${REQUIRED_POLICY_MODULE_ENV} file is missing: ${resolved}`;
+    return;
+  }
+  try {
+    const loaded = await import(/* webpackIgnore: true */ pathToFileURL(resolved).href) as {
+      default?: unknown;
+      policy?: unknown;
+      createPolicy?: () => unknown;
+    };
+    const candidate = loaded.default ?? loaded.policy ?? loaded.createPolicy?.();
+    const policy = asRequiredPolicy(candidate);
+    if (!policy) {
+      policyModuleError = `${REQUIRED_POLICY_MODULE_ENV} did not export a RequiredPolicy`;
+      return;
+    }
+    registerRequiredPolicy(policy);
+  } catch (error) {
+    policyModuleError = `${REQUIRED_POLICY_MODULE_ENV} failed to load: ${error instanceof Error ? error.message : String(error)}`;
+  }
+}
+
+export async function ensureRuntimeControl(): Promise<RuntimeControl> {
+  if (daemon) return daemon;
+  if (!policyModuleLoad) {
+    policyModuleLoad = loadRequiredPolicyModule();
+  }
+  await policyModuleLoad;
+  return getRuntimeControl();
 }
 
 export function getRuntimeControl(): RuntimeControl {
@@ -116,4 +174,6 @@ export function setRuntimeControlForTest(control: RuntimeControl | null): void {
 
 export function resetRuntimeControlForTest(): void {
   daemon = null;
+  policyModuleLoad = null;
+  policyModuleError = null;
 }

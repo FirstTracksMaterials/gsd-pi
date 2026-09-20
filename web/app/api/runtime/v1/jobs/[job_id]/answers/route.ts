@@ -10,7 +10,7 @@ export async function POST(
     const resolved = await Promise.resolve(context.params);
     const jobId = decodeURIComponent(resolved.job_id ?? "");
     const body = await request.json();
-    const result = await admitAnswer(control(), jobId, body);
+    const result = await admitAnswer(await control(), jobId, body);
     return admitResponse(result);
   } catch (error) {
     const status = error && typeof error === "object" && "status" in error ? Number((error as { status: number }).status) : 400;

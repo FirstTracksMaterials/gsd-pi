@@ -1,8 +1,11 @@
 // Project/App: gsd-pi
 // File Purpose: Typed runtime-v1 command adapters over existing GSD domain functions.
 
+import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
 import { evaluateCompulsoryPolicy } from "../resources/extensions/gsd/required-policy.ts";
-import { executeCancel } from "./cancel.ts";
 import { beginPrepareMode, endPrepareMode, isImplementationUnit } from "./prepare-boundary.ts";
 import { applyRecovery, getRecovery, issueRecoveryId } from "./recovery.ts";
 import type { CommandAction, CommandRequest, JobRecord, Operation, ResolvedProject, StoredOperation } from "./types.ts";
@@ -78,6 +81,34 @@ function nowIso(clock: () => Date): string {
   return clock().toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
+async function loadExecuteCancel(): Promise<{ executeCancel: (input: {
+  host: CommandHost;
+  project: ResolvedProject;
+  cancelOperation: StoredOperation;
+}) => Promise<{ holdLease: boolean }> }> {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const packaged = process.env.GSD_WEB_PACKAGE_ROOT?.trim();
+  const candidates = [
+    packaged ? join(packaged, "src", "runtime-control", "cancel.ts") : "",
+    join(here, "cancel.ts"),
+  ].filter((path) => path && existsSync(path));
+  let lastError: unknown = new Error("cancel module was not found beside the runtime or GSD_WEB_PACKAGE_ROOT");
+  for (const candidate of candidates) {
+    try {
+      return await import(/* webpackIgnore: true */ pathToFileURL(candidate).href) as {
+        executeCancel: (input: {
+          host: CommandHost;
+          project: ResolvedProject;
+          cancelOperation: StoredOperation;
+        }) => Promise<{ holdLease: boolean }>;
+      };
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError;
+}
+
 function storedFromContext(context: NativeCommandContext): StoredOperation | undefined {
   return context.host.store.read(context.operation.operation_id);
 }
@@ -129,6 +160,7 @@ export async function productionCommandHandler(context: NativeCommandContext): P
   const milestoneId = context.job.milestone_id;
 
   if (action === "cancel") {
+    const { executeCancel } = await loadExecuteCancel();
     const result = await executeCancel({ host: context.host, project: context.project, cancelOperation: stored });
     return { dispatch: false, holdLease: result.holdLease };
   }
