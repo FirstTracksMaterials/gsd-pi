@@ -9,6 +9,11 @@ import { dirname, join } from "node:path";
 import { afterEach, test } from "node:test";
 
 import {
+  HOST_CHECK_LOG_EXCLUDE_PATHS,
+  hostCheckSourceExclusions,
+  runHostCheck,
+} from "../host-check-runner.js";
+import {
   captureVerificationSourceSnapshot,
   confirmVerificationSourceSnapshot,
   diagnoseMilestoneVerificationSourceDrift,
@@ -254,6 +259,37 @@ test("a .gsd symlink resolving to the repository parent still produces a source 
   const after = capture([{ id: "root", cwd }]);
 
   assert.notEqual(after.aggregateRevision, before.aggregateRevision);
+});
+
+test("AT-S08: runner logs under GSD evidence do not change the source snapshot", async () => {
+  const cwd = createRepository("host-check-logs");
+  const before = capture([{ id: "root", cwd }], { excludePaths: HOST_CHECK_LOG_EXCLUDE_PATHS });
+  const result = await runHostCheck({
+    cwd,
+    timeoutMs: 3_000,
+    shellCommand: "echo host-check-log",
+  });
+  assert.equal(result.exitCode, 0, result.stderr);
+  const after = capture([{ id: "root", cwd }], { excludePaths: HOST_CHECK_LOG_EXCLUDE_PATHS });
+  assert.equal(after.aggregateRevision, before.aggregateRevision);
+});
+
+test("AT-S08: leftover in-repo runner logs are excluded by hostCheckSourceExclusions", async () => {
+  const cwd = createRepository("leftover-logs");
+  const logDir = join(cwd, "tmp-host-logs");
+  const exclusions = hostCheckSourceExclusions(cwd, logDir);
+  const before = capture([{ id: "root", cwd }], { excludePaths: exclusions });
+  const result = await runHostCheck({
+    cwd,
+    timeoutMs: 3_000,
+    logDir,
+    argv: ["node", "-e", "process.stdout.write('leftover-log')"],
+  });
+  assert.equal(result.exitCode, 0, result.stderr);
+  const afterExcluded = capture([{ id: "root", cwd }], { excludePaths: exclusions });
+  assert.equal(afterExcluded.aggregateRevision, before.aggregateRevision);
+  const afterDefault = capture([{ id: "root", cwd }]);
+  assert.notEqual(afterDefault.aggregateRevision, before.aggregateRevision);
 });
 
 test("source snapshot ignores tracked receipts/** bookkeeping (#1819)", () => {

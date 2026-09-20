@@ -5,14 +5,14 @@
  * `verify` policy, and dispatches to the appropriate handler. Four policies:
  *
  *   - content-heuristic: file existence + optional minSize + optional pattern match
- *   - shell-command: spawnSync with 30s timeout, exit 0 → continue, else retry
+ *   - shell-command: host-check runner with 30s default timeout unless the step supplies one, exit 0 → continue, else retry
  *   - prompt-verify: always "pause" (defers to agent)
  *   - human-review: always "pause" (waits for manual inspection)
  *   - (no policy): returns "continue" (passthrough)
  *
  * Observability:
  * - Return value is the typed verification outcome ("continue" | "retry" | "pause" | "abort").
- * - shell-command captures stderr from spawnSync — callers can inspect on retry.
+ * - shell-command captures stderr from the host-check runner — callers can inspect on retry.
  * - content-heuristic logs the specific failure (missing file, below minSize, pattern mismatch).
  * - The frozen DEFINITION.yaml on disk is the single source of truth for step policies.
  */
@@ -21,10 +21,10 @@ import { logWarning } from "./workflow-logger.js";
 import { createHash } from "node:crypto";
 import { readFileSync, existsSync, statSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
-import { spawnSync } from "node:child_process";
 import type { StepDefinition, VerifyPolicy } from "./definition-loader.js";
 import { readFrozenDefinition } from "./custom-workflow-engine.js";
 import { rewriteCommandWithRtk } from "../shared/rtk.js";
+import { createHostCheckLogDir, runHostCheck } from "./host-check-runner.js";
 
 /** Verification outcome type — matches ExecutionPolicy.verify() return type. */
 export type VerificationOutcome = "continue" | "retry" | "pause" | "abort";
@@ -53,17 +53,17 @@ function verificationResult(
  * @returns "continue" if verification passes, "retry" if it should retry, or "pause" if it needs review
  * @throws Error if DEFINITION.yaml is missing or unreadable
  */
-export function runCustomVerification(
+export async function runCustomVerification(
   runDir: string,
   stepId: string,
-): VerificationOutcome {
-  return runCustomVerificationWithEvidence(runDir, stepId).outcome;
+): Promise<VerificationOutcome> {
+  return (await runCustomVerificationWithEvidence(runDir, stepId)).outcome;
 }
 
-export function runCustomVerificationWithEvidence(
+export async function runCustomVerificationWithEvidence(
   runDir: string,
   stepId: string,
-): CustomVerificationResult {
+): Promise<CustomVerificationResult> {
   const def = readFrozenDefinition(runDir);
 
   const step = def.steps.find((s: StepDefinition) => s.id === stepId);
@@ -83,11 +83,11 @@ export function runCustomVerificationWithEvidence(
 /**
  * Dispatch to the correct policy handler.
  */
-function dispatchPolicy(
+async function dispatchPolicy(
   runDir: string,
   step: StepDefinition,
   verify: VerifyPolicy,
-): CustomVerificationResult {
+): Promise<CustomVerificationResult> {
   switch (verify.policy) {
     case "content-heuristic":
       return handleContentHeuristic(runDir, step, verify);
@@ -209,19 +209,21 @@ function handleContentHeuristic(
 /**
  * shell-command handler.
  *
- * Runs the command via `sh -c` with cwd set to the run directory
- * and a 30-second timeout. Returns "continue" if exit code 0,
- * "retry" otherwise (including timeout/signal kills).
+ * Runs the command via the shared host-check runner with cwd set to the run
+ * directory. Default timeout is 30 seconds when the step does not supply one;
+ * an approved longer timeout is not clamped. Returns "continue" if exit code 0,
+ * "retry" otherwise (including timeout/signal kills). Cancelled checks are
+ * non-pass.
  *
  * SECURITY: The command string comes from a frozen DEFINITION.yaml written
  * at run-creation time. The trust boundary is the workflow definition author.
  * Commands run with the same privileges as the GSD process. Only use
  * shell-command verification with definitions you trust.
  */
-function handleShellCommand(
+async function handleShellCommand(
   runDir: string,
-  verify: { policy: "shell-command"; command: string },
-): CustomVerificationResult {
+  verify: { policy: "shell-command"; command: string; timeout_ms?: number },
+): Promise<CustomVerificationResult> {
   // Guard: reject commands containing shell expansion patterns that suggest injection
   const dangerousPatterns = /\$\(|`|;\s*(rm|curl|wget|nc|bash|sh|eval)\b/;
   if (dangerousPatterns.test(verify.command)) {
@@ -236,29 +238,46 @@ function handleShellCommand(
   }
 
   const rewrittenCommand = rewriteCommandWithRtk(verify.command);
-  const result = spawnSync("sh", ["-c", rewrittenCommand], {
+  const timeoutMs = typeof verify.timeout_ms === "number" && verify.timeout_ms > 0
+    ? verify.timeout_ms
+    : 30_000;
+  const host = await runHostCheck({
     cwd: runDir,
-    timeout: 30_000,
-    encoding: "utf-8",
-    stdio: "pipe",
+    timeoutMs,
+    shellCommand: rewrittenCommand,
+    logDir: createHostCheckLogDir(runDir),
     env: { ...process.env, PATH: process.env.PATH },
   });
 
-  if (result.status === 0) {
+  if (host.cancelled || host.failureClass === "cancelled") {
+    return verificationResult("retry", {
+      policy: "shell-command",
+      command: verify.command,
+      exitCode: host.exitCode,
+      signal: host.signal,
+      cancelled: true,
+      durableOutputRef: host.durableOutputRef,
+    });
+  }
+
+  if (host.exitCode === 0) {
     return verificationResult("continue", {
       policy: "shell-command",
       command: verify.command,
-      exitCode: result.status,
-      signal: result.signal,
-      error: result.error?.message ?? null,
+      exitCode: host.exitCode,
+      signal: host.signal,
+      error: host.spawnError?.message ?? null,
+      durableOutputRef: host.durableOutputRef,
     });
   }
 
   return verificationResult("retry", {
     policy: "shell-command",
     command: verify.command,
-    exitCode: result.status,
-    signal: result.signal,
-    error: result.error?.message ?? null,
+    exitCode: host.exitCode,
+    signal: host.signal,
+    error: host.spawnError?.message ?? null,
+    timedOut: host.timedOut,
+    durableOutputRef: host.durableOutputRef,
   });
 }

@@ -82,6 +82,13 @@ import {
   verificationSourceChanged,
   type VerificationSourceSnapshot,
 } from "./verification-source-integrity.js";
+import {
+  applyCompulsoryPolicyToGate,
+  compulsoryPolicyPassed,
+  evaluateCompulsoryPolicy,
+  type CompulsoryPolicyEvaluation,
+} from "./required-policy.js";
+import { HOST_CHECK_LOG_EXCLUDE_PATHS } from "./host-check-runner.js";
 
 type TaskIdentity = { milestoneId: string; sliceId: string; taskId: string };
 type VerificationAttemptSnapshot = Pick<
@@ -197,6 +204,7 @@ function recordHostTechnicalVerdict(input: {
   sourceBefore?: VerificationSourceSnapshot;
   sourceAfter?: VerificationSourceSnapshot;
   sourceError?: string;
+  policyEnvironment?: Record<string, string | boolean | number>;
 }): TaskTechnicalVerdictReceipt {
   const { s } = input.context;
   const authority = input.context.taskAuthority ?? defaultTaskVerificationAuthority;
@@ -235,6 +243,10 @@ function recordHostTechnicalVerdict(input: {
         ...(input.result.checks.some((check) => check.failureClass === "timeout")
           ? { failureClass: "timeout" }
           : {}),
+        ...(input.result.checks.some((check) => check.failureClass === "cancelled")
+          ? { cancelled: true, failureClass: "cancelled" }
+          : {}),
+        ...(input.policyEnvironment ?? {}),
       },
     },
   });
@@ -254,6 +266,25 @@ function resolveVerificationTimeoutMs(prefs: GSDPreferences | undefined): number
 }
 
 export const _resolveVerificationTimeoutMsForTest = resolveVerificationTimeoutMs;
+
+function policyEnvironmentFrom(
+  evaluation: CompulsoryPolicyEvaluation,
+): Record<string, string | boolean | number> {
+  if (evaluation.kind === "unmanaged") return {};
+  if (evaluation.kind === "blocked") {
+    return {
+      requiredPolicyId: evaluation.policyId,
+      requiredPolicyVerdict: "inconclusive",
+    };
+  }
+  return {
+    requiredPolicyId: evaluation.result.policy_id,
+    requiredPolicyVersion: evaluation.result.version,
+    requiredPolicyVerdict: evaluation.result.verdict,
+    ...(evaluation.result.malformed ? { requiredPolicyMalformed: true } : {}),
+    ...(evaluation.result.verdict === "cancelled" ? { cancelled: true } : {}),
+  };
+}
 
 function hostRecoveryRationale(
   verdict: FailedVerdictIdentity,
@@ -954,7 +985,8 @@ export async function runPostUnitVerification(
     const sourceTargets = verificationTargets.length > 0
       ? verificationTargets.map((target) => ({ id: target.id, cwd: target.cwd }))
       : [{ id: "root", cwd: s.basePath }];
-    const sourceBeforeResult = captureVerificationSourceSnapshot(sourceTargets);
+    const sourceSnapshotOptions = { excludePaths: HOST_CHECK_LOG_EXCLUDE_PATHS };
+    const sourceBeforeResult = captureVerificationSourceSnapshot(sourceTargets, sourceSnapshotOptions);
     if (replayedVerdict) {
       if (
         sourceBeforeResult.ok &&
@@ -1022,7 +1054,7 @@ export async function runPostUnitVerification(
         timestamp: Date.now(),
       };
     } else if (verificationTargets.length <= 1) {
-      result = (vctx.runVerificationGate ?? runVerificationGate)({
+      result = await (vctx.runVerificationGate ?? runVerificationGate)({
         cwd: verificationTargets[0]?.cwd ?? s.basePath,
         preferenceCommands: prefs?.verification_commands ?? verificationTargets[0]?.preferenceCommands,
         taskPlanVerify,
@@ -1030,7 +1062,7 @@ export async function runPostUnitVerification(
         commandTimeoutMs: resolveVerificationTimeoutMs(prefs),
       });
     } else {
-      result = runVerificationGateForTargets({
+      result = await runVerificationGateForTargets({
         targets: verificationTargets,
         preferenceCommands: prefs?.verification_commands,
         taskPlanVerify,
@@ -1038,6 +1070,19 @@ export async function runPostUnitVerification(
         commandTimeoutMs: resolveVerificationTimeoutMs(prefs),
       });
     }
+
+    const taskIdentity = mid && sid && tid ? { milestoneId: mid, sliceId: sid, taskId: tid } : undefined;
+    const compulsory = await evaluateCompulsoryPolicy(s.basePath, {
+      phase: "task",
+      ...(taskIdentity ? { task: taskIdentity } : {}),
+    });
+    const combined = applyCompulsoryPolicyToGate({
+      passed: result.passed,
+      checks: result.checks,
+      evaluation: compulsory,
+    });
+    result.passed = combined.passed;
+    result.checks = combined.checks;
 
     // Capture runtime errors
     if (sourceBeforeResult.ok) {
@@ -1326,7 +1371,7 @@ export async function runPostUnitVerification(
     }
 
     const sourceAfterResult = sourceBeforeResult.ok
-      ? captureVerificationSourceSnapshot(sourceTargets)
+      ? captureVerificationSourceSnapshot(sourceTargets, sourceSnapshotOptions)
       : sourceBeforeResult;
     let sourceError = sourceBeforeResult.ok ? undefined : sourceBeforeResult.error;
     if (sourceBeforeResult.ok && !sourceAfterResult.ok) {
@@ -1348,12 +1393,16 @@ export async function runPostUnitVerification(
         durationMs: 0,
       });
     }
+    const policyInconclusive = compulsory.kind === "blocked"
+      || (compulsory.kind === "evaluated"
+        && (compulsory.nativeVerdict === "inconclusive" || compulsory.result.malformed));
     const hostTechnicalPassed =
       !sourceError &&
       !postExecInfrastructureError &&
+      compulsoryPolicyPassed(compulsory) &&
       (result.passed || browserUatContinuation);
     const hostTechnicalVerdict: RecordTaskTechnicalVerdictInput["verdict"] =
-      unrunnablePause || sourceError || postExecInfrastructureError
+      unrunnablePause || sourceError || postExecInfrastructureError || policyInconclusive
         ? "inconclusive"
         : hostTechnicalPassed
           ? "pass"
@@ -1382,6 +1431,7 @@ export async function runPostUnitVerification(
           ...(sourceBeforeResult.ok ? { sourceBefore: sourceBeforeResult.snapshot } : {}),
           ...(sourceAfterResult.ok ? { sourceAfter: sourceAfterResult.snapshot } : {}),
           ...(sourceError ? { sourceError } : {}),
+          policyEnvironment: policyEnvironmentFrom(compulsory),
         });
         canonicalVerdictWriteStarted = false;
         if (hostTechnicalVerdict !== "pass") {

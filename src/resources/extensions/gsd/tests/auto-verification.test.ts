@@ -79,7 +79,7 @@ test("missing host command pauses without recording an auto-fix retry (#1943)", 
 				throw new Error("must not enter auto-fix recovery");
 			},
 		},
-		runVerificationGate: () => ({
+		runVerificationGate: async () => ({
 			passed: false,
 			checks: [{
 				command: "grep -q expected app.css",
@@ -361,7 +361,7 @@ test("identical gate failures count 1/2, then 2/2, then exhaust into a durable a
 		ctx: { ui: { notify: (message: string) => notifications.push(message) } },
 		pi: {},
 		taskAuthority,
-		runVerificationGate: () => ({
+		runVerificationGate: async () => ({
 			passed: false,
 			checks: [{
 				command: "npm test",

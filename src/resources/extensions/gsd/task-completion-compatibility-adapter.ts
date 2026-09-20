@@ -31,12 +31,14 @@ import {
   readTaskRecoveryRoute,
   type TaskRecoveryRouteSnapshot,
 } from "./task-recovery-domain-operation.js";
-import { readTaskTechnicalVerdict } from "./task-verification-domain-operation.js";
+import { readTaskTechnicalVerdict, readTaskTechnicalVerdictEnvironment } from "./task-verification-domain-operation.js";
 import { loadEffectiveGSDPreferences } from "./preferences.js";
 import {
   captureVerificationSourceSnapshot,
   resolveVerificationRepositoryTargets,
 } from "./verification-source-integrity.js";
+import { HOST_CHECK_LOG_EXCLUDE_PATHS } from "./host-check-runner.js";
+import { getProjectRequiredPolicyId } from "./required-policy.js";
 import { renderSummaryContent } from "./workflow-projections.js";
 
 export interface TaskCompletionIdentity {
@@ -598,10 +600,22 @@ function requireCurrentVerifiedSource(input: PublishVerifiedTaskCompletionInput)
   const targets = resolved.repositories.length > 0
     ? resolved.repositories.map((repository) => ({ id: repository.id, cwd: repository.root }))
     : [{ id: "root", cwd: input.basePath }];
-  const source = captureVerificationSourceSnapshot(targets);
+  const source = captureVerificationSourceSnapshot(targets, {
+    excludePaths: HOST_CHECK_LOG_EXCLUDE_PATHS,
+  });
   if (!source.ok) throw new Error(source.error);
   if (source.snapshot.aggregateRevision !== verdict.testedSourceRevision) {
     throw new Error("Verified Task publication source no longer matches its host verification evidence");
+  }
+  const requiredPolicyId = getProjectRequiredPolicyId(input.basePath);
+  if (requiredPolicyId) {
+    const environment = readTaskTechnicalVerdictEnvironment(input.attemptId) ?? {};
+    if (environment.requiredPolicyId !== requiredPolicyId) {
+      throw new Error("Verified Task publication requires a current required-policy pass");
+    }
+    if (environment.requiredPolicyVerdict !== "pass" || environment.requiredPolicyMalformed === true) {
+      throw new Error("Verified Task publication requires a current required-policy pass");
+    }
   }
   requireExactMergedUatClosureEvidence({
     basePath: input.basePath,

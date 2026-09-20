@@ -5,19 +5,17 @@
 
 import { spawnSync } from "node:child_process";
 import {
-  closeSync,
   existsSync,
-  fstatSync,
-  mkdtempSync,
-  openSync,
   readFileSync,
-  readSync,
   readdirSync,
-  rmSync,
   type Dirent,
 } from "node:fs";
 import { join, basename } from "node:path";
-import { tmpdir } from "node:os";
+import {
+  createHostCheckLogDir,
+  runHostCheck,
+  truncateCapturedOutput,
+} from "./host-check-runner.js";
 import type { AuditWarning, RuntimeError, VerificationCheck, VerificationResult } from "./types.js";
 import { DEFAULT_COMMAND_TIMEOUT_MS } from "./constants.js";
 import { rewriteCommandWithRtk } from "../shared/rtk.js";
@@ -36,35 +34,6 @@ import {
 
 /** Maximum bytes of stdout/stderr to retain per command (10 KB). */
 const MAX_OUTPUT_BYTES = 10 * 1024;
-
-/** Truncate a string to maxBytes, appending a marker if truncated. */
-function truncate(value: string | null | undefined, maxBytes: number): string {
-  if (!value) return "";
-  if (Buffer.byteLength(value, "utf-8") <= maxBytes) return value;
-  // Slice conservatively then trim to last full character
-  const buf = Buffer.from(value, "utf-8").subarray(0, maxBytes);
-  return buf.toString("utf-8") + "\n…[truncated]";
-}
-
-function readBoundedCommandOutput(path: string): string {
-  const fd = openSync(path, "r");
-  try {
-    const size = fstatSync(fd).size;
-    if (size <= MAX_OUTPUT_BYTES) return readFileSync(path, "utf-8");
-
-    const marker = Buffer.from("\n…[truncated]\n", "utf-8");
-    const retainedBytes = MAX_OUTPUT_BYTES - marker.byteLength;
-    const headBytes = Math.floor(retainedBytes / 2);
-    const tailBytes = retainedBytes - headBytes;
-    const head = Buffer.allocUnsafe(headBytes);
-    const tail = Buffer.allocUnsafe(tailBytes);
-    readSync(fd, head, 0, headBytes, 0);
-    readSync(fd, tail, 0, tailBytes, size - tailBytes);
-    return Buffer.concat([head, marker, tail]).toString("utf-8");
-  } finally {
-    closeSync(fd);
-  }
-}
 
 // ─── Command Discovery ──────────────────────────────────────────────────────
 
@@ -891,8 +860,10 @@ export interface RunVerificationGateOptions {
   taskPlanVerify?: string;
   /** Structured task-specific evidence supplied at completion (#1591). */
   taskEvidence?: TaskVerificationEvidence[];
-  /** Per-command timeout in ms. Defaults to 120 000 (2 minutes). */
+  /** Per-command timeout in ms. Defaults to 120 000 (2 minutes). Not clamped. */
   commandTimeoutMs?: number;
+  abortSignal?: AbortSignal;
+  logDir?: string;
 }
 
 export interface VerificationTarget {
@@ -944,45 +915,17 @@ function mergeDiscoverySource(
   return "none";
 }
 
-function isSpawnTimeout(
-  result: { signal: NodeJS.Signals | null },
-  error: NodeJS.ErrnoException & { killed?: boolean },
-): boolean {
-  if (error.code === "ETIMEDOUT") return true;
-  if (error.killed && (result.signal === "SIGTERM" || result.signal === "SIGKILL")) return true;
-  return /etimedout|timed out/i.test(error.message);
-}
-
-function isCommandNotFound(error: NodeJS.ErrnoException): boolean {
-  if (error.code === "ENOENT") return true;
-  return /enoent|not found/i.test(error.message);
-}
-
-function isShellCommandNotFound(exitCode: number, stderr: string): boolean {
-  return exitCode === 127
-    || /command not found/i.test(stderr)
-    || /is not recognized as an internal or external command/i.test(stderr);
-}
-
-function isShellParseFailure(exitCode: number, stdout: string, stderr: string): boolean {
-  if (exitCode !== 1 || stdout.trim() !== "") return false;
-  return /unterminated string constant/i.test(stderr)
-    || /syntax error: unterminated quoted string/i.test(stderr)
-    || /unexpected eof while looking for matching/i.test(stderr)
-    || /syntax error near unexpected token/i.test(stderr)
-    || /was unexpected at this time/i.test(stderr);
-}
-
 /**
- * Run the verification gate: discover commands, execute each via spawnSync,
- * and return a structured result.
+ * Run the verification gate: discover commands, execute each via the async
+ * process-group host-check runner, and return a structured result.
  *
- * - All commands run sequentially regardless of individual pass/fail.
+ * - All commands run sequentially regardless of individual pass/fail unless aborted.
  * - `passed` is true when every command exits 0 (or no commands are discovered).
- * - stdout/stderr per command are truncated to 10 KB.
+ * - stdout/stderr per command are truncated to 10 KB; full logs remain as artefacts.
  */
-export function runVerificationGate(options: RunVerificationGateOptions): VerificationResult {
+export async function runVerificationGate(options: RunVerificationGateOptions): Promise<VerificationResult> {
   const timestamp = Date.now();
+  const commandTimeoutMs = options.commandTimeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS;
 
   const { commands, source } = discoverCommands({
     preferenceCommands: options.preferenceCommands,
@@ -1001,118 +944,61 @@ export function runVerificationGate(options: RunVerificationGateOptions): Verifi
   }
 
   const checks: VerificationCheck[] = [];
+  const logRoot = options.logDir ?? createHostCheckLogDir(options.cwd);
 
   for (const command of commands) {
-    const start = Date.now();
+    if (options.abortSignal?.aborted) {
+      checks.push({
+        command,
+        exitCode: 1,
+        stdout: "",
+        stderr: "cancelled before start",
+        durationMs: 0,
+        failureClass: "cancelled",
+      });
+      continue;
+    }
     const rewrittenCommand = normalizeWindowsPackageManagerCommand(
       normalizePythonCommand(rewriteCommandWithRtk(command), options.cwd),
     );
-    // Pass the command string as an argument to the shell explicitly
-    // to avoid Node.js DEP0190 (spawnSync with shell: true and no args).
-    const isWindows = process.platform === "win32";
-    const shellBin = isWindows ? "cmd" : "sh";
-    const shellArgs = isWindows
-      ? ["/d", "/s", "/c", rewrittenCommand]
-      : [
-          "-c",
-          "if command -v bash >/dev/null 2>&1; then exec bash -o pipefail -c \"$1\" verification-gate; fi\nexec sh -c \"$1\" verification-gate",
-          "verification-gate",
-          rewrittenCommand,
-        ];
-    const outputDir = mkdtempSync(join(tmpdir(), "gsd-verification-"));
-    const stdoutPath = join(outputDir, "stdout");
-    const stderrPath = join(outputDir, "stderr");
-    const stdoutFd = openSync(stdoutPath, "w");
-    const stderrFd = openSync(stderrPath, "w");
-    let result: ReturnType<typeof spawnSync>;
-    let stdout: string;
-    let capturedStderr: string;
-    try {
-      result = spawnSync(shellBin, shellArgs, {
-        cwd: options.cwd,
-        env: verificationChildEnvironment(options.cwd),
-        stdio: ["ignore", stdoutFd, stderrFd],
-        timeout: options.commandTimeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS,
-        windowsVerbatimArguments: isWindows,
-      });
-      stdout = readBoundedCommandOutput(stdoutPath);
-      capturedStderr = readBoundedCommandOutput(stderrPath);
-    } finally {
-      closeSync(stdoutFd);
-      closeSync(stderrFd);
-      rmSync(outputDir, { recursive: true, force: true });
-    }
-    const durationMs = Date.now() - start;
-
-    let exitCode: number;
-    let stderr: string;
-
-    let failureClass: VerificationCheck["failureClass"];
-    if (result.error) {
-      const spawnError = result.error as NodeJS.ErrnoException & { killed?: boolean };
-      if (isSpawnTimeout(result, spawnError)) {
-        const limitMs = options.commandTimeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS;
-        exitCode = 124;
-        failureClass = "timeout";
-        stderr = truncate(
-          `${capturedStderr}\ntimed out after ${limitMs}ms. Raise verification_timeout_ms if this command is expected to run longer.`.trim(),
-          MAX_OUTPUT_BYTES,
-        );
-      } else if (isCommandNotFound(spawnError)) {
-        exitCode = 127;
-        failureClass = "command-not-found";
-        stderr = truncate(
-          capturedStderr + "\n" + spawnError.message,
-          MAX_OUTPUT_BYTES,
-        );
-      } else {
-        exitCode = result.status ?? 1;
-        stderr = truncate(
-          capturedStderr + "\n" + spawnError.message,
-          MAX_OUTPUT_BYTES,
-        );
-      }
-    } else {
-      // status is null when killed by signal — treat as failure
-      exitCode = result.status ?? 1;
-      stderr = capturedStderr;
-      if (isShellCommandNotFound(exitCode, stderr)) {
-        failureClass = "command-not-found";
-      }
-    }
-
-    if (!failureClass && isShellParseFailure(exitCode, stdout, stderr)) {
-      failureClass = "shell-parse";
-    }
-
-    const warning = countSearchWarning(command, exitCode);
-
+    const host = await runHostCheck({
+      cwd: options.cwd,
+      timeoutMs: commandTimeoutMs,
+      shellCommand: rewrittenCommand,
+      env: verificationChildEnvironment(options.cwd),
+      abortSignal: options.abortSignal,
+      logDir: join(logRoot, `${checks.length}-${Date.now().toString(36)}`),
+    });
+    const warning = countSearchWarning(command, host.exitCode);
     checks.push({
       command,
-      exitCode,
-      stdout,
-      stderr: truncate(appendStderrWarning(stderr, warning), MAX_OUTPUT_BYTES),
-      durationMs,
-      ...(failureClass ? { failureClass } : {}),
+      exitCode: host.exitCode,
+      stdout: host.stdout,
+      stderr: truncateCapturedOutput(appendStderrWarning(host.stderr, warning), MAX_OUTPUT_BYTES),
+      durationMs: host.durationMs,
+      ...(host.failureClass ? { failureClass: host.failureClass } : {}),
+      durableOutputRef: host.durableOutputRef,
     });
   }
 
   return {
-    passed: checks.every(c => c.exitCode === 0),
+    passed: checks.every((c) => c.exitCode === 0 && c.failureClass !== "cancelled"),
     checks,
     discoverySource: source,
     timestamp,
   };
 }
 
-export function runVerificationGateForTargets(options: {
+export async function runVerificationGateForTargets(options: {
   targets: VerificationTarget[];
   preferenceCommands?: string[];
   taskPlanVerify?: string;
   /** Structured task-specific evidence supplied at completion (#1591). */
   taskEvidence?: TaskVerificationEvidence[];
   commandTimeoutMs?: number;
-}): VerificationResult {
+  abortSignal?: AbortSignal;
+  logDir?: string;
+}): Promise<VerificationResult> {
   const timestamp = Date.now();
   if (options.targets.length === 0) {
     return {
@@ -1128,12 +1014,14 @@ export function runVerificationGateForTargets(options: {
   let passed = true;
 
   for (const target of options.targets) {
-    const result = runVerificationGate({
+    const result = await runVerificationGate({
       cwd: target.cwd,
       preferenceCommands: options.preferenceCommands ?? target.preferenceCommands,
       taskPlanVerify: options.taskPlanVerify,
       ...(options.taskEvidence ? { taskEvidence: options.taskEvidence } : {}),
       commandTimeoutMs: options.commandTimeoutMs,
+      abortSignal: options.abortSignal,
+      logDir: options.logDir,
     });
     passed = passed && result.passed;
     sources.push(result.discoverySource);

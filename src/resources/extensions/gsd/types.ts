@@ -90,7 +90,9 @@ export interface VerificationCheck {
   stderr: string;
   durationMs: number;
   /** Infrastructure/execution faults that prevented the command from producing a requirement verdict. */
-  failureClass?: "timeout" | "command-not-found" | "shell-parse";
+  failureClass?: "timeout" | "command-not-found" | "shell-parse" | "cancelled";
+  /** Full log artefact retained by the host-check runner. */
+  durableOutputRef?: string;
 }
 
 /** A runtime error captured from bg-shell processes or browser console */

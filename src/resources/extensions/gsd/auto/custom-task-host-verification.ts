@@ -32,6 +32,11 @@ import {
   verificationSourceChanged,
   type VerificationSourceSnapshot,
 } from "../verification-source-integrity.js";
+import { HOST_CHECK_LOG_EXCLUDE_PATHS } from "../host-check-runner.js";
+import {
+  evaluateCompulsoryPolicy,
+  compulsoryPolicyPassed,
+} from "../required-policy.js";
 
 /**
  * The stable decisive inputs a non-advancing host-verification path actually
@@ -198,6 +203,7 @@ function recordVerdict(input: {
     blockerId: string;
     approvalOperationId: string;
   };
+  policyEnvironment?: Record<string, string | boolean | number>;
 }): TaskTechnicalVerdictReceipt {
   const targetSourceRevisions = Object.fromEntries(
     (input.before?.targets ?? []).map((target) => [target.targetId, target.revision]),
@@ -229,6 +235,7 @@ function recordVerdict(input: {
         ...(input.humanReviewApproval
           ? { humanReviewApproval: input.humanReviewApproval }
           : {}),
+        ...(input.policyEnvironment ?? {}),
       },
     },
   });
@@ -370,6 +377,7 @@ async function runCustomTaskHostVerification(
   ): ((recovery: HostVerificationRecovery) => void) =>
     (recovery) => emit({ ...evidence, recovery });
 
+  const snapshotOptions = { excludePaths: HOST_CHECK_LOG_EXCLUDE_PATHS };
   const existing = readTaskTechnicalVerdict(attempt.attemptId);
   if (existing && existing.verdict !== "pass") {
     const storedVerdict = {
@@ -403,7 +411,7 @@ async function runCustomTaskHostVerification(
         });
         return "abort";
       }
-      const current = captureVerificationSourceSnapshot(targets);
+      const current = captureVerificationSourceSnapshot(targets, snapshotOptions);
       if (!current.ok || current.snapshot.aggregateRevision !== existing.testedSourceRevision) {
         return routeFailedVerification(
           attempt,
@@ -472,7 +480,7 @@ async function runCustomTaskHostVerification(
       evidenceId: existing.evidenceId,
       verdict: existing.verdict,
     };
-    const current = captureVerificationSourceSnapshot(targets);
+    const current = captureVerificationSourceSnapshot(targets, snapshotOptions);
     if (current.ok && current.snapshot.aggregateRevision === existing.testedSourceRevision) {
       return "continue";
     }
@@ -528,7 +536,7 @@ async function runCustomTaskHostVerification(
 
   const startedAt = new Date().toISOString();
   const before = resolved.missingRepositoryIds.length === 0
-    ? captureVerificationSourceSnapshot(targets)
+    ? captureVerificationSourceSnapshot(targets, snapshotOptions)
     : {
       ok: false as const,
       targetId: resolved.missingRepositoryIds[0] ?? "<targets>",
@@ -562,20 +570,32 @@ async function runCustomTaskHostVerification(
     before.snapshot.aggregateRevision,
   );
   if (humanReviewApproval) {
-    const now = new Date().toISOString();
-    recordVerdict({
-      basePath: input.basePath,
-      attemptId: attempt.attemptId,
-      verdict: "pass",
-      rationale: "Resolved human review approved this unchanged source for one fresh successor Attempt.",
-      startedAt,
-      endedAt: now,
-      before: before.snapshot,
-      after: before.snapshot,
-      verificationPolicy: "custom-engine-human-review-approval",
-      humanReviewApproval,
-    });
-    return "continue";
+    const compulsory = await evaluateCompulsoryPolicy(input.basePath, { phase: "task" });
+    if (compulsoryPolicyPassed(compulsory)) {
+      const now = new Date().toISOString();
+      recordVerdict({
+        basePath: input.basePath,
+        attemptId: attempt.attemptId,
+        verdict: "pass",
+        rationale: "Resolved human review approved this unchanged source for one fresh successor Attempt.",
+        startedAt,
+        endedAt: now,
+        before: before.snapshot,
+        after: before.snapshot,
+        verificationPolicy: "custom-engine-human-review-approval",
+        humanReviewApproval,
+        policyEnvironment: compulsory.kind === "unmanaged"
+          ? undefined
+          : compulsory.kind === "blocked"
+            ? { requiredPolicyId: compulsory.policyId, requiredPolicyVerdict: "inconclusive" }
+            : {
+              requiredPolicyId: compulsory.result.policy_id,
+              requiredPolicyVersion: compulsory.result.version,
+              requiredPolicyVerdict: compulsory.result.verdict,
+            },
+      });
+      return "continue";
+    }
   }
 
   let policyResult: VerificationOutcome;
@@ -604,9 +624,10 @@ async function runCustomTaskHostVerification(
       }),
     );
   }
-  const after = captureVerificationSourceSnapshot(targets);
+  const after = captureVerificationSourceSnapshot(targets, snapshotOptions);
   const captureError = after.ok ? undefined : after.error;
   const drifted = after.ok && verificationSourceChanged(before.snapshot, after.snapshot);
+  const compulsory = await evaluateCompulsoryPolicy(input.basePath, { phase: "task" });
   const pendingHumanReview = input.humanReviewPolicy === true &&
     policyResult === "pause" &&
     !captureError &&
@@ -616,9 +637,16 @@ async function runCustomTaskHostVerification(
   if (captureError || drifted) {
     rationale = captureError ?? "Verification target source changed while custom policy verification was running";
     verdict = "inconclusive";
-  } else if (policyResult === "continue") {
+  } else if (policyResult === "continue" && compulsoryPolicyPassed(compulsory)) {
     rationale = "Custom-engine host verification passed.";
     verdict = "pass";
+  } else if (policyResult === "continue") {
+    rationale = compulsory.kind === "blocked"
+      ? compulsory.reason
+      : compulsory.kind === "evaluated"
+        ? (compulsory.result.reason ?? `Required policy verdict ${compulsory.result.verdict}`)
+        : "Required policy did not pass";
+    verdict = compulsory.kind === "evaluated" && compulsory.nativeVerdict === "fail" ? "fail" : "inconclusive";
   } else if (policyResult === "pause") {
     rationale = pendingHumanReview
       ? "Custom-engine host verification is awaiting the configured human review."
@@ -635,6 +663,15 @@ async function runCustomTaskHostVerification(
     before: before.snapshot,
     ...(after.ok ? { after: after.snapshot } : {}),
     ...(pendingHumanReview ? { verificationPolicy: "custom-engine-human-review" as const } : {}),
+    policyEnvironment: compulsory.kind === "unmanaged"
+      ? undefined
+      : compulsory.kind === "blocked"
+        ? { requiredPolicyId: compulsory.policyId, requiredPolicyVerdict: "inconclusive" }
+        : {
+          requiredPolicyId: compulsory.result.policy_id,
+          requiredPolicyVersion: compulsory.result.version,
+          requiredPolicyVerdict: compulsory.result.verdict,
+        },
   });
   if (verdict === "pass") return "continue";
   if (pendingHumanReview) {

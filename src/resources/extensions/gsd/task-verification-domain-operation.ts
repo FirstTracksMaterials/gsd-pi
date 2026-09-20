@@ -169,6 +169,39 @@ export function readTaskTechnicalVerdict(attemptId: string): TaskTechnicalVerdic
   };
 }
 
+export function readTaskTechnicalVerdictEnvironment(attemptId: string): Record<string, unknown> | null {
+  const stored = getDb().prepare(`
+    SELECT evidence.environment_json
+    FROM workflow_technical_verdicts verdict
+    JOIN workflow_acceptance_criteria criterion
+      ON criterion.criterion_id = verdict.criterion_id
+     AND criterion.project_id = verdict.project_id
+     AND criterion.lifecycle_id = verdict.lifecycle_id
+    JOIN workflow_verification_evidence evidence
+      ON evidence.verdict_id = verdict.verdict_id
+     AND evidence.project_id = verdict.project_id
+     AND evidence.attempt_id = verdict.attempt_id
+    WHERE verdict.attempt_id = :attempt_id
+      AND NOT EXISTS (
+        SELECT 1 FROM workflow_acceptance_criteria successor
+        WHERE successor.supersedes_criterion_id = criterion.criterion_id
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM workflow_technical_verdicts successor
+        WHERE successor.supersedes_verdict_id = verdict.verdict_id
+      )
+    ORDER BY verdict.project_revision DESC
+    LIMIT 1
+  `).get({ ":attempt_id": attemptId }) as Record<string, unknown> | undefined;
+  if (!stored) return null;
+  try {
+    const parsed = JSON.parse(String(stored["environment_json"] ?? "{}"));
+    return parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : {};
+  } catch {
+    return {};
+  }
+}
+
 export function isPendingTaskHumanReviewVerdict(attemptId: string, verdictId: string): boolean {
   const stored = getDb().prepare(`
     SELECT 1 AS pending

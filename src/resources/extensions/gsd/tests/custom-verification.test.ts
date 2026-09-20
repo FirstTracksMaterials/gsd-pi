@@ -52,7 +52,7 @@ function makeDef(
 // ─── content-heuristic tests ────────────────────────────────────────────
 
 describe("content-heuristic policy", () => {
-  it("returns 'continue' when file exists and meets size/pattern", () => {
+  it("returns 'continue' when file exists and meets size/pattern", async () => {
     const def = makeDef([
       {
         id: "step-1",
@@ -72,11 +72,11 @@ describe("content-heuristic policy", () => {
       "report.md": "# Report\n\nThis is a valid report with sufficient content.",
     });
 
-    const result = runCustomVerification(runDir, "step-1");
+    const result = await runCustomVerification(runDir, "step-1");
     assert.equal(result, "continue");
   });
 
-  it("returns 'pause' when produces file is missing", () => {
+  it("returns 'pause' when produces file is missing", async () => {
     const def = makeDef([
       {
         id: "step-1",
@@ -91,10 +91,10 @@ describe("content-heuristic policy", () => {
     // No files created — report.md doesn't exist
     const runDir = makeTempRun(def);
 
-    const result = runCustomVerification(runDir, "step-1");
+    const result = await runCustomVerification(runDir, "step-1");
     assert.equal(result, "pause");
 
-    const detailed = runCustomVerificationWithEvidence(runDir, "step-1");
+    const detailed = await runCustomVerificationWithEvidence(runDir, "step-1");
     assert.deepEqual(JSON.parse(detailed.inputPayload), {
       policy: "content-heuristic",
       failure: "missing-file",
@@ -103,7 +103,7 @@ describe("content-heuristic policy", () => {
     });
   });
 
-  it("returns 'pause' when file exists but below minSize", () => {
+  it("returns 'pause' when file exists but below minSize", async () => {
     const def = makeDef([
       {
         id: "step-1",
@@ -122,11 +122,11 @@ describe("content-heuristic policy", () => {
       "report.md": "tiny",
     });
 
-    const result = runCustomVerification(runDir, "step-1");
+    const result = await runCustomVerification(runDir, "step-1");
     assert.equal(result, "pause");
   });
 
-  it("returns 'pause' when file exists but pattern does not match", () => {
+  it("returns 'pause' when file exists but pattern does not match", async () => {
     const def = makeDef([
       {
         id: "step-1",
@@ -145,11 +145,11 @@ describe("content-heuristic policy", () => {
       "report.md": "This has no heading at all.",
     });
 
-    const result = runCustomVerification(runDir, "step-1");
+    const result = await runCustomVerification(runDir, "step-1");
     assert.equal(result, "pause");
   });
 
-  it("returns 'continue' when produces is empty", () => {
+  it("returns 'continue' when produces is empty", async () => {
     const def = makeDef([
       {
         id: "step-1",
@@ -163,11 +163,11 @@ describe("content-heuristic policy", () => {
 
     const runDir = makeTempRun(def);
 
-    const result = runCustomVerification(runDir, "step-1");
+    const result = await runCustomVerification(runDir, "step-1");
     assert.equal(result, "continue");
   });
 
-  it("returns 'continue' when file exists with no minSize or pattern checks", () => {
+  it("returns 'continue' when file exists with no minSize or pattern checks", async () => {
     const def = makeDef([
       {
         id: "step-1",
@@ -183,7 +183,7 @@ describe("content-heuristic policy", () => {
       "output.txt": "",
     });
 
-    const result = runCustomVerification(runDir, "step-1");
+    const result = await runCustomVerification(runDir, "step-1");
     assert.equal(result, "continue");
   });
 });
@@ -191,7 +191,7 @@ describe("content-heuristic policy", () => {
 // ─── shell-command tests ────────────────────────────────────────────────
 
 describe("shell-command policy", () => {
-  it("returns 'continue' when command exits 0", () => {
+  it("returns 'continue' when command exits 0", async () => {
     const def = makeDef([
       {
         id: "step-1",
@@ -210,11 +210,11 @@ describe("shell-command policy", () => {
       "artifact.txt": "content",
     });
 
-    const result = runCustomVerification(runDir, "step-1");
+    const result = await runCustomVerification(runDir, "step-1");
     assert.equal(result, "continue");
   });
 
-  it("returns 'retry' when command exits non-zero", () => {
+  it("returns 'retry' when command exits non-zero", async () => {
     const def = makeDef([
       {
         id: "step-1",
@@ -231,21 +231,19 @@ describe("shell-command policy", () => {
 
     const runDir = makeTempRun(def);
 
-    const result = runCustomVerification(runDir, "step-1");
+    const result = await runCustomVerification(runDir, "step-1");
     assert.equal(result, "retry");
 
-    const detailed = runCustomVerificationWithEvidence(runDir, "step-1");
+    const detailed = await runCustomVerificationWithEvidence(runDir, "step-1");
     assert.equal(detailed.outcome, "retry");
-    assert.deepEqual(JSON.parse(detailed.inputPayload), {
-      policy: "shell-command",
-      command: "test -f nonexistent-file.txt",
-      exitCode: 1,
-      signal: null,
-      error: null,
-    });
+    const payload = JSON.parse(detailed.inputPayload);
+    assert.equal(payload.policy, "shell-command");
+    assert.equal(payload.command, "test -f nonexistent-file.txt");
+    assert.equal(payload.exitCode, 1);
+    assert.equal(typeof payload.durableOutputRef, "string");
   });
 
-  it("rewrites shell-command verification through RTK when available", () => {
+  it("rewrites shell-command verification through RTK when available", async () => {
     const fake = createFakeRtk({
       "echo raw": "echo rewritten",
     });
@@ -268,7 +266,7 @@ describe("shell-command policy", () => {
       ]);
 
       const runDir = makeTempRun(def);
-      const result = runCustomVerification(runDir, "step-1");
+      const result = await runCustomVerification(runDir, "step-1");
       assert.equal(result, "continue");
     } finally {
       if (previous === undefined) delete process.env.GSD_RTK_PATH;
@@ -281,7 +279,7 @@ describe("shell-command policy", () => {
 // ─── prompt-verify tests ────────────────────────────────────────────────
 
 describe("prompt-verify policy", () => {
-  it("returns 'pause'", () => {
+  it("returns 'pause'", async () => {
     const def = makeDef([
       {
         id: "step-1",
@@ -298,7 +296,7 @@ describe("prompt-verify policy", () => {
 
     const runDir = makeTempRun(def);
 
-    const result = runCustomVerification(runDir, "step-1");
+    const result = await runCustomVerification(runDir, "step-1");
     assert.equal(result, "pause");
   });
 });
@@ -306,7 +304,7 @@ describe("prompt-verify policy", () => {
 // ─── human-review tests ─────────────────────────────────────────────────
 
 describe("human-review policy", () => {
-  it("returns 'pause'", () => {
+  it("returns 'pause'", async () => {
     const def = makeDef([
       {
         id: "step-1",
@@ -320,7 +318,7 @@ describe("human-review policy", () => {
 
     const runDir = makeTempRun(def);
 
-    const result = runCustomVerification(runDir, "step-1");
+    const result = await runCustomVerification(runDir, "step-1");
     assert.equal(result, "pause");
   });
 });
@@ -328,7 +326,7 @@ describe("human-review policy", () => {
 // ─── no verify policy tests ─────────────────────────────────────────────
 
 describe("no verify policy", () => {
-  it("returns 'continue' when step has no verify field", () => {
+  it("returns 'continue' when step has no verify field", async () => {
     const def = makeDef([
       {
         id: "step-1",
@@ -342,11 +340,11 @@ describe("no verify policy", () => {
 
     const runDir = makeTempRun(def);
 
-    const result = runCustomVerification(runDir, "step-1");
+    const result = await runCustomVerification(runDir, "step-1");
     assert.equal(result, "continue");
   });
 
-  it("returns 'continue' when step ID is not found in definition", () => {
+  it("returns 'continue' when step ID is not found in definition", async () => {
     const def = makeDef([
       {
         id: "step-1",
@@ -359,7 +357,7 @@ describe("no verify policy", () => {
 
     const runDir = makeTempRun(def);
 
-    const result = runCustomVerification(runDir, "nonexistent-step");
+    const result = await runCustomVerification(runDir, "nonexistent-step");
     assert.equal(result, "continue");
   });
 });
@@ -367,11 +365,11 @@ describe("no verify policy", () => {
 // ─── missing DEFINITION.yaml ────────────────────────────────────────────
 
 describe("error handling", () => {
-  it("throws when DEFINITION.yaml is missing", () => {
+  it("throws when DEFINITION.yaml is missing", async () => {
     const runDir = mkdtempSync(join(tmpdir(), "cv-test-nodef-"));
     // No DEFINITION.yaml written
 
-    assert.throws(
+    await assert.rejects(
       () => runCustomVerification(runDir, "step-1"),
       /ENOENT/,
     );

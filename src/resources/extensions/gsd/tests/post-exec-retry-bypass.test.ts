@@ -534,7 +534,7 @@ describe("Post-execution blocking failure retry bypass", () => {
     const vctx = makeVerificationContext(s, ctx, pi);
     const recordTaskTechnicalVerdict = mock.fn(() => verdictReceipt("fail"));
     const routeTaskFailure = mock.fn(() => recoveryReceipt("remediate"));
-    vctx.runVerificationGate = () => ({
+    vctx.runVerificationGate = async () => ({
       passed: false,
       checks: [{
         command: `node -e '"const'`,

@@ -27,7 +27,12 @@ import { publishVerifiedTaskCompletion, stageTaskCompletion } from "../task-comp
 import { claimTaskAttempt, readLatestTaskAttempt } from "../task-execution-domain-operation.js";
 import { resumeTaskRecovery } from "../task-recovery-domain-operation.js";
 import { readTaskTechnicalVerdict, recordTaskTechnicalVerdict } from "../task-verification-domain-operation.js";
+import {
+  configureProjectRequiredPolicy,
+  resetRequiredPolicyRegistryForTest,
+} from "../required-policy.js";
 import { captureVerificationSourceSnapshot } from "../verification-source-integrity.js";
+import { installTestRequiredPolicy, TEST_REQUIRED_POLICY_ID } from "./required-policy-test-harness.js";
 
 const tempDirs = new Set<string>();
 
@@ -172,6 +177,7 @@ function claimRetry(priorAttemptId: string, attemptNumber: number): string {
 }
 
 afterEach(() => {
+  resetRequiredPolicyRegistryForTest();
   closeDatabase();
   for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true });
   tempDirs.clear();
@@ -450,7 +456,7 @@ test("#1674: post-policy failures include the selected recovery route", async ()
       basePath,
       unitId: "M001/S01/T01",
       verifyPolicy: async () => {
-        const result = runCustomVerificationWithEvidence(basePath, "step-1");
+        const result = await runCustomVerificationWithEvidence(basePath, "step-1");
         reads.push({ source: "policy", evidence: result.inputPayload });
         return result.outcome;
       },
@@ -556,7 +562,7 @@ test("#1674: a human-review resolution composes a different signature than the p
     unitId: "M001/S01/T01",
     humanReviewPolicy: true,
     verifyPolicy: async () => {
-      const policyEvidence = runCustomVerificationWithEvidence(basePath, "step-1");
+      const policyEvidence = await runCustomVerificationWithEvidence(basePath, "step-1");
       reads.push({ source: "policy", evidence: policyEvidence.inputPayload });
       return policyEvidence.outcome;
     },
@@ -1118,4 +1124,54 @@ test("custom verification aborts after durable remediation budget exhaustion", a
     unitId: "M001/S01/T01",
     verifyPolicy: async () => { throw new Error("persisted verdict must replay"); },
   }), "retry");
+});
+
+test("AT-S07: custom-engine continue cannot skip a failed compulsory policy", async () => {
+  const { basePath, attemptId } = createFixture();
+  await stage(basePath);
+  installTestRequiredPolicy(basePath, { verdict: "fail" });
+  configureProjectRequiredPolicy(basePath, TEST_REQUIRED_POLICY_ID);
+
+  const outcome = await runCustomEngineHostVerification({
+    unitType: "execute-task",
+    basePath,
+    unitId: "M001/S01/T01",
+    verifyPolicy: async () => "continue",
+  });
+
+  assert.equal(outcome, "retry");
+  assert.equal(readTaskTechnicalVerdict(attemptId)?.verdict, "fail");
+});
+
+test("AT-S07: unmanaged custom-engine continue still records a pass", async () => {
+  const { basePath, attemptId } = createFixture();
+  await stage(basePath);
+
+  const outcome = await runCustomEngineHostVerification({
+    unitType: "execute-task",
+    basePath,
+    unitId: "M001/S01/T01",
+    verifyPolicy: async () => "continue",
+  });
+
+  assert.equal(outcome, "continue");
+  assert.equal(readTaskTechnicalVerdict(attemptId)?.verdict, "pass");
+});
+
+test("AT-S08: in-check source mutation cannot store a custom-engine pass", async () => {
+  const { basePath, attemptId } = createFixture();
+  await stage(basePath);
+
+  const outcome = await runCustomEngineHostVerification({
+    unitType: "execute-task",
+    basePath,
+    unitId: "M001/S01/T01",
+    verifyPolicy: async () => {
+      writeFileSync(join(basePath, "tracked.ts"), "export const verified = false;\n");
+      return "continue";
+    },
+  });
+
+  assert.equal(outcome, "retry");
+  assert.equal(readTaskTechnicalVerdict(attemptId)?.verdict, "inconclusive");
 });
