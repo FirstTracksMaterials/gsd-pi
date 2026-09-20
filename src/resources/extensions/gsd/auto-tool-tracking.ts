@@ -145,6 +145,20 @@ export function getOldestStallDetectableToolStart(): number | undefined {
   return oldest === Infinity ? undefined : oldest;
 }
 
+export function getActiveToolDiagnostics(): { activeTool: string | null; pendingInput: boolean } {
+  let activeTool: string | null = null;
+  let pendingInput = interactiveElicitationDepth > 0;
+  for (const { toolName } of inFlightTools.values()) {
+    if (!activeTool) activeTool = toolName;
+    if (INTERACTIVE_TOOLS.has(toolName)) {
+      activeTool = toolName;
+      pendingInput = true;
+      break;
+    }
+  }
+  return { activeTool, pendingInput };
+}
+
 /**
  * Clear all in-flight tool tracking state.
  */

@@ -17,13 +17,15 @@ import {
   clearInFlightTools,
   hasInteractiveToolInFlight,
   getOldestStallDetectableToolStart,
+  getActiveToolDiagnostics,
 } from "./auto-tool-tracking.js";
-import { detectWorkingTreeActivity } from "./auto-supervisor.js";
+import { observeUsefulProgress } from "./auto-supervisor.js";
 import { applySupervisorModelIfConfigured } from "./auto-model-selection.js";
 import { closeoutUnit, type CloseoutOptions } from "./auto-unit-closeout.js";
 import { saveActivityLog } from "./activity-log.js";
 import { recoverTimedOutUnit, type RecoveryContext } from "./auto-timeout-recovery.js";
 import { resolveAgentEndCancelled } from "./auto/resolve.js";
+import { shouldRefuseNewWork } from "./auto-cancellation.js";
 import type { PauseAutoOptions } from "./auto/loop-deps.js";
 import type { AutoSession } from "./auto/session.js";
 import { logWarning, logError } from "./workflow-logger.js";
@@ -202,6 +204,16 @@ export function startUnitSupervision(sctx: SupervisionContext): void {
       };
       const runtime = readUnitRuntimeRecord(s.basePath, unitType, unitId);
       if (!runtime) return;
+      if (shouldRefuseNewWork()) return;
+
+      const toolDiagnostics = getActiveToolDiagnostics();
+      writeUnitRuntimeRecord(s.basePath, unitType, unitId, s.currentUnit.startedAt, {
+        ...(s.lastTransportAt
+          ? { lastTransportAt: s.lastTransportAt, lastTransportKind: s.lastTransportKind ?? "token" }
+          : {}),
+        activeTool: toolDiagnostics.activeTool,
+        pendingInput: toolDiagnostics.pendingInput,
+      });
 
       // In-flight tool handling runs on its own dedicated hung-tool budget,
       // independent of the general idle gate below, so a genuinely stuck tool
@@ -217,6 +229,8 @@ export function startUnitSupervision(sctx: SupervisionContext): void {
           writeUnitRuntimeRecord(s.basePath, unitType, unitId, s.currentUnit.startedAt, {
             lastProgressAt: Date.now(),
             lastProgressKind: "interactive-tool-waiting",
+            activeTool: toolDiagnostics.activeTool,
+            pendingInput: true,
           });
           return;
         }
@@ -231,6 +245,8 @@ export function startUnitSupervision(sctx: SupervisionContext): void {
           writeUnitRuntimeRecord(s.basePath, unitType, unitId, s.currentUnit.startedAt, {
             lastProgressAt: Date.now(),
             lastProgressKind: "coordination-tool-in-flight",
+            activeTool: toolDiagnostics.activeTool,
+            pendingInput: false,
           });
           return;
         }
@@ -239,6 +255,8 @@ export function startUnitSupervision(sctx: SupervisionContext): void {
           writeUnitRuntimeRecord(s.basePath, unitType, unitId, s.currentUnit.startedAt, {
             lastProgressAt: Date.now(),
             lastProgressKind: "tool-in-flight",
+            activeTool: toolDiagnostics.activeTool,
+            pendingInput: false,
           });
           return;
         }
@@ -254,20 +272,34 @@ export function startUnitSupervision(sctx: SupervisionContext): void {
         );
       }
 
+      // Relevant source/output identity is the only filesystem progress signal.
+      // Unchanged dirty trees, runtime logs, journals, heartbeats and verification
+      // evidence do not rearm lastProgressAt. Token/transport activity lives on
+      // lastTransportAt and is ignored here.
+      if (!stalledToolDetected) {
+        const observation = observeUsefulProgress(s.basePath, runtime.lastSourceIdentity);
+        if (observation.changed) {
+          writeUnitRuntimeRecord(s.basePath, unitType, unitId, s.currentUnit.startedAt, {
+            lastProgressAt: Date.now(),
+            lastProgressKind: "filesystem-activity",
+            lastSourceIdentity: observation.identity,
+            lastSourceChangeAt: Date.now(),
+            activeTool: toolDiagnostics.activeTool,
+            pendingInput: toolDiagnostics.pendingInput,
+          });
+          return;
+        }
+        if (!runtime.lastSourceIdentity) {
+          writeUnitRuntimeRecord(s.basePath, unitType, unitId, s.currentUnit.startedAt, {
+            lastSourceIdentity: observation.identity,
+            lastSourceChangeAt: runtime.lastSourceChangeAt ?? s.currentUnit.startedAt,
+          });
+        }
+      }
+
       // No hung tool — apply the general idle gate. A unit that has made
       // meaningful progress within the idle window is not idle yet.
       if (!stalledToolDetected && Date.now() - runtime.lastProgressAt < idleTimeoutMs) return;
-
-      // Check if the agent is producing work on disk.
-      // Skip this when a stalled tool was just detected — filesystem changes
-      // from earlier in the task should not override the stall verdict (#2527).
-      if (!stalledToolDetected && detectWorkingTreeActivity(s.basePath)) {
-        writeUnitRuntimeRecord(s.basePath, unitType, unitId, s.currentUnit.startedAt, {
-          lastProgressAt: Date.now(),
-          lastProgressKind: "filesystem-activity",
-        });
-        return;
-      }
 
       if (s.currentUnit) {
         await closeoutUnit(ctx, s.basePath, s.currentUnit.type, s.currentUnit.id, s.currentUnit.startedAt, buildSnapshotOpts());
@@ -307,7 +339,7 @@ export function startUnitSupervision(sctx: SupervisionContext): void {
   const hardTimeoutBody = async () => {
     try {
       s.unitTimeoutHandle = null;
-      if (!s.active) return;
+      if (!s.active || shouldRefuseNewWork()) return;
       // User-interactive tools (ask_user_questions, secure_env_collect) block
       // waiting for human input by design. Unlike the idle watchdog (above),
       // the hard timeout had no interactive exemption, so a long human

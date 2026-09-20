@@ -31,6 +31,7 @@ import type { MilestoneScope } from "../workspace.js";
 import type { RootDirtySnapshot } from "../root-write-leak-guard.js";
 import type { MilestoneSettlementOutcome } from "../milestone-settlement.js";
 import type { ToolSurfaceSnapshot } from "../tool-surface-snapshot.js";
+import type { CancellationPhase } from "../unit-runtime.js";
 
 // ─── Exported Types ──────────────────────────────────────────────────────────
 
@@ -107,6 +108,8 @@ export class AutoSession {
   // ── Lifecycle ────────────────────────────────────────────────────────────
   active = false;
   paused = false;
+  cancellationRequested = false;
+  cancellationPhase: CancellationPhase = "none";
   completionStopInProgress = false;
   preserveStepSurfaceAfterLoopExit = false;
   stepMode = false;
@@ -179,6 +182,8 @@ export class AutoSession {
   autoModeStartThinkingLevel: ThinkingLevelSnapshot | null = null;
   originalThinkingLevel: ThinkingLevelSnapshot | null = null;
   lastBudgetAlertLevel: BudgetAlertLevel = 0;
+  lastTransportAt = 0;
+  lastTransportKind: string | null = null;
 
   // ── Recovery ─────────────────────────────────────────────────────────────
   pendingCrashRecovery: string | null = null;
@@ -364,6 +369,8 @@ export class AutoSession {
     // Lifecycle
     this.active = false;
     this.paused = false;
+    this.cancellationRequested = false;
+    this.cancellationPhase = "none";
     this.completionStopInProgress = false;
     this.preserveStepSurfaceAfterLoopExit = false;
     this.stepMode = false;
@@ -411,6 +418,8 @@ export class AutoSession {
     this.autoModeStartThinkingLevel = null;
     this.originalThinkingLevel = null;
     this.lastBudgetAlertLevel = 0;
+    this.lastTransportAt = 0;
+    this.lastTransportKind = null;
 
     // Recovery
     this.pendingCrashRecovery = null;

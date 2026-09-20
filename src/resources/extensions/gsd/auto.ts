@@ -359,6 +359,10 @@ import {
   stopNoticeDisplayReason,
 } from "./stop-notice.js";
 import { abortActiveUnitTurn } from "./auto/unit-turn-abort.js";
+import {
+  requestAutoCancellation,
+  setAutoCancellationPhase,
+} from "./auto-cancellation.js";
 
 // ── ENCAPSULATION INVARIANT ─────────────────────────────────────────────────
 // ALL mutable auto-mode state lives in the AutoSession class (auto/session.ts).
@@ -1706,6 +1710,10 @@ export async function stopAuto(
   options: StopAutoOptions = {},
 ): Promise<void> {
   if (!s.active && !s.paused) return;
+  requestAutoCancellation("requested");
+  s.active = false;
+  abortActiveUnitTurn(ctx);
+  setAutoCancellationPhase("aborting-model");
   const loadedPreferences = loadEffectiveGSDPreferences(s.basePath || undefined)?.preferences;
   const stopNotificationPrefix = formatStopNoticePrefix(reason);
   const displayReason = stopNoticeDisplayReason(reason);
@@ -2194,6 +2202,7 @@ export async function stopAuto(
 
     clearSessionModelOverrideForCommandSession(ctx);
 
+    setAutoCancellationPhase("cancelled");
     // Reset all session state in one call
     s.resetAfterStop({ preserveCompletionSurface });
   }

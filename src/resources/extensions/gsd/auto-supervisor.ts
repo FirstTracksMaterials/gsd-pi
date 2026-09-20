@@ -6,7 +6,7 @@
 
 import { clearLock } from "./crash-recovery.js";
 import { releaseSessionLock } from "./session-lock.js";
-import { nativeHasChanges } from "./native-git-bridge.js";
+import { detectUsefulWorkingTreeProgress, observeUsefulProgress } from "./useful-progress.js";
 
 // ─── Signal Handling ─────────────────────────────────────────────────────────
 
@@ -72,15 +72,20 @@ export function deregisterSigtermHandler(handler: (() => void) | null): void {
 // ─── Working Tree Activity Detection ──────────────────────────────────────────
 
 /**
- * Detect whether the agent is producing work on disk by checking git for
- * any working-tree changes (staged, unstaged, or untracked). Returns true
- * if there are uncommitted changes — meaning the agent is actively working,
- * even though it hasn't signaled progress through runtime records.
+ * Detect whether the agent is producing relevant source/output work by
+ * comparing the current content identity with the previous snapshot.
+ * Unchanged dirty files, runtime logs, journals, heartbeats and verification
+ * evidence are not useful progress.
  */
-export function detectWorkingTreeActivity(cwd: string): boolean {
+export function detectWorkingTreeActivity(
+  cwd: string,
+  previousIdentity?: string | null,
+): boolean {
   try {
-    return nativeHasChanges(cwd);
+    return detectUsefulWorkingTreeProgress(cwd, previousIdentity);
   } catch {
     return false;
   }
 }
+
+export { observeUsefulProgress };

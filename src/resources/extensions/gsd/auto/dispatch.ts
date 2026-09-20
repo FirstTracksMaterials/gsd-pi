@@ -23,6 +23,7 @@ import {
 } from "./phase-helpers.js";
 import type { PendingVerificationRetry } from "./session.js";
 import type { IterationContext, IterationData, LoopState, PhaseResult, PreDispatchData } from "./types.js";
+import { shouldRefuseNewWork } from "../auto-cancellation.js";
 
 export function getAlreadyClosedDispatchReason(unitType: string, unitId: string): string | null {
   if (!isDbAvailable()) return null;
@@ -76,6 +77,12 @@ export async function runDispatch(
   loopState: LoopState,
 ): Promise<PhaseResult<IterationData>> {
   const { ctx, pi, s, deps, prefs } = ic;
+  if (shouldRefuseNewWork() || s.cancellationRequested) {
+    s.pendingVerificationRetry = null;
+    s.pendingVerificationRetryDispatch = null;
+    s.pendingOrchestrationDispatch = null;
+    return { action: "break", reason: "cancellation-requested" };
+  }
   const { state, mid, midTitle } = preData;
   const provider = ctx.model?.provider;
   const authMode = provider && typeof ctx.modelRegistry?.getProviderAuthMode === "function"

@@ -23,6 +23,8 @@ import {
   refreshRecoveryDbForArtifact,
 } from "../auto-recovery.js";
 import { writeUnitRuntimeRecord } from "../unit-runtime.js";
+import { captureUsefulProgressIdentity } from "../useful-progress.js";
+import { shouldRefuseNewWork } from "../auto-cancellation.js";
 import { isDbAvailable, getTask, getGateResults } from "../gsd-db.js";
 import { getGateIdsForTurn } from "../gate-registry.js";
 import { getLatestForUnit } from "../db/unit-dispatches.js";
@@ -176,6 +178,12 @@ export async function runUnitPhase(
 ): Promise<PhaseResult<{ unitStartedAt?: number; requestDispatchedAt?: number; retryAfterMs?: number }>> {
   const { ctx, pi, s, deps, prefs } = ic;
   const { unitType, unitId, prompt, state, mid } = iterData;
+  if (shouldRefuseNewWork() || s.cancellationRequested) {
+    s.pendingVerificationRetry = null;
+    s.pendingVerificationRetryDispatch = null;
+    s.pendingOrchestrationDispatch = null;
+    return { action: "break", reason: "cancellation-requested" };
+  }
 
   debugLog("autoLoop", {
     phase: "unit-execution",
@@ -495,6 +503,10 @@ export async function runUnitPhase(
       lastProgressAt: unitStartedAt,
       progressCount: 0,
       lastProgressKind: "dispatch",
+      lastSourceIdentity: captureUsefulProgressIdentity(s.basePath, unitStartedAt),
+      lastSourceChangeAt: unitStartedAt,
+      cancellationPhase: "none",
+      pendingInput: false,
       recoveryAttempts: resolveDispatchRecoveryAttempts(s.unitRecoveryCount, unitType, unitId),
     },
   );

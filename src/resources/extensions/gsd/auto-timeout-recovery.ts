@@ -24,6 +24,7 @@ import { getInFlightToolCount } from "./auto-tool-tracking.js";
 import { parseUnitId } from "./unit-id.js";
 import { readLatestTaskAttempt } from "./task-execution-domain-operation.js";
 import { isDbAvailable } from "./gsd-db.js";
+import { isAutoCancellationRequested } from "./auto-cancellation.js";
 
 export interface RecoveryContext {
   basePath: string;
@@ -40,6 +41,7 @@ export async function recoverTimedOutUnit(
   reason: "idle" | "hard",
   rctx: RecoveryContext,
 ): Promise<"recovered" | "paused"> {
+  if (isAutoCancellationRequested()) return "paused";
   // Note on turn epoch: the bump is intentionally NOT unconditional at
   // function entry. Two branches below (the "steering retry" paths) keep
   // the same LLM turn alive and let it try again — they must NOT bump,
@@ -65,6 +67,7 @@ export async function recoverTimedOutUnit(
       "info",
     );
     await new Promise(r => setTimeout(r, backoffMs));
+    if (isAutoCancellationRequested()) return "paused";
   }
 
   if (unitType === "execute-task") {
@@ -130,6 +133,7 @@ export async function recoverTimedOutUnit(
           ];
 
       const recoveryTrigger = getInFlightToolCount() === 0;
+      if (isAutoCancellationRequested()) return "paused";
       if (recoveryTrigger) {
         await applySupervisorModelIfConfigured(ctx, pi, basePath);
       }
@@ -269,6 +273,7 @@ export async function recoverTimedOutUnit(
           ];
 
     const recoveryTrigger = getInFlightToolCount() === 0;
+    if (isAutoCancellationRequested()) return "paused";
     if (recoveryTrigger) {
       await applySupervisorModelIfConfigured(ctx, pi, basePath);
     }

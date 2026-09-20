@@ -108,6 +108,15 @@ export interface UnitHarnessAbortRecord {
   recordedAt: number;
 }
 
+export type CancellationPhase =
+  | "none"
+  | "requested"
+  | "aborting-model"
+  | "aborting-tools"
+  | "draining"
+  | "cancelled"
+  | "recovery_required";
+
 export interface AutoUnitRuntimeRecord {
   version: 1;
   unitType: string;
@@ -121,6 +130,13 @@ export interface AutoUnitRuntimeRecord {
   lastProgressAt: number;
   progressCount: number;
   lastProgressKind: string;
+  lastSourceIdentity?: string;
+  lastSourceChangeAt?: number;
+  lastTransportAt?: number;
+  lastTransportKind?: string;
+  activeTool?: string | null;
+  pendingInput?: boolean;
+  cancellationPhase?: CancellationPhase;
   recovery?: ExecuteTaskRecoveryStatus;
   recoveryAttempts?: number;
   lastRecoveryReason?: "idle" | "hard";
@@ -149,6 +165,10 @@ export function writeUnitRuntimeRecord(
     const prev = readUnitRuntimeRecord(basePath, unitType, unitId);
     const sameRun = prev?.startedAt === startedAt;
     const updatesHarnessAbort = Object.prototype.hasOwnProperty.call(updates, "harnessAbort");
+    const sameOrPrev = <K extends keyof AutoUnitRuntimeRecord>(key: K, fallback?: AutoUnitRuntimeRecord[K]) =>
+      Object.prototype.hasOwnProperty.call(updates, key)
+        ? updates[key]
+        : (sameRun ? prev?.[key] : fallback);
     const next: AutoUnitRuntimeRecord = {
       version: 1,
       unitType,
@@ -162,6 +182,13 @@ export function writeUnitRuntimeRecord(
       lastProgressAt: updates.lastProgressAt ?? prev?.lastProgressAt ?? Date.now(),
       progressCount: updates.progressCount ?? prev?.progressCount ?? 0,
       lastProgressKind: updates.lastProgressKind ?? prev?.lastProgressKind ?? "dispatch",
+      lastSourceIdentity: sameOrPrev("lastSourceIdentity"),
+      lastSourceChangeAt: sameOrPrev("lastSourceChangeAt"),
+      lastTransportAt: sameOrPrev("lastTransportAt"),
+      lastTransportKind: sameOrPrev("lastTransportKind"),
+      activeTool: sameOrPrev("activeTool"),
+      pendingInput: sameOrPrev("pendingInput"),
+      cancellationPhase: sameOrPrev("cancellationPhase", "none"),
       recovery: updates.recovery ?? prev?.recovery,
       recoveryAttempts: updates.recoveryAttempts ?? prev?.recoveryAttempts ?? 0,
       lastRecoveryReason: updates.lastRecoveryReason ?? prev?.lastRecoveryReason,
@@ -171,6 +198,20 @@ export function writeUnitRuntimeRecord(
     };
     atomicWriteSync(path, JSON.stringify(next, null, 2) + "\n", "utf-8");
     return next;
+  });
+}
+
+export function recordTransportActivity(
+  basePath: string,
+  unitType: string,
+  unitId: string,
+  startedAt: number,
+  kind = "token",
+  at = Date.now(),
+): AutoUnitRuntimeRecord {
+  return writeUnitRuntimeRecord(basePath, unitType, unitId, startedAt, {
+    lastTransportAt: at,
+    lastTransportKind: kind,
   });
 }
 
@@ -189,6 +230,7 @@ export function recordUnitHarnessAbort(
       return prev;
     }
     const next: AutoUnitRuntimeRecord = {
+      ...(prev ?? {}),
       version: 1,
       unitType,
       unitId,
@@ -201,6 +243,13 @@ export function recordUnitHarnessAbort(
       lastProgressAt: Date.now(),
       progressCount: prev?.progressCount ?? 0,
       lastProgressKind: `harness-abort:${abort.kind}`,
+      lastSourceIdentity: sameRun ? prev?.lastSourceIdentity : undefined,
+      lastSourceChangeAt: sameRun ? prev?.lastSourceChangeAt : undefined,
+      lastTransportAt: sameRun ? prev?.lastTransportAt : undefined,
+      lastTransportKind: sameRun ? prev?.lastTransportKind : undefined,
+      activeTool: sameRun ? prev?.activeTool : undefined,
+      pendingInput: sameRun ? prev?.pendingInput : undefined,
+      cancellationPhase: sameRun ? prev?.cancellationPhase : "none",
       recovery: prev?.recovery,
       recoveryAttempts: prev?.recoveryAttempts ?? 0,
       lastRecoveryReason: prev?.lastRecoveryReason,

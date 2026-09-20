@@ -11,6 +11,7 @@ import {
   runHostCheck,
   setHostCheckCleanupBudgetsForTest,
   truncateCapturedOutput,
+  hostCheckProcessGroupAlive,
 } from "../host-check-runner.ts";
 
 afterEach(() => {
@@ -96,6 +97,41 @@ test("AT-L01: argv validators do not use a shell", async () => {
   });
   assert.equal(result.exitCode, 0, result.stderr);
   assert.match(result.stdout, /argv-only/);
+});
+
+test("AT-L05: descendant-held stdout does not deadlock cancel cleanup", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "gsd-host-check-descendant-"));
+  setHostCheckCleanupBudgetsForTest({ termGraceMs: 80, killVerifyMs: 150, timeoutCleanupMs: 50 });
+  const controller = new AbortController();
+  let ticks = 0;
+  const timer = setInterval(() => {
+    ticks += 1;
+  }, 20);
+  const started = Date.now();
+  try {
+    const pending = runHostCheck({
+      cwd,
+      timeoutMs: 10_000,
+      abortSignal: controller.signal,
+      argv: [
+        "node",
+        "-e",
+        'const {spawn}=require("child_process");spawn(process.execPath,["-e","process.on(\\"SIGTERM\\",()=>{});process.stdout.write(\\"held\\\\n\\");setInterval(()=>{},200);"],{stdio:["ignore","inherit","inherit"]});process.on("SIGTERM",()=>process.exit(0));setInterval(()=>{},200);',
+      ],
+    });
+    setTimeout(() => controller.abort(), 80);
+    const result = await pending;
+    const elapsed = Date.now() - started;
+    assert.equal(result.cancelled, true, result.stderr);
+    assert.equal(result.failureClass, "cancelled");
+    assert.ok(elapsed < 2_000, `cleanup deadlocked, elapsed=${elapsed}`);
+    assert.ok(ticks > 0, `event loop should tick during descendant cleanup, ticks=${ticks}`);
+    if (result.pid !== undefined) {
+      assert.equal(hostCheckProcessGroupAlive(result.pid), false);
+    }
+  } finally {
+    clearInterval(timer);
+  }
 });
 
 test("bounded capture truncates while full artefact remains", () => {

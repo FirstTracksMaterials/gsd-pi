@@ -58,6 +58,7 @@ export interface HostCheckResult {
   stderrPath: string;
   spawnError?: NodeJS.ErrnoException & { killed?: boolean };
   failureClass?: HostCheckFailureClass;
+  pid?: number;
 }
 
 interface CleanupBudgets {
@@ -203,6 +204,28 @@ function signalProcessGroup(pid: number, signal: NodeJS.Signals): void {
   }
 }
 
+function processGroupHasMembers(pgid: number): boolean {
+  if (process.platform === "win32") {
+    try {
+      process.kill(pgid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  try {
+    process.kill(-pgid, 0);
+    return true;
+  } catch {
+    try {
+      process.kill(pgid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
 async function terminateProcessGroup(
   child: ChildProcess,
   exitPromise: Promise<{ code: number | null; signal: NodeJS.Signals | null }>,
@@ -210,18 +233,32 @@ async function terminateProcessGroup(
   killVerifyMs: number,
 ): Promise<void> {
   const pid = child.pid;
-  if (pid === undefined || child.exitCode !== null || child.signalCode !== null) return;
-  signalProcessGroup(pid, "SIGTERM");
-  const terminated = await Promise.race([
-    exitPromise.then(() => true),
-    sleep(graceMs).then(() => false),
-  ]);
-  if (terminated || child.exitCode !== null || child.signalCode !== null) return;
-  signalProcessGroup(pid, "SIGKILL");
-  await Promise.race([
-    exitPromise.then(() => undefined),
-    sleep(killVerifyMs),
-  ]);
+  if (pid === undefined) return;
+  // Always signal the process group, even if the spawn child (parent) has
+  // already exited while a descendant still holds stdout.
+  if (child.exitCode === null && child.signalCode === null) {
+    signalProcessGroup(pid, "SIGTERM");
+    await Promise.race([
+      exitPromise.then(() => true),
+      sleep(graceMs).then(() => false),
+    ]);
+  }
+  if (processGroupHasMembers(pid)) {
+    signalProcessGroup(pid, "SIGKILL");
+    await Promise.race([
+      exitPromise.then(() => undefined),
+      sleep(killVerifyMs),
+    ]);
+    const deadline = Date.now() + killVerifyMs;
+    while (processGroupHasMembers(pid) && Date.now() < deadline) {
+      signalProcessGroup(pid, "SIGKILL");
+      await sleep(Math.min(50, deadline - Date.now()));
+    }
+  }
+}
+
+export function hostCheckProcessGroupAlive(pid: number): boolean {
+  return processGroupHasMembers(pid);
 }
 
 function classifyFailure(input: {
@@ -365,6 +402,7 @@ export async function runHostCheck(request: HostCheckRequest): Promise<HostCheck
   }
 
   const exitPromise = waitForExit(child);
+  const spawnedPid = child.pid;
 
   const abort = async (reason: "timeout" | "cancel") => {
     if (reason === "timeout") timedOut = true;
@@ -404,6 +442,9 @@ export async function runHostCheck(request: HostCheckRequest): Promise<HostCheck
     if (timeoutHandle) clearTimeout(timeoutHandle);
     if (abortListener && request.abortSignal) {
       request.abortSignal.removeEventListener("abort", abortListener);
+    }
+    if ((cancelled || timedOut) && spawnedPid !== undefined) {
+      await terminateProcessGroup(child, exitPromise, 0, budgets.killVerifyMs);
     }
   }
 
@@ -454,5 +495,6 @@ export async function runHostCheck(request: HostCheckRequest): Promise<HostCheck
     stderrPath,
     spawnError,
     failureClass,
+    pid: spawnedPid,
   };
 }

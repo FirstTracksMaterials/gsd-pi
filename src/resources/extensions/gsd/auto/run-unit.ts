@@ -30,6 +30,7 @@ import { readUnitRuntimeRecord, type AutoUnitRuntimeRecord } from "../unit-runti
 import { clearAutoWakeup, consumeAutoWakeup, peekAutoWakeup } from "./schedule-wakeup.js";
 import { emitJournalEvent } from "../journal.js";
 import { applyUnitSkillVisibility } from "../skill-scope.js";
+import { shouldRefuseNewWork } from "../auto-cancellation.js";
 
 const UNIT_FAILSAFE_BUFFER_MS = 30_000;
 const UNIT_FAILSAFE_RECHECK_MS = 30_000;
@@ -89,6 +90,9 @@ export async function runUnit(
   prompt: string,
 ): Promise<UnitResult> {
   debugLog("runUnit", { phase: "start", unitType, unitId });
+  if (shouldRefuseNewWork() || !s.active || s.cancellationRequested) {
+    return { status: "cancelled" };
+  }
 
   // ── Session creation with timeout ──
   debugLog("runUnit", { phase: "session-create", unitType, unitId });
@@ -252,6 +256,10 @@ export async function runUnit(
 
   // ── Send the prompt ──
   debugLog("runUnit", { phase: "send-message", unitType, unitId });
+  if (shouldRefuseNewWork() || !s.active || s.cancellationRequested) {
+    _clearCurrentResolve();
+    return { status: "cancelled" };
+  }
 
   const requestDispatchedAt = Date.now();
   ctx.ui.setWorkingMessage?.(null);

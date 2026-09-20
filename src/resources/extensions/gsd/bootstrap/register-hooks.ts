@@ -1473,11 +1473,16 @@ export function registerHooks(
   });
 
   pi.on("session_before_compact", async (event, ctx) => {
+    const { isAutoCancellationRequested } = await import("../auto-cancellation.js");
     const basePath = contextBasePath(ctx);
     // Context Mode is default-on. Write the resumable snapshot before any
     // active-auto cancel return so auto sessions still leave re-entry context.
     const { writeContextModeCompactionSnapshot } = await import("../context-mode-snapshot.js");
     await writeContextModeCompactionSnapshot(basePath);
+
+    if (isAutoCancellationRequested()) {
+      return { cancel: true };
+    }
 
     const prep = event?.preparation;
     if (prep && prep.messagesToSummarize?.length === 0 && prep.turnPrefixMessages?.length === 0) {
@@ -1564,7 +1569,13 @@ export function registerHooks(
     if (messageHasPendingAskUserQuestionsTool(event.message)) return;
 
     const dash = getAutoRuntimeSnapshot();
-    if (dash.active) return;
+    if (dash.active) {
+      if (dash.currentUnit) {
+        autoSession.lastTransportAt = Date.now();
+        autoSession.lastTransportKind = "token";
+      }
+      return;
+    }
     let unitType = dash.currentUnit?.type;
     let unitId = dash.currentUnit?.id;
 

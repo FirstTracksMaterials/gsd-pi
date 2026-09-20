@@ -512,7 +512,7 @@ export async function autoLoop(
     });
   };
 
-  while (s.active) {
+  while (s.active && !s.cancellationRequested) {
     iteration++;
     debugLog("autoLoop", { phase: "loop-top", iteration });
 

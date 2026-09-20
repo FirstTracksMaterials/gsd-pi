@@ -39,6 +39,7 @@ import {
 } from "./verification-source-integrity.js";
 import { HOST_CHECK_LOG_EXCLUDE_PATHS } from "./host-check-runner.js";
 import { getProjectRequiredPolicyId } from "./required-policy.js";
+import { publicationBlockedByCancellation } from "./auto-cancellation.js";
 import { renderSummaryContent } from "./workflow-projections.js";
 
 export interface TaskCompletionIdentity {
@@ -585,6 +586,19 @@ function publishCanonicalCompletion(
 
 function requireCurrentVerifiedSource(input: PublishVerifiedTaskCompletionInput): void {
   if (readDomainOperationFence(input.invocation.idempotencyKey).replay) return;
+
+  if (publicationBlockedByCancellation({
+    basePath: input.basePath,
+    attemptId: input.attemptId,
+    unitType: "execute-task",
+    unitId: `${input.task.milestoneId}/${input.task.sliceId}/${input.task.taskId}`,
+  })) {
+    throw new Error("Verified Task publication cannot accept PASS from a cancelled attempt");
+  }
+  const latestAttempt = readLatestTaskAttempt(input.task);
+  if (latestAttempt?.attemptId === input.attemptId && latestAttempt.outcome === "interrupted") {
+    throw new Error("Verified Task publication cannot accept PASS from a cancelled attempt");
+  }
 
   const verdict = readTaskTechnicalVerdict(input.attemptId);
   if (!verdict || verdict.verdict !== "pass") {
