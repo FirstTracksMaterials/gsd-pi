@@ -5,6 +5,25 @@ Save-point for future agents. This is the GSD fork worktree
 Do not write raid-night, product, or quake-cockpit from a gsd-pi C07
 session unless the prompt names that repo.
 
+## C15L reopen (2026-09-21)
+
+`build:core`, `typecheck:extensions`, `copy-resources`, and `build:web-host`
+pass. C06 TS6059/TS5097 closed via non-literal imports and
+`runtime-control-load`. Packaged host binds in-process `sendBridgeInput`
+for native auto; daemon children omit `GSD_WEB_BRIDGE_TUI`.
+
+Packaged auto bootstrap/pending-input close:
+- Copied `$GSD_HOME` extensions resolve `runtime-control` and
+  `pending-bridge` via `GSD_WEB_PACKAGE_ROOT`.
+- `evaluateCompulsoryPolicy` hydrates daemon bindings from
+  `GSD_RUNTIME_REGISTRATION` and loads `GSD_REQUIRED_POLICY_MODULE`.
+- Packaged RPC `dist/loader.js` now gets `--import resolve-ts.mjs` and
+  strip-types so `.ts` FTM/C14 policy loads in the worker.
+- Interactive wizard abort is recorded in
+  `runtime-control/bootstrap-abort.json`.
+
+Do not start C16 from this session. No real inference.
+
 ## C14 / C06 native auto dispatch (2026-09-20)
 
 Narrow C06 correction used by C14's real packaged daemon. Starting HEAD

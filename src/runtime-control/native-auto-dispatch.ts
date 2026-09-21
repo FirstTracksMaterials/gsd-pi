@@ -13,7 +13,12 @@ export type NativeAutoDispatchInput = {
 
 export type NativeAutoDispatcher = (input: NativeAutoDispatchInput) => Promise<void> | void;
 
+let installedDispatcher: NativeAutoDispatcher | null = null;
 let testDispatcher: NativeAutoDispatcher | null = null;
+
+export function registerNativeAutoDispatch(dispatcher: NativeAutoDispatcher | null): void {
+  installedDispatcher = dispatcher;
+}
 
 export function registerNativeAutoDispatchForTest(dispatcher: NativeAutoDispatcher | null): void {
   testDispatcher = dispatcher;
@@ -47,8 +52,9 @@ async function sendExistingBridgeAuto(input: NativeAutoDispatchInput): Promise<v
 }
 
 export async function dispatchNativeScopedAuto(input: NativeAutoDispatchInput): Promise<{ dispatched: boolean }> {
-  if (testDispatcher) {
-    await testDispatcher(input);
+  const dispatcher = testDispatcher ?? installedDispatcher;
+  if (dispatcher) {
+    await dispatcher(input);
     return { dispatched: true };
   }
   if (process.env.GSD_WEB_DAEMON_MODE !== "1") {

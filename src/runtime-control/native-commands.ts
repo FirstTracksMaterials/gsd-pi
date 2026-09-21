@@ -119,7 +119,12 @@ async function defaultStart(input: { basePath: string; milestoneId: string; resu
   process.env.GSD_MILESTONE_LOCK = input.milestoneId;
   // Existing native auto via the RPC worker. Fire-and-forget: HTTP admission
   // must not await generation (R4). Owner C06.
-  void dispatchNativeScopedAuto(input).catch(() => undefined);
+  void dispatchNativeScopedAuto(input).catch((error) => {
+    console.error(
+      "[gsd] native auto dispatch failed:",
+      error instanceof Error ? error.stack ?? error.message : error,
+    );
+  });
   return { started: true, milestoneLock: input.milestoneId };
 }
 

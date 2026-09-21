@@ -17,7 +17,7 @@ import { isAbsolute, join, relative, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import {
   wrapManagedCommand,
-} from "../../../runtime-control/workspace-profile.ts";
+} from "./runtime-control-load.js";
 
 /** R8 graceful SIGTERM budget (ms). Tests may shorten this. */
 export const DEFAULT_TERM_GRACE_MS = 10_000;

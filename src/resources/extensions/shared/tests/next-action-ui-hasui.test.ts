@@ -207,4 +207,37 @@ describe("showNextAction ctx.hasUI guard (#5125 lockup root protection)", () => 
     assertFullOuterBorder(rendered, 80);
     assert.match(stripVTControlCharacters(rendered[0] ?? ""), /GSD Next Action/);
   });
+
+  it("returns 'not_yet' immediately when GSD_WEB_DAEMON_MODE=1 even if ctx.hasUI is true", async () => {
+    const previous = process.env.GSD_WEB_DAEMON_MODE;
+    process.env.GSD_WEB_DAEMON_MODE = "1";
+    let customCalled = 0;
+    let selectCalled = 0;
+    try {
+      const ctx = {
+        hasUI: true,
+        ui: {
+          notify: () => {},
+          custom: async () => {
+            customCalled++;
+            return undefined as never;
+          },
+          select: async () => {
+            selectCalled++;
+            return new Promise(() => {});
+          },
+        },
+      };
+      const result = await showNextAction(ctx as any, {
+        title: "GSD — Project Setup",
+        actions: [{ id: "solo", label: "Solo", description: "just me", recommended: true }],
+      });
+      assert.equal(result, "not_yet");
+      assert.equal(customCalled, 0);
+      assert.equal(selectCalled, 0);
+    } finally {
+      if (previous === undefined) delete process.env.GSD_WEB_DAEMON_MODE;
+      else process.env.GSD_WEB_DAEMON_MODE = previous;
+    }
+  });
 });

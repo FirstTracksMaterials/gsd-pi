@@ -258,6 +258,10 @@ export async function runRpcMode(session: AgentSession): Promise<never> {
 	 * Create an extension UI context that uses the RPC protocol.
 	 */
 	const createExtensionUIContext = (): ExtensionUIContext => ({
+		// Packaged/daemon RPC has a UI channel but cannot render TUI menus.
+		// Without this, isInteractiveCommandContext() treats hasUI as a live
+		// wizard and ctx.ui.select waits forever on extension_ui_response.
+		mode: "rpc",
 		select: (title, options, opts) =>
 			createDialogPromise(opts, undefined, { method: "select", title, options, timeout: opts?.timeout, allowMultiple: opts?.allowMultiple }, (r) =>
 				"cancelled" in r && r.cancelled ? undefined : "values" in r ? r.values : "value" in r ? r.value : undefined,

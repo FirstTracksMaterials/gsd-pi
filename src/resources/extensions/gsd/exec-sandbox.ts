@@ -15,7 +15,7 @@ import { resolve } from "node:path";
 import { getShellConfig, killProcessTree, SIGKILL_GRACE_MS, HARD_DEADLINE_MS } from "@gsd/pi-coding-agent";
 import { DEFAULT_COMMAND_TIMEOUT_MS } from "./constants.js";
 import { redactSecrets } from "./redact-secrets.js";
-import { wrapManagedCommand } from "../../../runtime-control/workspace-profile.ts";
+import { wrapManagedCommand } from "./runtime-control-load.js";
 
 export interface ExecSandboxRequest {
   /** Interpreter to use. */

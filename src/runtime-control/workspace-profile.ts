@@ -251,43 +251,56 @@ export function registerBubblewrapPreflightForTest(result: BubblewrapPreflight |
   testPreflight = result;
 }
 
+function resolveBwrapPath(): string | null {
+  try {
+    const fromWhich = execFileSync("which", ["bwrap"], { encoding: "utf-8" }).trim();
+    if (fromWhich) return fromWhich;
+  } catch {
+    // `which` may be absent; fall through to the shell builtin.
+  }
+  try {
+    const fromShell = execSync("command -v bwrap", { encoding: "utf-8" }).trim();
+    return fromShell || null;
+  } catch {
+    return null;
+  }
+}
+
+function probeUserNamespace(bwrap: string): void {
+  const argv = [
+    "--unshare-user",
+    "--die-with-parent",
+    "--dev", "/dev",
+    "--proc", "/proc",
+    "--ro-bind", "/usr", "/usr",
+    "--ro-bind", "/bin", "/bin",
+    "--ro-bind", "/lib", "/lib",
+  ];
+  if (existsSync("/lib64")) argv.push("--ro-bind", "/lib64", "/lib64");
+  argv.push("--", "/bin/true");
+  execFileSync(bwrap, argv, { encoding: "utf-8", timeout: 5000 });
+}
+
 export function preflightBubblewrap(): BubblewrapPreflight {
   if (testPreflight) return testPreflight;
+  const bwrap = resolveBwrapPath();
+  if (!bwrap) {
+    return {
+      ok: false,
+      code: "bwrap_unavailable",
+      diagnostics: `bubblewrap (bwrap) is not available on ${process.platform}. Linux user-namespace read-only mounts are required for shell/program/validator execution. Do not disable this protection.`,
+    };
+  }
   try {
-    const bwrap = execFileSync("command", ["-v", "bwrap"], { encoding: "utf-8" }).trim();
-    if (!bwrap) {
-      return {
-        ok: false,
-        code: "bwrap_unavailable",
-        diagnostics: "bubblewrap (bwrap) is not installed. Linux user-namespace read-only mounts are required; no Mac sandbox substitute is used.",
-      };
-    }
-    try {
-      execFileSync(bwrap, ["--unshare-user", "--die-with-parent", "true"], { encoding: "utf-8", timeout: 5000 });
-    } catch (error) {
-      return {
-        ok: false,
-        code: "userns_unavailable",
-        diagnostics: `bubblewrap user namespaces are unavailable: ${error instanceof Error ? error.message : String(error)}`,
-      };
-    }
-    return { ok: true, bwrap };
-  } catch {
-    try {
-      execSync("command -v bwrap", { encoding: "utf-8" });
-    } catch {
-      return {
-        ok: false,
-        code: "bwrap_unavailable",
-        diagnostics: `bubblewrap (bwrap) is not available on ${process.platform}. Linux user-namespace read-only mounts are required for shell/program/validator execution. Do not disable this protection.`,
-      };
-    }
+    probeUserNamespace(bwrap);
+  } catch (error) {
     return {
       ok: false,
       code: "userns_unavailable",
-      diagnostics: "bwrap exists but user-namespace operation could not be verified.",
+      diagnostics: `bubblewrap user namespaces are unavailable: ${error instanceof Error ? error.message : String(error)}`,
     };
   }
+  return { ok: true, bwrap };
 }
 
 export function buildBubblewrapArgv(
@@ -362,18 +375,25 @@ export function snapshotFileHashes(root: string, files: string[]): Map<string, s
 }
 
 function installWriteGuards(): void {
-  void import("../../packages/pi-coding-agent/src/core/tools/write.ts")
-    .then((mod) => {
-      mod.setWritePathGuard((absolutePath: string, cwd: string) => {
+  // Non-literal specifiers: root tsc must not follow package sources (TS6059/TS5097).
+  const writeToolSpec = "../../packages/pi-coding-agent/src/core/tools/write.ts";
+  const bashToolSpec = "../../packages/pi-coding-agent/src/core/tools/bash.ts";
+  void import(writeToolSpec)
+    .then((mod: { setWritePathGuard?: (guard: (absolutePath: string, cwd: string) => void) => void }) => {
+      mod.setWritePathGuard?.((absolutePath: string, cwd: string) => {
         enforceNativeWrite(absolutePath, cwd);
       });
     })
     .catch(() => {
       // Write-tool package may be unavailable in isolated tests.
     });
-  void import("../../packages/pi-coding-agent/src/core/tools/bash.ts")
-    .then((mod) => {
-      mod.setBashArgvGuard((cwd: string, file: string, args: string[]) => {
+  void import(bashToolSpec)
+    .then((mod: {
+      setBashArgvGuard?: (
+        guard: (cwd: string, file: string, args: string[]) => { blocked: string } | { file: string; args: string[] },
+      ) => void;
+    }) => {
+      mod.setBashArgvGuard?.((cwd: string, file: string, args: string[]) => {
         const wrapped = wrapManagedCommand(cwd, file, args);
         if (!wrapped.ok) return { blocked: wrapped.diagnostics };
         return { file: wrapped.file, args: wrapped.args };

@@ -59,7 +59,14 @@ export function resolveGsdCliEntry(options: ResolveGsdCliEntryOptions): GsdCliEn
   const builtCliEntry = checkExists(builtEntry)
     ? {
         command: execPath,
-        args: [builtEntry, ...extraArgs, ...messageArgs],
+        args: [
+          ...(checkExists(resolveTsLoader)
+            ? ["--import", pathToFileURL(resolveTsLoader).href, resolveTypeStrippingFlag(options.packageRoot)]
+            : []),
+          builtEntry,
+          ...extraArgs,
+          ...messageArgs,
+        ],
         cwd: options.cwd,
       } satisfies GsdCliEntry
     : null;

@@ -210,3 +210,38 @@ test("passing compulsory policy AND ordinary checks can pass", async () => {
   });
   assert.equal(combined.passed, true);
 });
+
+test("daemon worker hydrates required-policy bindings from GSD_RUNTIME_REGISTRATION", async () => {
+  const basePath = tempProject();
+  const registration = join(basePath, "registration.json");
+  writeFileSync(
+    registration,
+    `${JSON.stringify({
+      version: 1,
+      projects: [
+        {
+          project_id: "c14",
+          target_worktree: basePath,
+          required_policy: TEST_REQUIRED_POLICY_ID,
+          contract_root: ".gsd/ftm/contracts",
+          reference_repositories: [],
+          writable_cache_roots: [],
+        },
+      ],
+    })}\n`,
+  );
+  const previousDaemon = process.env.GSD_WEB_DAEMON_MODE;
+  const previousRegistration = process.env.GSD_RUNTIME_REGISTRATION;
+  process.env.GSD_WEB_DAEMON_MODE = "1";
+  process.env.GSD_RUNTIME_REGISTRATION = registration;
+  try {
+    const evaluation = await evaluateCompulsoryPolicy(basePath, { phase: "task" });
+    assert.equal(evaluation.kind, "blocked");
+    assert.match(String("reason" in evaluation ? evaluation.reason : ""), /not registered/);
+  } finally {
+    if (previousDaemon === undefined) delete process.env.GSD_WEB_DAEMON_MODE;
+    else process.env.GSD_WEB_DAEMON_MODE = previousDaemon;
+    if (previousRegistration === undefined) delete process.env.GSD_RUNTIME_REGISTRATION;
+    else process.env.GSD_RUNTIME_REGISTRATION = previousRegistration;
+  }
+});

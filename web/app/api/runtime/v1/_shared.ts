@@ -10,10 +10,12 @@ import { admitAnswer } from "../../../../../src/runtime-control/answers.ts";
 import { admitImport } from "../../../../../src/runtime-control/import-jobs.ts";
 import { buildJobSnapshot, listProjectJobs } from "../../../../../src/runtime-control/snapshots.ts";
 import { ensureRuntimeControl } from "../../../../../src/runtime-control/control.ts";
+import { registerNativeAutoDispatch } from "../../../../../src/runtime-control/native-auto-dispatch.ts";
 import { readJobHistory } from "../../../../../src/runtime-control/history.ts";
 import { subscribeProjectEvents } from "../../../../../src/runtime-control/event-hub.ts";
 import { RuntimeControlError } from "../../../../../src/runtime-control/errors.ts";
 import type { Operation, RuntimeError } from "../../../../../src/runtime-control/types.ts";
+import { sendBridgeInput } from "../../../../../src/web/bridge-service.ts";
 
 export { admitAnswer, admitCommand, admitImport, getOperation, getOperationByRequest };
 export { buildJobSnapshot, listProjectJobs, readJobHistory, subscribeProjectEvents };
@@ -68,7 +70,21 @@ export async function readJson(request: Request): Promise<unknown> {
   }
 }
 
+let nativeDispatchBound = false;
+
+function bindNativeDispatch(): void {
+  if (nativeDispatchBound) return;
+  nativeDispatchBound = true;
+  registerNativeAutoDispatch(async (input) => {
+    const result = await sendBridgeInput({ type: "prompt", message: "/gsd auto" }, input.basePath);
+    if (result && typeof result === "object" && "success" in result && result.success === false) {
+      console.error("[gsd] native auto sendBridgeInput failed:", result);
+    }
+  });
+}
+
 export async function control() {
+  bindNativeDispatch();
   return ensureRuntimeControl();
 }
 

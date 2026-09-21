@@ -24,7 +24,7 @@ import {
 import type { PendingVerificationRetry } from "./session.js";
 import type { IterationContext, IterationData, LoopState, PhaseResult, PreDispatchData } from "./types.js";
 import { shouldRefuseNewWork } from "../auto-cancellation.js";
-import { applyPrepareDispatchBoundary, isPrepareMode } from "../../../../runtime-control/prepare-boundary.ts";
+import { applyPrepareDispatchBoundary, isPrepareMode } from "../runtime-control-load.js";
 
 export function getAlreadyClosedDispatchReason(unitType: string, unitId: string): string | null {
   if (!isDbAvailable()) return null;
@@ -78,7 +78,7 @@ function applyManagedPrepareBoundary(
   if (bounded.kind === "prepared") {
     return {
       action: "stop",
-      reason: bounded.reason,
+      reason: bounded.reason ?? "Prepare reached the implementation boundary",
       level: "info",
       matchedRule: "runtime-v1-prepare-boundary",
     };
@@ -86,7 +86,7 @@ function applyManagedPrepareBoundary(
   if (bounded.kind === "refuse") {
     return {
       action: "stop",
-      reason: bounded.reason,
+      reason: bounded.reason ?? "Prepare refused this dispatch",
       level: "error",
       matchedRule: "runtime-v1-prepare-boundary",
     };

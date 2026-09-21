@@ -1,5 +1,5 @@
 import { execFile, spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { appendFileSync, existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { StringDecoder } from "node:string_decoder";
 import type { Readable } from "node:stream";
 import { join, resolve } from "node:path";
@@ -1694,7 +1694,9 @@ export class BridgeService {
     const spawnChild = this.deps.spawn ?? ((command, args, options) => spawn(command, args, options));
     const childEnv = { ...(this.deps.env ?? process.env) };
     delete childEnv.GSD_CODING_AGENT_DIR;
-    childEnv.GSD_WEB_BRIDGE_TUI = "1";
+    if (childEnv.GSD_WEB_DAEMON_MODE !== "1") {
+      childEnv.GSD_WEB_BRIDGE_TUI = "1";
+    }
 
     const child = spawnChild(cliEntry.command, cliEntry.args, {
       cwd: cliEntry.cwd,
@@ -1706,7 +1708,16 @@ export class BridgeService {
     this.process = child;
     this.stderrBuffer = "";
     child.stderr.on("data", (chunk) => {
-      this.stderrBuffer = captureStderr(this.stderrBuffer, chunk.toString());
+      const text = chunk.toString();
+      this.stderrBuffer = captureStderr(this.stderrBuffer, text);
+      const stateDir = childEnv.GSD_STATE_DIR?.trim();
+      if (stateDir) {
+        try {
+          appendFileSync(join(stateDir, "rpc-worker.stderr.log"), text);
+        } catch {
+          // Visibility only: bootstrap must not fail because stderr could not be copied.
+        }
+      }
     });
     this.detachStdoutReader = attachJsonLineReader(child.stdout, (line) => this.handleStdoutLine(line));
     child.once("exit", (code, signal) => this.handleProcessExit(child, code, signal));

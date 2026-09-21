@@ -3,6 +3,7 @@
 
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { afterEach, test } from "node:test";
@@ -350,13 +351,29 @@ test("AT-W01 native writes honour target, scratch, and read-only neighbours; she
   assertTrustedGitRepo(target, target);
   assert.throws(() => assertTrustedGitRepo(neighbour, target), /neighbouring product/);
 
-  const blocked = wrapManagedCommand(target, "python3", ["-c", "print(1)"]);
-  assert.equal(blocked.ok, false);
-  if (!blocked.ok) {
-    assert.match(blocked.diagnostics, /bubblewrap|bwrap|user-namespace|Linux/i);
-  }
   const preflight = preflightBubblewrap();
-  assert.equal(preflight.ok, false);
+  if (process.platform === "linux") {
+    assert.equal(preflight.ok, true);
+    const payload = `from pathlib import Path\nPath(${JSON.stringify(join(neighbour, "ref.txt"))}).write_text('owned\\n')\n`;
+    const wrapped = wrapManagedCommand(target, "/usr/bin/python3", ["-c", payload]);
+    assert.equal(wrapped.ok, true);
+    if (wrapped.ok) {
+      assert.equal(wrapped.file, "bwrap");
+      assert.ok(wrapped.args.includes("--ro-bind"));
+      assert.ok(wrapped.args.includes(canonicalRealpath(neighbour)));
+      const ran = spawnSync(wrapped.file, wrapped.args, { encoding: "utf-8" });
+      assert.notEqual(ran.status, 0);
+      assert.match(`${ran.stderr}\n${ran.stdout}`, /Read-only file system|EROFS|Errno 30/i);
+    }
+    assert.equal(readFileSync(join(neighbour, "ref.txt"), "utf-8"), "neighbour-bytes");
+  } else {
+    const blocked = wrapManagedCommand(target, "python3", ["-c", "print(1)"]);
+    assert.equal(blocked.ok, false);
+    if (!blocked.ok) {
+      assert.match(blocked.diagnostics, /bubblewrap|bwrap|user-namespace|Linux/i);
+    }
+    assert.equal(preflight.ok, false);
+  }
 });
 
 test("AT-W01 plan/review cannot mutate product files; out-of-contract diffs are rejected in place", async () => {
@@ -409,6 +426,17 @@ test("AT-W02 traversal, symlink alias, and absolute neighbour paths are rejected
   assert.throws(() => enforceNativeWrite(join(target, "alias", "secret.txt"), target), /read-only neighbour/);
   assert.throws(() => enforceNativeWrite(join(neighbour, "secret.txt"), target), /read-only neighbour/);
   assert.equal(readFileSync(join(neighbour, "secret.txt"), "utf-8"), "untouched");
+  if (process.platform === "linux") {
+    const payload = `from pathlib import Path\nPath(${JSON.stringify(join(target, "alias", "secret.txt"))}).write_text('owned\\n')\n`;
+    const wrapped = wrapManagedCommand(target, "/usr/bin/python3", ["-c", payload]);
+    assert.equal(wrapped.ok, true);
+    if (wrapped.ok) {
+      const ran = spawnSync(wrapped.file, wrapped.args, { encoding: "utf-8" });
+      assert.notEqual(ran.status, 0);
+      assert.match(`${ran.stderr}\n${ran.stdout}`, /Read-only file system|EROFS|Errno 30/i);
+    }
+    assert.equal(readFileSync(join(neighbour, "secret.txt"), "utf-8"), "untouched");
+  }
 });
 
 test("registration rejects within-project target and reference aliases", () => {

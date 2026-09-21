@@ -241,6 +241,7 @@ function notifyCommandMenuUnavailable(
 function isInteractiveUIContext(ctx: ExtensionCommandContext): boolean {
 	if (!ctx.hasUI) return false;
 	if (process.env.GSD_HEADLESS === "1") return false;
+	if (process.env.GSD_WEB_DAEMON_MODE === "1") return false;
 	const uiMode = (ctx.ui as { mode?: string } | undefined)?.mode;
 	if (uiMode === "rpc" || uiMode === "headless") return false;
 	return true;

@@ -9,6 +9,9 @@
  * Based on: https://github.com/openai/codex (codex-rs/core/src/tools/handlers/ask_user_questions.rs)
  */
 
+import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import type { ExtensionAPI, Theme } from "@gsd/pi-coding-agent";
 import type { NotificationPreferences } from "./gsd/types.js";
 import { sanitizeError } from "./shared/sanitize.js";
@@ -20,6 +23,22 @@ import {
 	type QuestionOption,
 	type RoundResult,
 } from "./shared/tui.js";
+
+export function resolvePendingBridgeModule(here = dirname(fileURLToPath(import.meta.url))): string {
+	const packaged = process.env.GSD_WEB_PACKAGE_ROOT?.trim();
+	const candidates = [
+		join(here, "../../runtime-control/pending-bridge.ts"),
+		packaged ? join(packaged, "src/runtime-control/pending-bridge.ts") : "",
+	].filter(Boolean);
+	for (const candidate of candidates) {
+		if (existsSync(candidate)) return candidate;
+		if (candidate.endsWith(".ts")) {
+			const javascript = candidate.slice(0, -3) + ".js";
+			if (existsSync(javascript)) return javascript;
+		}
+	}
+	throw new Error("pending-bridge was not found beside the extension or GSD_WEB_PACKAGE_ROOT");
+}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -262,6 +281,62 @@ function formatForLLM(result: RoundResult): string {
 	return JSON.stringify({ answers });
 }
 
+function roundResultFromDaemonResponse(questions: Question[], response: unknown): RoundResult {
+	const answers: RoundResult["answers"] = {};
+	const record = response && typeof response === "object" ? (response as Record<string, unknown>) : null;
+	const nested = record && record.answers && typeof record.answers === "object"
+		? (record.answers as Record<string, unknown>)
+		: record;
+	for (const question of questions) {
+		const raw = nested?.[question.id]
+			?? record?.selected
+			?? record?.choice
+			?? record?.text
+			?? (typeof response === "string" ? response : question.options[0]?.label ?? "");
+		let selected: string | string[] = question.options[0]?.label ?? "";
+		if (typeof raw === "string") {
+			selected = raw;
+		} else if (Array.isArray(raw)) {
+			selected = raw.map(String);
+		} else if (raw && typeof raw === "object") {
+			const entry = raw as { answers?: unknown; selected?: unknown };
+			if (Array.isArray(entry.answers)) selected = entry.answers.map(String);
+			else if (typeof entry.selected === "string") selected = entry.selected;
+		}
+		answers[question.id] = { selected, notes: "" };
+	}
+	return { endInterview: false, answers };
+}
+
+async function waitForPackagedRuntimeAnswer(
+	questions: Question[],
+	signal?: AbortSignal,
+): Promise<{ content: { type: "text"; text: string }[]; details: LocalResultDetails } | null> {
+	const { persistDaemonPendingQuestion, resolveDaemonJobId, waitForDaemonAnswer } = await import(
+		/* webpackIgnore: true */ pathToFileURL(resolvePendingBridgeModule()).href
+	);
+	const jobId = resolveDaemonJobId(process.cwd());
+	if (!jobId) return null;
+	const first = questions[0];
+	const questionId = first?.id ?? `q-${Date.now()}`;
+	persistDaemonPendingQuestion({
+		question_id: questionId,
+		job_id: jobId,
+		session_id: `daemon:${jobId}`,
+		title: first?.header,
+		summary: first?.question,
+		method: first?.allowMultiple ? "select" : "select",
+		cwd: process.cwd(),
+	});
+	const answered = await waitForDaemonAnswer(questionId, signal);
+	if (!answered) return null;
+	const round = roundResultFromDaemonResponse(questions, answered.response);
+	return {
+		content: [{ type: "text", text: formatForLLM(round) }],
+		details: { questions, response: round, cancelled: false },
+	};
+}
+
 /** @internal Exported for testing only. */
 export async function playQuestionBell(
 	preferences?: NotificationPreferences,
@@ -318,6 +393,24 @@ export default function AskUserQuestions(pi: ExtensionAPI) {
 				}
 			}
 
+			// Packaged/daemon RPC has hasUI true but cannot render TUI interviews.
+			// Route to the file-backed runtime-v1 pending-input path instead of
+			// hanging on ctx.ui.select / extension_ui_response.
+			if (process.env.GSD_WEB_DAEMON_MODE === "1") {
+				const daemonResult = await waitForPackagedRuntimeAnswer(params.questions, signal);
+				if (daemonResult) {
+					const details = daemonResult.details as unknown as Record<string, unknown> | undefined;
+					if (details && !details.timed_out && !details.error && !details.cancelled) {
+						turnCache.set(sig, daemonResult);
+					}
+					return daemonResult;
+				}
+				return errorResult(
+					"ask_user_questions: packaged daemon pending-input path unavailable",
+					params.questions,
+				);
+			}
+
 			// ── Routing: race remote + local, remote-only, or local-only ────────
 			const { tryRemoteQuestions, isRemoteConfigured } = await import("./remote-questions/manager.js");
 			const hasRemote = isRemoteConfigured();
@@ -370,6 +463,16 @@ export default function AskUserQuestions(pi: ExtensionAPI) {
 
 			// Case 3: No remote — local UI only.
 			if (!ctx.hasUI) {
+				if (process.env.GSD_WEB_DAEMON_MODE === "1") {
+					const daemonResult = await waitForPackagedRuntimeAnswer(params.questions, signal);
+					if (daemonResult) {
+						const details = daemonResult.details as unknown as Record<string, unknown> | undefined;
+						if (details && !details.timed_out && !details.error && !details.cancelled) {
+							turnCache.set(sig, daemonResult);
+						}
+						return daemonResult;
+					}
+				}
 				return errorResult("Error: UI not available (non-interactive mode)", params.questions);
 			}
 

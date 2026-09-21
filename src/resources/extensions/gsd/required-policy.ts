@@ -1,8 +1,9 @@
 // Project/App: gsd-pi
 // File Purpose: Generic required-policy registry (S4). Compulsory host gate, not a notification hook.
 
-import { realpathSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { isAbsolute, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import {
   runHostCheck,
@@ -60,6 +61,8 @@ export type CompulsoryPolicyEvaluation =
 
 const policies = new Map<string, RequiredPolicy>();
 const projectBindings = new Map<string, string>();
+let daemonPolicyHydrated = false;
+let daemonPolicyHydrateError: string | null = null;
 
 function canonicalProjectPath(basePath: string): string {
   const resolved = resolve(basePath);
@@ -67,6 +70,49 @@ function canonicalProjectPath(basePath: string): string {
     return realpathSync(resolved);
   } catch {
     return resolved;
+  }
+}
+
+async function hydrateDaemonRequiredPolicyFromEnv(): Promise<void> {
+  if (daemonPolicyHydrated || process.env.GSD_WEB_DAEMON_MODE !== "1") return;
+  daemonPolicyHydrated = true;
+  daemonPolicyHydrateError = null;
+  const registrationPath = process.env.GSD_RUNTIME_REGISTRATION?.trim();
+  if (registrationPath && existsSync(registrationPath)) {
+    try {
+      const parsed = JSON.parse(readFileSync(registrationPath, "utf-8")) as {
+        projects?: Array<{ target_worktree?: unknown; required_policy?: unknown }>;
+      };
+      for (const project of parsed.projects ?? []) {
+        if (typeof project.target_worktree !== "string" || typeof project.required_policy !== "string") continue;
+        if (!project.target_worktree.trim() || !project.required_policy.trim()) continue;
+        configureProjectRequiredPolicy(project.target_worktree, project.required_policy);
+      }
+    } catch {
+      // Fail closed at evaluate time if the binding or module is still missing.
+    }
+  }
+  const spec = process.env.GSD_REQUIRED_POLICY_MODULE?.trim();
+  if (!spec) return;
+  const resolved = isAbsolute(spec) ? spec : resolve(spec);
+  if (!existsSync(resolved) || getRegisteredRequiredPolicy("ftm-science/v1") || getRegisteredRequiredPolicy("test-policy/v1")) {
+    return;
+  }
+  try {
+    const loaded = await import(/* webpackIgnore: true */ pathToFileURL(resolved).href) as {
+      default?: unknown;
+      policy?: unknown;
+      createPolicy?: () => unknown;
+    };
+    const candidate = loaded.default ?? loaded.policy ?? loaded.createPolicy?.();
+    if (candidate && typeof candidate === "object") {
+      const record = candidate as Partial<RequiredPolicy>;
+      if (typeof record.id === "string" && typeof record.version === "string" && typeof record.verifyTask === "function") {
+        registerRequiredPolicy(record as RequiredPolicy);
+      }
+    }
+  } catch (error) {
+    daemonPolicyHydrateError = error instanceof Error ? error.message : String(error);
   }
 }
 
@@ -103,6 +149,8 @@ export function getRegisteredRequiredPolicy(policyId: string): RequiredPolicy | 
 export function resetRequiredPolicyRegistryForTest(): void {
   policies.clear();
   projectBindings.clear();
+  daemonPolicyHydrated = false;
+  daemonPolicyHydrateError = null;
 }
 
 export function registerRequiredPolicyForTest(policy: RequiredPolicy): RequiredPolicy {
@@ -150,7 +198,7 @@ export async function isRequiredPolicyReady(
     return {
       ready: false,
       policyId,
-      reason: `Required policy ${policyId} is not registered`,
+      reason: `Required policy ${policyId} is not registered${daemonPolicyHydrateError ? ` (${daemonPolicyHydrateError})` : ""}`,
     };
   }
   try {
@@ -258,6 +306,7 @@ export async function evaluateCompulsoryPolicy(
     task?: RequiredPolicyContext["task"];
   },
 ): Promise<CompulsoryPolicyEvaluation> {
+  await hydrateDaemonRequiredPolicyFromEnv();
   const policyId = getProjectRequiredPolicyId(basePath);
   if (!policyId) return { kind: "unmanaged" };
 
@@ -275,7 +324,7 @@ export async function evaluateCompulsoryPolicy(
 
   const policy = policies.get(policyId);
   if (!policy) {
-    const reason = `Required policy ${policyId} is not registered`;
+    const reason = `Required policy ${policyId} is not registered${daemonPolicyHydrateError ? ` (${daemonPolicyHydrateError})` : ""}`;
     return {
       kind: "blocked",
       reason,

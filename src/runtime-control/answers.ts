@@ -5,6 +5,12 @@ import { randomUUID } from "node:crypto";
 
 import { invalidRequest, requestIdConflict, revisionConflict, RuntimeControlError, unknownJob } from "./errors.ts";
 import { fingerprintAnswer } from "./fingerprint.ts";
+import {
+  clearDaemonPendingQuestion,
+  listDaemonPendingQuestions,
+  persistDaemonAnswer,
+  persistDaemonPendingQuestion,
+} from "./pending-bridge.ts";
 import type { AdmissionHost } from "./admission.ts";
 import type { Operation, StoredOperation } from "./types.ts";
 
@@ -36,10 +42,13 @@ let nativeRouter: NativeAnswerRouter | null = null;
 
 export function registerPendingQuestion(question: PendingQuestion): void {
   pending.set(`${question.job_id}:${question.question_id}`, question);
+  persistDaemonPendingQuestion(question);
 }
 
 export function listPendingForJob(jobId: string): PendingQuestion[] {
-  return [...pending.values()].filter((question) => question.job_id === jobId);
+  const fromMemory = [...pending.values()].filter((question) => question.job_id === jobId);
+  if (fromMemory.length > 0) return fromMemory;
+  return listDaemonPendingQuestions().filter((question) => question.job_id === jobId);
 }
 
 export function getPendingForJob(jobId: string): PendingQuestion | undefined {
@@ -48,6 +57,7 @@ export function getPendingForJob(jobId: string): PendingQuestion | undefined {
 
 export function clearPendingQuestion(jobId: string, questionId: string): void {
   pending.delete(`${jobId}:${questionId}`);
+  clearDaemonPendingQuestion(jobId, questionId);
 }
 
 export function registerNativeAnswerRouterForTest(router: NativeAnswerRouter | null): void {
@@ -169,13 +179,23 @@ async function admitAnswerLocked(
     throw revisionConflict("expected_revision does not match the current job revision");
   }
 
-  const question = pending.get(`${decodedJobId}:${parsed.question_id}`);
+  const question = pending.get(`${decodedJobId}:${parsed.question_id}`)
+    ?? listDaemonPendingQuestions().find((item) => item.job_id === decodedJobId && item.question_id === parsed.question_id);
   if (!question || question.job_id !== decodedJobId) {
     throw invalidRequest(`Question ${parsed.question_id} is not pending for job ${decodedJobId}`);
   }
 
   const router = nativeRouter ?? defaultNativeAnswerRouter;
   const routed = await router({ question, response: parsed.response, request_id: parsed.request_id });
+  if (routed.accepted) {
+    persistDaemonAnswer({
+      question_id: parsed.question_id,
+      job_id: decodedJobId,
+      response: parsed.response,
+      answered_at: nowIso(host.clock),
+    });
+    clearPendingQuestion(decodedJobId, parsed.question_id);
+  }
   const admittedAt = nowIso(host.clock);
   const operationId = randomUUID();
   const operation: Operation = {

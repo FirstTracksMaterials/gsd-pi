@@ -1577,7 +1577,7 @@ export function shouldBlockWorktreeWrite(
 ): { block: boolean; reason?: string } {
   if (targetPath) {
     try {
-      const { evaluateWrite } = require("../../../../runtime-control/workspace-profile.ts") as typeof import("../../../../runtime-control/workspace-profile.ts");
+      const { evaluateWrite } = require("../runtime-control-load.ts") as typeof import("../runtime-control-load.ts");
       const absTarget = isAbsolute(targetPath) ? targetPath : resolve(effectiveBasePath, targetPath);
       const neighbour = evaluateWrite(absTarget, effectiveBasePath);
       if (!neighbour.allow) return { block: true, reason: neighbour.reason };

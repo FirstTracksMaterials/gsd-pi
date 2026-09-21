@@ -36,7 +36,12 @@ test("resolveGsdCliEntry prefers the built loader for packaged standalone intera
 
   assert.deepEqual(entry, {
     command: "/custom/node",
-    args: [join(packageRoot, "dist", "loader.js")],
+    args: [
+      "--import",
+      pathToFileURL(join(packageRoot, "src", "resources", "extensions", "gsd", "tests", "resolve-ts.mjs")).href,
+      "--experimental-strip-types",
+      join(packageRoot, "dist", "loader.js"),
+    ],
     cwd: "/tmp/project-a",
   });
 });

@@ -663,7 +663,7 @@ function checkContractWriteScope(taskRow: TaskRow, basePath: string): PostExecut
     const {
       getWorkspaceProfileByTarget,
       rejectOutOfContractTargetChanges,
-    } = require("../../../runtime-control/workspace-profile.ts") as typeof import("../../../runtime-control/workspace-profile.ts");
+    } = require("./runtime-control-load.ts") as typeof import("./runtime-control-load.ts");
     const profile = getWorkspaceProfileByTarget(basePath);
     if (!profile) return [];
     const findings = rejectOutOfContractTargetChanges(profile, taskRow.key_files ?? []);

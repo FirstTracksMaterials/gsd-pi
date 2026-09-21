@@ -144,7 +144,7 @@ function gitExec(basePath: string, args: string[], allowFailure = false): string
   // Counts git CLI shell-outs only (native libgit2 paths bypass this helper).
   debugCount("gitInvocations");
   try {
-    const { assertTrustedGitRepo } = require("../../../runtime-control/workspace-profile.ts") as typeof import("../../../runtime-control/workspace-profile.ts");
+    const { assertTrustedGitRepo } = require("./runtime-control-load.ts") as typeof import("./runtime-control-load.ts");
     assertTrustedGitRepo(basePath, basePath);
   } catch (err) {
     if (err && typeof err === "object" && "message" in err && String((err as Error).message).includes("neighbouring")) {

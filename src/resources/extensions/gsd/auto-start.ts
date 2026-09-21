@@ -114,6 +114,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
 import { removeProjectionTreeSync } from "./atomic-write.js";
@@ -137,6 +138,32 @@ export interface BootstrapDeps {
   registerAutoWorkerForSession: (basePath: string) => void;
   lockBase: () => string;
   buildLifecycle: () => WorktreeLifecycle;
+}
+
+export const DAEMON_BOOTSTRAP_ABORT_REASON =
+  "native auto bootstrap aborted: no executable milestone and this session cannot run the interactive init wizard";
+
+export function recordDaemonBootstrapAbort(reason: string): void {
+  debugLog("bootstrap-aborted-needs-interactive", { reason });
+  logError("bootstrap", reason, { file: "auto-start.ts" });
+  const stateDir = process.env.GSD_STATE_DIR?.trim();
+  if (stateDir) {
+    try {
+      const dir = join(stateDir, "runtime-control");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(
+        join(dir, "bootstrap-abort.json"),
+        `${JSON.stringify({ reason, ts: new Date().toISOString() })}\n`,
+      );
+    } catch {
+      // Visibility file is best-effort; the throw below is the hard signal.
+    }
+  }
+}
+
+function abortDaemonInteractiveBootstrap(): never {
+  recordDaemonBootstrapAbort(DAEMON_BOOTSTRAP_ABORT_REASON);
+  throw new Error(DAEMON_BOOTSTRAP_ABORT_REASON);
 }
 
 export function resolveIsolationNoneBranchCheckout(
@@ -1396,6 +1423,11 @@ export async function bootstrapAutoSession(
     }
 
     let state = await deriveState(base);
+    debugLog("bootstrap-state", {
+      phase: state.phase,
+      activeMilestone: state.activeMilestone?.id ?? null,
+      milestoneLock: process.env.GSD_MILESTONE_LOCK ?? null,
+    });
 
     // Stale worktree state recovery (#654)
     if (
@@ -1644,6 +1676,9 @@ export async function bootstrapAutoSession(
         // checkAutoStartAfterDiscuss (in guided-flow.ts) already handles re-entering
         // auto-mode by calling startAutoDetached after the discussion completes.
         // Release the lock and let the async dispatch proceed.
+        if (process.env.GSD_WEB_DAEMON_MODE === "1") {
+          abortDaemonInteractiveBootstrap();
+        }
         return releaseLockAndReturn();
       }
 
@@ -1665,6 +1700,9 @@ export async function bootstrapAutoSession(
           // checkAutoStartAfterDiscuss (in guided-flow.ts) already handles re-entering
           // auto-mode by calling startAutoDetached after the discussion completes.
           // Release the lock and let the async dispatch proceed.
+          if (process.env.GSD_WEB_DAEMON_MODE === "1") {
+            abortDaemonInteractiveBootstrap();
+          }
           return releaseLockAndReturn();
         }
       }
@@ -1695,6 +1733,9 @@ export async function bootstrapAutoSession(
     if (!state.activeMilestone && !deepProjectStagePending && !strandedRecoveryAction) {
       const { showSmartEntry } = await import("./guided-flow.js");
       await showSmartEntry(ctx, pi, base, { step: requestedStepMode });
+      if (process.env.GSD_WEB_DAEMON_MODE === "1") {
+        abortDaemonInteractiveBootstrap();
+      }
       return releaseLockAndReturn();
     }
 

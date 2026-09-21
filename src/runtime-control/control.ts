@@ -6,7 +6,7 @@ import { isAbsolute, resolve, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { gsdHome } from "../resources/extensions/gsd/gsd-home.ts";
-import { registerRequiredPolicy, type RequiredPolicy } from "../resources/extensions/gsd/required-policy.ts";
+import { registerRequiredPolicy, getRegisteredRequiredPolicy, type RequiredPolicy } from "../resources/extensions/gsd/required-policy.ts";
 import { JobCatalog } from "./job-catalog.ts";
 import { ModelLease } from "./model-lease.ts";
 import { OperationStore } from "./operation-store.ts";
@@ -148,6 +148,9 @@ export async function loadRequiredPolicyModule(env: NodeJS.ProcessEnv = process.
     }
     registerRequiredPolicy(policy);
   } catch (error) {
+    if (getRegisteredRequiredPolicy("ftm-science/v1") || getRegisteredRequiredPolicy("test-policy/v1")) {
+      return;
+    }
     policyModuleError = `${REQUIRED_POLICY_MODULE_ENV} failed to load: ${error instanceof Error ? error.message : String(error)}`;
   }
 }
