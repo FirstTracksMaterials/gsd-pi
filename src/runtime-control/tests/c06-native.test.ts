@@ -186,6 +186,33 @@ test("AT-C07 cancel records cancelling immediately and releases the lease only a
   assert.equal(shouldRefuseNewWork(), true);
 });
 
+test("cancel retains the lease when provider abort does not complete", async () => {
+  const alpha = tempProject("cancel-abort");
+  const { control } = createControl({
+    projects: [{ project_id: "alpha", target: alpha, backend_idle_probe: "http://127.0.0.1/slots" }],
+  });
+  seedReadyProject(control, "alpha", alpha);
+  registerCancelNativeOpsForTest({
+    stopAuto: async () => undefined,
+    abortTools: async () => ({ cleaned: true }),
+    abortProvider: async () => {
+      throw new Error("bridge abort failed");
+    },
+  });
+  registerIdleProbeForTest(async () => ({ idle: true, source: "slots" }));
+  const started = await admitCommand(control, "alpha:M001", startRequest(uuid(147)));
+  assert.equal(started.ok, true);
+  const cancel = await admitCommand(control, "alpha:M001", commandRequest("cancel", uuid(148)));
+  assert.equal(cancel.ok, true);
+  const cancelStored = getOperationByRequest(control, uuid(148));
+  assert.equal(cancelStored.ok, true);
+  if (cancelStored.ok) {
+    assert.equal(cancelStored.operation.state, "recovery_required");
+    assert.match(String(cancelStored.operation.error?.message), /backend ownership remains uncertain/);
+  }
+  assert.equal(control.lease.isHeld(), true);
+});
+
 test("AT-C07 missing idle probe retains the lease as recovery_required", async () => {
   const alpha = tempProject("cancel-idle");
   const { control } = createControl({ projects: [{ project_id: "alpha", target: alpha }] });
@@ -206,6 +233,51 @@ test("AT-C07 missing idle probe retains the lease as recovery_required", async (
     assert.equal(typeof cancelStored.operation.result?.recovery_id, "string");
   }
   assert.equal(control.lease.isHeld(), true);
+});
+
+test("recover releases a recovery_required lease only after an idle probe", async () => {
+  const alpha = tempProject("recover-idle");
+  const { control } = createControl({
+    projects: [{ project_id: "alpha", target: alpha, backend_idle_probe: "http://127.0.0.1/slots" }],
+  });
+  seedReadyProject(control, "alpha", alpha);
+  control.lease.acquire({
+    operation_id: "op-held",
+    job_id: "alpha:M001",
+    action: "start",
+    acquired_at: "2026-09-20T00:00:00Z",
+    recovery_required: true,
+  });
+  const blocked = issueRecoveryId({
+    operation_id: "op-held",
+    job_id: "alpha:M001",
+    reason: "Could not parse /slots idle signal",
+    issued_at: "2026-09-20T00:00:01Z",
+    next_state: "recovery_required",
+  });
+  registerIdleProbeForTest(async () => ({ idle: false, source: "slots", reason: "A backend slot is still processing" }));
+  const refused = await admitCommand(control, "alpha:M001", commandRequest("recover", uuid(247), {
+    recovery_id: blocked.recovery_id,
+  }));
+  assert.equal(refused.ok, true);
+  assert.equal(control.lease.isHeld(), true);
+  const refusedStored = getOperationByRequest(control, uuid(247));
+  assert.equal(refusedStored.ok, true);
+  if (refusedStored.ok) assert.equal(refusedStored.operation.state, "recovery_required");
+
+  registerIdleProbeForTest(async () => ({ idle: true, source: "slots" }));
+  const released = await admitCommand(control, "alpha:M001", commandRequest("recover", uuid(248), {
+    recovery_id: blocked.recovery_id,
+  }));
+  assert.equal(released.ok, true);
+  assert.equal(control.lease.isHeld(), false);
+  const releasedStored = getOperationByRequest(control, uuid(248));
+  assert.equal(releasedStored.ok, true);
+  if (releasedStored.ok) {
+    assert.equal(releasedStored.operation.state, "succeeded");
+    assert.equal(releasedStored.operation.result?.replayed_shell, false);
+    assert.equal(releasedStored.operation.result?.idle_confirmed, true);
+  }
 });
 
 test("AT-C07 recover applies an issued recovery_id and never invents a shell replay", async () => {

@@ -599,6 +599,10 @@ export async function runRpcMode(session: AgentSession): Promise<never> {
 			}
 
 			case "abort": {
+				const cancelHook = (globalThis as Record<symbol, unknown>)[Symbol.for("gsd.runtimeCancelAbort")];
+				if (typeof cancelHook === "function") {
+					(cancelHook as () => void)();
+				}
 				await session.abort();
 				return success(id, "abort");
 			}

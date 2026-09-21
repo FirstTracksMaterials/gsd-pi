@@ -1712,7 +1712,7 @@ export async function stopAuto(
   if (!s.active && !s.paused) return;
   requestAutoCancellation("requested");
   s.active = false;
-  abortActiveUnitTurn(ctx);
+  abortActiveUnitTurn(ctx ?? s.cmdCtx);
   setAutoCancellationPhase("aborting-model");
   const loadedPreferences = loadEffectiveGSDPreferences(s.basePath || undefined)?.preferences;
   const stopNotificationPrefix = formatStopNoticePrefix(reason);

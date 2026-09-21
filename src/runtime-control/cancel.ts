@@ -1,6 +1,10 @@
 // Project/App: gsd-pi
 // File Purpose: R8 cancel orchestration. Immediate cancelling; idle probe before lease release.
 
+import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
 import {
   requestAutoCancellation,
   setAutoCancellationPhase,
@@ -9,7 +13,7 @@ import { DEFAULT_KILL_VERIFY_MS, DEFAULT_TERM_GRACE_MS } from "../resources/exte
 import type { ModelLease } from "./model-lease.ts";
 import type { OperationStore } from "./operation-store.ts";
 import { probeBackendIdle } from "./idle-probe.ts";
-import { issueRecoveryId } from "./recovery.ts";
+import { configureRecoveryStore, issueRecoveryId } from "./recovery.ts";
 import type { Operation, ResolvedProject, StoredOperation } from "./types.ts";
 
 export type CancelHost = {
@@ -24,6 +28,7 @@ export const CANCEL_KILL_VERIFY_MS = DEFAULT_KILL_VERIFY_MS;
 export type CancelNativeOps = {
   stopAuto?: (reason: string) => Promise<void>;
   abortTools?: () => Promise<{ cleaned: boolean }>;
+  abortProvider?: () => Promise<void>;
 };
 
 let cancelOps: CancelNativeOps = {};
@@ -38,6 +43,31 @@ export function resetCancelNativeOpsForTest(): void {
 
 function nowIso(clock: () => Date): string {
   return clock().toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
+async function abortBridgeGeneration(projectCwd: string): Promise<void> {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const packaged = process.env.GSD_WEB_PACKAGE_ROOT?.trim();
+  const candidates = [
+    packaged ? join(packaged, "src", "web", "bridge-service.ts") : "",
+    join(here, "..", "web", "bridge-service.ts"),
+  ].filter((path) => path && existsSync(path));
+  let lastError: unknown = new Error("bridge-service was not found beside the runtime or GSD_WEB_PACKAGE_ROOT");
+  for (const candidate of candidates) {
+    try {
+      const loaded = await import(/* webpackIgnore: true */ pathToFileURL(candidate).href) as {
+        sendBridgeInput: (command: { type: "abort" }, cwd?: string) => Promise<{ success?: boolean; error?: unknown } | null>;
+      };
+      const response = await loaded.sendBridgeInput({ type: "abort" }, projectCwd);
+      if (response && response.success === false) {
+        throw new Error(typeof response.error === "string" ? response.error : "bridge abort failed");
+      }
+      return;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError;
 }
 
 export async function executeCancel(input: {
@@ -62,6 +92,17 @@ export async function executeCancel(input: {
   cancelOperation.operation.updated_at = stamp;
   host.store.update(cancelOperation);
 
+  let providerAbortUncertain = false;
+  try {
+    if (cancelOps.abortProvider) {
+      await cancelOps.abortProvider();
+    } else if (!cancelOps.stopAuto && process.env.GSD_WEB_DAEMON_MODE === "1") {
+      await abortBridgeGeneration(project.target_realpath);
+    }
+  } catch {
+    providerAbortUncertain = true;
+  }
+
   try {
     if (cancelOps.stopAuto) {
       await cancelOps.stopAuto("runtime-v1 cancel");
@@ -85,14 +126,18 @@ export async function executeCancel(input: {
   }
 
   setAutoCancellationPhase("draining");
+  const stateDir = process.env.GSD_STATE_DIR?.trim();
+  if (stateDir) configureRecoveryStore(stateDir);
   const idle = await probeBackendIdle(project.backend_idle_probe);
-  if (!cleaned || !idle.idle) {
+  if (!cleaned || !idle.idle || providerAbortUncertain) {
     const recovery = issueRecoveryId({
       operation_id: cancelOperation.operation.operation_id,
       job_id: cancelOperation.operation.job_id,
-      reason: idle.idle
-        ? "Process-group cleanup did not complete within TERM/KILL budgets"
-        : idle.reason,
+      reason: providerAbortUncertain
+        ? "Provider abort did not complete; backend ownership remains uncertain"
+        : idle.idle
+          ? "Process-group cleanup did not complete within TERM/KILL budgets"
+          : idle.reason,
       issued_at: nowIso(host.clock),
       next_state: "recovery_required",
     });

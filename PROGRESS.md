@@ -5,6 +5,19 @@ Save-point for future agents. This is the GSD fork worktree
 Do not write raid-night, product, or quake-cockpit from a gsd-pi C07
 session unless the prompt names that repo.
 
+## C16 repair (2026-09-21)
+
+Working tree only. No commit. llama-cpp buffered JSON completions are
+mapped in `packages/pi-ai` (`openai-completions.js`
+`26a33c8dc2d743ffe860e92098c30c3292e15a1d489ec8d93f6d3a3df2bfec3f`).
+`idle-probe.ts` accepts both slot shapes. Packaged recover logic is
+chunk `4246.js`
+`13d17bfc009d4095ba85da4e451ed4945440e04881f8ea67db7ee9e087dc12a5`,
+staged at `dist/web/standalone/.next/server/chunks/4246.js`. The live
+repeat stayed BLOCKED: the gateway keeps generating on `llamacpp-ha`
+after AbortSignal. That is recorded in raid-night `C16.md`. Do not
+start C17.
+
 ## C15L reopen (2026-09-21)
 
 `build:core`, `typecheck:extensions`, `copy-resources`, and `build:web-host`

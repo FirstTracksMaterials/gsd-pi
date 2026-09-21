@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { evaluateCompulsoryPolicy } from "../resources/extensions/gsd/required-policy.ts";
 import { beginPrepareMode, endPrepareMode, isImplementationUnit } from "./prepare-boundary.ts";
+import { probeBackendIdle } from "./idle-probe.ts";
 import { applyRecovery, getRecovery, issueRecoveryId } from "./recovery.ts";
 import type { CommandAction, CommandRequest, JobRecord, Operation, ResolvedProject, StoredOperation } from "./types.ts";
 import type { JobCatalog } from "./job-catalog.ts";
@@ -161,6 +162,35 @@ export function recordReplanEvidenceForTest(basePath: string, milestoneId: strin
   replanEvidence.set(`${basePath}:${milestoneId}`, ids);
 }
 
+function reconcileIdleRecovery(
+  host: CommandHost,
+  recoveryOperationId: string,
+  jobId: string | null,
+  recoveryId: string,
+  updatedAt: string,
+): void {
+  const held = host.lease.current();
+  const ids = new Set<string>();
+  if (held && (held.operation_id === recoveryOperationId || (jobId !== null && held.job_id === jobId))) {
+    ids.add(held.operation_id);
+    host.lease.release(held.operation_id);
+  }
+  ids.add(recoveryOperationId);
+  for (const operationId of ids) {
+    const stored = host.store.read(operationId);
+    if (!stored || stored.operation.state !== "recovery_required") continue;
+    stored.operation.state = "cancelled";
+    stored.operation.updated_at = updatedAt;
+    stored.operation.result = {
+      ...(stored.operation.result ?? {}),
+      reconciled: true,
+      idle_confirmed: true,
+      recovery_id: recoveryId,
+    };
+    host.store.update(stored);
+  }
+}
+
 export async function productionCommandHandler(context: NativeCommandContext): Promise<NativeCommandResult> {
   const stored = storedFromContext(context);
   if (!stored) return { dispatch: false, holdLease: false };
@@ -189,17 +219,44 @@ export async function productionCommandHandler(context: NativeCommandContext): P
       context.host.store.update(stored);
       return { dispatch: false, holdLease: false };
     }
+    if (diagnostic.next_state === "recovery_required") {
+      const idle = await probeBackendIdle(context.project.backend_idle_probe);
+      if (!idle.idle) {
+        const blockedAt = nowIso(context.host.clock);
+        stored.operation.state = "recovery_required";
+        stored.operation.updated_at = blockedAt;
+        stored.operation.error = {
+          code: "recovery_required",
+          message: idle.reason,
+          retryable: false,
+          operation_id: stored.operation.operation_id,
+        };
+        stored.operation.result = {
+          kind: "recover",
+          recovery_id: recoveryId,
+          next_state: "recovery_required",
+          idle_confirmed: false,
+          replayed_shell: false,
+        };
+        context.host.store.update(stored);
+        return { dispatch: false, holdLease: true };
+      }
+    }
     const applied = applyRecovery(recoveryId);
+    const recoveredAt = nowIso(context.host.clock);
     stored.operation.state = "succeeded";
-    stored.operation.updated_at = nowIso(context.host.clock);
+    stored.operation.updated_at = recoveredAt;
     stored.operation.result = {
       kind: "recover",
       recovery_id: applied.recovery_id,
       next_state: applied.next_state,
+      idle_confirmed: applied.next_state === "recovery_required",
       replayed_shell: false,
     };
     context.host.store.update(stored);
-    if (applied.next_state !== "recovery_required") {
+    if (applied.next_state === "recovery_required") {
+      reconcileIdleRecovery(context.host, applied.operation_id, applied.job_id, applied.recovery_id, recoveredAt);
+    } else {
       context.host.lease.release(applied.operation_id);
     }
     return { dispatch: false, holdLease: false };

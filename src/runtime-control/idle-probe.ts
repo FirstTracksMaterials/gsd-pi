@@ -17,19 +17,40 @@ export function resetIdleProbeForTest(): void {
   testProbe = null;
 }
 
-function parseSlots(body: string): IdleProbeResult {
-  try {
-    const parsed = JSON.parse(body) as { slots?: Array<{ is_processing?: boolean }> };
-    if (Array.isArray(parsed.slots)) {
-      const busy = parsed.slots.some((slot) => slot.is_processing === true);
-      return busy
-        ? { idle: false, source: "slots", reason: "A backend slot is still processing" }
-        : { idle: true, source: "slots" };
-    }
-  } catch {
-    // fall through
+function slotRecords(parsed: unknown): unknown[] | null {
+  if (Array.isArray(parsed)) return parsed;
+  if (parsed && typeof parsed === "object" && Array.isArray((parsed as { slots?: unknown }).slots)) {
+    return (parsed as { slots: unknown[] }).slots;
   }
-  return { idle: false, source: "slots", reason: "Could not parse /slots idle signal" };
+  return null;
+}
+
+export function parseSlots(body: string): IdleProbeResult {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return { idle: false, source: "slots", reason: "Could not parse /slots idle signal" };
+  }
+  const slots = slotRecords(parsed);
+  if (!slots || slots.length === 0) {
+    return { idle: false, source: "slots", reason: "Could not parse /slots idle signal" };
+  }
+  const flags: boolean[] = [];
+  for (const slot of slots) {
+    if (!slot || typeof slot !== "object" || Array.isArray(slot)) {
+      return { idle: false, source: "slots", reason: "Could not parse /slots idle signal" };
+    }
+    const flag = (slot as { is_processing?: unknown }).is_processing;
+    if (typeof flag !== "boolean") {
+      return { idle: false, source: "slots", reason: "Could not parse /slots idle signal" };
+    }
+    flags.push(flag);
+  }
+  if (flags.some((flag) => flag)) {
+    return { idle: false, source: "slots", reason: "A backend slot is still processing" };
+  }
+  return { idle: true, source: "slots" };
 }
 
 function parseMetrics(body: string): IdleProbeResult {

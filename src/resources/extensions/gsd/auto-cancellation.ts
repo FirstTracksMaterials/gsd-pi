@@ -63,3 +63,13 @@ export function resetAutoCancellationForTest(): void {
   autoSession.cancellationPhase = "none";
   cancelledAttemptIds.clear();
 }
+
+const RUNTIME_CANCEL_ABORT = Symbol.for("gsd.runtimeCancelAbort");
+
+function registerRuntimeCancelAbortHook(): void {
+  (globalThis as Record<symbol, unknown>)[RUNTIME_CANCEL_ABORT] = () => {
+    requestAutoCancellation("aborting-model");
+  };
+}
+
+registerRuntimeCancelAbortHook();

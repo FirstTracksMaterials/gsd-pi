@@ -1182,6 +1182,12 @@ function isReadOnlyBridgeInput(input: BridgeInput): boolean {
   return READ_ONLY_RPC_COMMAND_TYPES.has(input.type);
 }
 
+function bypassesOnboardingLock(input: BridgeInput): boolean {
+  if (isReadOnlyBridgeInput(input)) return true;
+  if (isRpcExtensionUiResponse(input)) return false;
+  return input.type === "abort" || input.type === "abort_retry" || input.type === "abort_bash";
+}
+
 function buildBridgeLockedResponse(input: BridgeInput, onboarding: OnboardingState): BridgeCommandFailureResponse {
   const reason = onboarding.lockReason ?? "required_setup";
   const error =
@@ -2509,7 +2515,7 @@ function emitProjectLiveStateInvalidation(
 }
 
 export async function sendBridgeInput(input: BridgeInput, projectCwd?: string): Promise<RpcResponse | null> {
-  if (!isReadOnlyBridgeInput(input)) {
+  if (!bypassesOnboardingLock(input)) {
     const onboarding = await collectOnboardingState();
     if (onboarding.locked) {
       return buildBridgeLockedResponse(input, onboarding);

@@ -233,7 +233,11 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions", OpenA
 			const requestOptions = {
 				...(options?.signal ? { signal: options.signal } : {}),
 				...(options?.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {}),
-				...(options?.maxRetries !== undefined ? { maxRetries: options.maxRetries } : {}),
+				...(options?.maxRetries !== undefined
+					? { maxRetries: options.maxRetries }
+					: compat.acceptBufferedChatCompletion
+						? { maxRetries: 0 }
+						: {}),
 			};
 			const { data: openaiStream, response } = await client.chat.completions
 				.create(params, requestOptions)
@@ -600,7 +604,222 @@ function createClient(
 		baseURL: isCloudflareProvider(model.provider) ? resolveCloudflareBaseUrl(model) : model.baseUrl,
 		dangerouslyAllowBrowser: true,
 		defaultHeaders,
+		...(compat.acceptBufferedChatCompletion
+			? { fetch: createBufferedChatCompletionFetch(), maxRetries: 0 }
+			: {}),
 	});
+}
+
+class BufferedCompletionRejected extends Error {
+	constructor(detail: string) {
+		super(`Buffered completion rejected: ${detail}`);
+		this.name = "BufferedCompletionRejected";
+	}
+}
+
+function isEventStreamContentType(contentType: string): boolean {
+	return contentType.split(";")[0]?.trim().toLowerCase() === "text/event-stream";
+}
+
+function isJsonContentType(contentType: string): boolean {
+	const media = contentType.split(";")[0]?.trim().toLowerCase() ?? "";
+	return media === "application/json" || media.endsWith("+json");
+}
+
+function abortError(): Error {
+	const error = new Error("This operation was aborted");
+	error.name = "AbortError";
+	return error;
+}
+
+function rejectionResponse(detail: string): Response {
+	return new Response(
+		JSON.stringify({ error: { message: new BufferedCompletionRejected(detail).message, type: "invalid_request_error" } }),
+		{ status: 400, headers: { "content-type": "application/json" } },
+	);
+}
+
+async function readResponseText(response: Response, signal: AbortSignal | undefined): Promise<string> {
+	if (signal?.aborted) {
+		await response.body?.cancel().catch(() => {});
+		throw abortError();
+	}
+	const body = response.body;
+	if (!body) return "";
+	const reader = body.getReader();
+	const onAbort = () => {
+		void reader.cancel().catch(() => {});
+	};
+	signal?.addEventListener("abort", onAbort, { once: true });
+	const decoder = new TextDecoder();
+	let text = "";
+	try {
+		while (true) {
+			if (signal?.aborted) {
+				await reader.cancel().catch(() => {});
+				throw abortError();
+			}
+			const { done, value } = await reader.read();
+			if (done) break;
+			if (value) text += decoder.decode(value, { stream: true });
+		}
+		text += decoder.decode();
+		if (signal?.aborted) throw abortError();
+		return text;
+	} finally {
+		signal?.removeEventListener("abort", onAbort);
+	}
+}
+
+function bufferedChatCompletionToSse(text: string): string {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(text);
+	} catch {
+		throw new BufferedCompletionRejected("malformed completion body");
+	}
+	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+		throw new BufferedCompletionRejected("response is not a chat completion object");
+	}
+	const body = parsed as Record<string, unknown>;
+	if (body.error != null) {
+		const error = body.error;
+		const message =
+			error && typeof error === "object" && typeof (error as { message?: unknown }).message === "string"
+				? (error as { message: string }).message
+				: "provider error object";
+		throw new BufferedCompletionRejected(message);
+	}
+	if (body.object !== "chat.completion") {
+		throw new BufferedCompletionRejected("object is not chat.completion");
+	}
+	if (!Array.isArray(body.choices) || body.choices.length === 0) {
+		throw new BufferedCompletionRejected("missing choices");
+	}
+	const choice = body.choices[0];
+	if (!choice || typeof choice !== "object" || Array.isArray(choice)) {
+		throw new BufferedCompletionRejected("malformed choice");
+	}
+	const choiceRecord = choice as Record<string, unknown>;
+	if (typeof choiceRecord.finish_reason !== "string" || choiceRecord.finish_reason.length === 0) {
+		throw new BufferedCompletionRejected("missing finish_reason");
+	}
+	const message = choiceRecord.message;
+	if (!message || typeof message !== "object" || Array.isArray(message)) {
+		throw new BufferedCompletionRejected("missing message");
+	}
+	const messageRecord = message as Record<string, unknown>;
+	const content = messageRecord.content;
+	if (content !== null && content !== undefined && typeof content !== "string") {
+		throw new BufferedCompletionRejected("message content is not a string or null");
+	}
+	const toolCalls = messageRecord.tool_calls;
+	if (toolCalls != null && !Array.isArray(toolCalls)) {
+		throw new BufferedCompletionRejected("tool_calls is not an array");
+	}
+	const events: unknown[] = [];
+	const base: Record<string, unknown> = { object: "chat.completion.chunk" };
+	if (typeof body.id === "string") base.id = body.id;
+	if (typeof body.model === "string") base.model = body.model;
+	if (typeof content === "string" && content.length > 0) {
+		events.push({
+			...base,
+			choices: [{ index: 0, delta: { content }, finish_reason: null }],
+		});
+	}
+	if (Array.isArray(toolCalls)) {
+		toolCalls.forEach((call, index) => {
+			if (!call || typeof call !== "object" || Array.isArray(call)) {
+				throw new BufferedCompletionRejected("malformed tool call");
+			}
+			const callRecord = call as Record<string, unknown>;
+			const fn = callRecord.function;
+			if (!fn || typeof fn !== "object" || Array.isArray(fn)) {
+				throw new BufferedCompletionRejected("tool call missing function");
+			}
+			const functionRecord = fn as Record<string, unknown>;
+			if (typeof callRecord.id !== "string" || callRecord.id.length === 0) {
+				throw new BufferedCompletionRejected("tool call missing id");
+			}
+			if (typeof functionRecord.name !== "string" || functionRecord.name.length === 0) {
+				throw new BufferedCompletionRejected("tool call missing name");
+			}
+			if (functionRecord.arguments != null && typeof functionRecord.arguments !== "string") {
+				throw new BufferedCompletionRejected("tool call arguments are not a string");
+			}
+			const functionDelta: Record<string, unknown> = { name: functionRecord.name };
+			if (typeof functionRecord.arguments === "string") {
+				functionDelta.arguments = functionRecord.arguments;
+			}
+			events.push({
+				...base,
+				choices: [
+					{
+						index: 0,
+						delta: {
+							tool_calls: [
+								{
+									index,
+									id: callRecord.id,
+									type: "function",
+									function: functionDelta,
+								},
+							],
+						},
+						finish_reason: null,
+					},
+				],
+			});
+		});
+	}
+	const finalChunk: Record<string, unknown> = {
+		...base,
+		choices: [{ index: 0, delta: {}, finish_reason: choiceRecord.finish_reason }],
+	};
+	if (body.usage && typeof body.usage === "object" && !Array.isArray(body.usage)) {
+		finalChunk.usage = body.usage;
+	}
+	events.push(finalChunk);
+	return `${events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("")}data: [DONE]\n\n`;
+}
+
+function createBufferedChatCompletionFetch(baseFetch: typeof fetch = globalThis.fetch): typeof fetch {
+	return async (input, init) => {
+		const signal = init?.signal ?? undefined;
+		if (signal?.aborted) throw abortError();
+		const response = await baseFetch(input, init);
+		if (signal?.aborted) {
+			await response.body?.cancel().catch(() => {});
+			throw abortError();
+		}
+		const contentType = response.headers.get("content-type") ?? "";
+		if (isEventStreamContentType(contentType)) return response;
+		if (!isJsonContentType(contentType)) {
+			await response.body?.cancel().catch(() => {});
+			return rejectionResponse(`unexpected content-type ${contentType || "missing"}`);
+		}
+		const text = await readResponseText(response, signal);
+		if (!response.ok) {
+			return new Response(text, {
+				status: response.status,
+				statusText: response.statusText,
+				headers: { "content-type": contentType },
+			});
+		}
+		try {
+			return new Response(bufferedChatCompletionToSse(text), {
+				status: 200,
+				headers: { "content-type": "text/event-stream" },
+			});
+		} catch (error) {
+			if (signal?.aborted || (error instanceof Error && error.name === "AbortError")) throw error;
+			const message = error instanceof Error ? error.message : "Buffered completion rejected: malformed completion body";
+			return new Response(JSON.stringify({ error: { message, type: "invalid_request_error" } }), {
+				status: 400,
+				headers: { "content-type": "application/json" },
+			});
+		}
+	};
 }
 
 function buildParams(
@@ -1277,6 +1496,7 @@ function detectCompat(model: Model<"openai-completions">): ResolvedOpenAIComplet
 		supportsDeveloperRole: !isNonStandard,
 		supportsReasoningEffort: !isGrok && !isZai && !isMoonshot && !isTogether && !isCloudflareAiGateway,
 		supportsUsageInStreaming: true,
+		acceptBufferedChatCompletion: provider === "llama-cpp",
 		maxTokensField: useMaxTokens ? "max_tokens" : "max_completion_tokens",
 		requiresToolResultName: false,
 		requiresAssistantAfterToolResult: false,
@@ -1314,6 +1534,8 @@ function getCompat(model: Model<"openai-completions">): ResolvedOpenAICompletion
 		supportsDeveloperRole: model.compat.supportsDeveloperRole ?? detected.supportsDeveloperRole,
 		supportsReasoningEffort: model.compat.supportsReasoningEffort ?? detected.supportsReasoningEffort,
 		supportsUsageInStreaming: model.compat.supportsUsageInStreaming ?? detected.supportsUsageInStreaming,
+		acceptBufferedChatCompletion:
+			model.compat.acceptBufferedChatCompletion ?? detected.acceptBufferedChatCompletion,
 		maxTokensField: model.compat.maxTokensField ?? detected.maxTokensField,
 		requiresToolResultName: model.compat.requiresToolResultName ?? detected.requiresToolResultName,
 		requiresAssistantAfterToolResult:

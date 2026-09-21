@@ -38,6 +38,7 @@ import { resolveProjectRoot } from "../worktree.js";
 import { clearDiscussionFlowState } from "./write-gate.js";
 import { scheduleFallbackContinuation } from "./fallback-continuation.js";
 import { clearGuidedUnitContext, getGuidedUnitContext, type GuidedUnitContext } from "../guided-unit-context.js";
+import { shouldRefuseNewWork } from "../auto-cancellation.js";
 import { resumeAutoAfterProviderDelay } from "./provider-error-resume.js";
 import {
   classifyError,
@@ -872,6 +873,7 @@ export async function handleAgentEnd(
 
     // --- Network errors: same-model retry with backoff ---
     if (cls.kind === "network") {
+      if (shouldRefuseNewWork()) return;
       const currentModelId = ctx.model?.id ?? "unknown";
       if (retryState.currentRetryModelId !== currentModelId) {
         retryState.networkRetryCount = 0;
@@ -884,6 +886,7 @@ export async function handleAgentEnd(
         const delayMs = attempt * cls.retryAfterMs;
         ctx.ui.notify(`Network error on ${currentModelId}${errorDetail}. Retry ${attempt}/${MAX_NETWORK_RETRIES} in ${delayMs / 1000}s...`, "warning");
         setTimeout(() => {
+          if (shouldRefuseNewWork()) return;
           pi.sendMessage(
             { customType: "gsd-auto-timeout-recovery", content: "Continue execution — retrying after transient network error.", display: false },
             { triggerTurn: true },
