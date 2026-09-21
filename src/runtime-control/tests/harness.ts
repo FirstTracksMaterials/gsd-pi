@@ -13,6 +13,7 @@ import {
 import { resetCommandHandlerForTest } from "../command-handlers.ts";
 import { RuntimeControl, resetRuntimeControlForTest, setRuntimeControlForTest } from "../control.ts";
 import { resetNativeWorkflowOpsForTest } from "../native-commands.ts";
+import { resetNativeAutoDispatchForTest } from "../native-auto-dispatch.ts";
 import { resetIdleProbeForTest } from "../idle-probe.ts";
 import { resetCancelNativeOpsForTest } from "../cancel.ts";
 import { resetAnswersForTest } from "../answers.ts";
@@ -129,6 +130,8 @@ export function resetC05(): void {
   resetCommandHandlerForTest();
   resetRuntimeControlForTest();
   resetNativeWorkflowOpsForTest();
+  resetNativeAutoDispatchForTest();
+  delete process.env.GSD_WEB_DAEMON_MODE;
   resetIdleProbeForTest();
   resetCancelNativeOpsForTest();
   resetAnswersForTest();

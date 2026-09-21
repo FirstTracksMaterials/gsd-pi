@@ -5,7 +5,22 @@ Save-point for future agents. This is the GSD fork worktree
 Do not write raid-night, product, or quake-cockpit from a gsd-pi C07
 session unless the prompt names that repo.
 
+## C14 / C06 native auto dispatch (2026-09-20)
+
+Narrow C06 correction used by C14's real packaged daemon. Starting HEAD
+`e4944a632990c5654c8ff1b8444cc7881c24c9b3`. Schema unchanged.
+
+- `defaultStart` still sets `GSD_MILESTONE_LOCK` and returns immediately.
+  When `GSD_WEB_DAEMON_MODE=1` it fire-and-forgets existing native `/gsd auto`
+  through `sendBridgeInput` (`native-auto-dispatch.ts`, webpackIgnore +
+  `GSD_WEB_PACKAGE_ROOT`). HTTP admission does not await generation.
+- Tests inject `registerNativeAutoDispatchForTest`. Unit tests without daemon
+  mode do not spawn a worker. `c06-native.test.ts` plus focused C05/C07
+  regressions: 48 passed.
+- Do not start C15, live llama.cpp, or production services from this tree.
+
 ## C14 / C03 required-policy module loader (2026-09-20)
+
 
 Narrow C03 correction used by C14's real packaged daemon. Starting HEAD
 `7d875980b7a63b68cb1dd01b69618483a36cbd87`. Schema unchanged.

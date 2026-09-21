@@ -13,6 +13,7 @@ import type { JobCatalog } from "./job-catalog.ts";
 import type { ModelLease } from "./model-lease.ts";
 import type { OperationStore } from "./operation-store.ts";
 import { setWorkspacePhase } from "./workspace-profile.ts";
+import { dispatchNativeScopedAuto } from "./native-auto-dispatch.ts";
 
 export type CommandHost = {
   store: OperationStore;
@@ -116,6 +117,9 @@ function storedFromContext(context: NativeCommandContext): StoredOperation | und
 async function defaultStart(input: { basePath: string; milestoneId: string; resume: boolean }): Promise<NativeStartResult> {
   lastMilestoneLock.set(input.basePath, input.milestoneId);
   process.env.GSD_MILESTONE_LOCK = input.milestoneId;
+  // Existing native auto via the RPC worker. Fire-and-forget: HTTP admission
+  // must not await generation (R4). Owner C06.
+  void dispatchNativeScopedAuto(input).catch(() => undefined);
   return { started: true, milestoneLock: input.milestoneId };
 }
 

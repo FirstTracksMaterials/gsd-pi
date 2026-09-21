@@ -33,6 +33,7 @@ export {
   isPrepareMode,
 } from "./prepare-boundary.ts";
 export { registerNativeWorkflowOpsForTest, getLastMilestoneLock } from "./native-commands.ts";
+export { registerNativeAutoDispatchForTest } from "./native-auto-dispatch.ts";
 export { registerIdleProbeForTest } from "./idle-probe.ts";
 export { registerCancelNativeOpsForTest } from "./cancel.ts";
 export type { CommandRequest, JobRecord, Operation, RegistrationFile } from "./types.ts";

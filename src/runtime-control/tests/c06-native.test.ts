@@ -13,6 +13,7 @@ import { registerCancelNativeOpsForTest } from "../cancel.ts";
 import { registerIdleProbeForTest } from "../idle-probe.ts";
 import { admitImport } from "../import-jobs.ts";
 import { getLastMilestoneLock, registerNativeWorkflowOpsForTest } from "../native-commands.ts";
+import { registerNativeAutoDispatchForTest } from "../native-auto-dispatch.ts";
 import { applyPrepareDispatchBoundary, beginPrepareMode, endPrepareMode } from "../prepare-boundary.ts";
 import { issueRecoveryId } from "../recovery.ts";
 import {
@@ -129,6 +130,24 @@ test("AT-C06 start and resume set milestoneLock and dispatch-guard rejects anoth
   if (resumed.ok) {
     assert.equal(resumed.operation.result?.milestoneLock, "M001");
   }
+});
+
+test("C06 defaultStart dispatches existing native auto asynchronously when daemon mode is set", async () => {
+  const alpha = tempProject("dispatch");
+  const { control } = createControl({ projects: [{ project_id: "alpha", target: alpha }] });
+  seedReadyProject(control, "alpha", alpha);
+  const calls: Array<{ basePath: string; milestoneId: string; resume: boolean }> = [];
+  registerNativeAutoDispatchForTest(async (input) => {
+    calls.push(input);
+  });
+  process.env.GSD_WEB_DAEMON_MODE = "1";
+  const started = await admitCommand(control, "alpha:M001", startRequest(uuid(91)));
+  assert.equal(started.ok, true);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]?.milestoneId, "M001");
+  assert.equal(calls[0]?.resume, false);
+  assert.notEqual(calls[0]?.basePath, "");
 });
 
 test("AT-C07 cancel records cancelling immediately and releases the lease only after an idle probe", async () => {
