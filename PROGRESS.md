@@ -5,6 +5,12 @@ Save-point for future agents. This is the GSD fork worktree
 Do not write raid-night, product, or quake-cockpit from a gsd-pi C07
 session unless the prompt names that repo.
 
+## C16-R3 native control truth (2026-09-22)
+
+R4 was not started. Staging was not started. No live generation.
+
+`bindNativeDispatch` registers the production start, review, and replan paths. `defaultStart` no longer swallows a dispatch failure. Review succeeds only when `publishNativeReviewFindings` returns `executed: true`. Replan no longer turns an invalidation error into a synthetic evidence id. `verdictForAnswerSession` accepts a `daemon:` pending question and rejects a different worker session. Runtime chunk `dist/web/standalone/.next/server/chunks/2896.js` SHA-256 `dc365f092c5b0932ad15c5b036d102ae0f383585c6b9c3a7d1b58544c642493c`. Node `src/runtime-control/tests/native-truth.test.ts` passed 8 tests.
+
 ## C16-R2 staging retirement (2026-09-22)
 
 `src/runtime-control/tests/state-isolation.test.ts` passed. A replacement state root does not read the retired operation ids. Reopening a root that still has the false-success and the running start still refuses admission and does not mark that start succeeded. The live `state/staging` receipts were not rewritten by that test.

@@ -569,7 +569,7 @@ test("review success is typed findings, not a prompt acknowledgement", async () 
   const { control } = createControl({ projects: [{ project_id: "alpha", target: alpha }] });
   seedReadyProject(control, "alpha", alpha);
   registerNativeWorkflowOpsForTest({
-    publishReviewFindings: async () => ({ findings: [{ id: "n1", summary: "ok" }], productMutated: false }),
+    publishReviewFindings: async () => ({ findings: [{ id: "n1", summary: "ok" }], productMutated: false, executed: true }),
   });
   const result = await admitCommand(control, "alpha:M001", commandRequest("review", uuid(53)));
   assert.equal(result.ok, true);

@@ -10,7 +10,7 @@ import type { JobCatalog } from "./job-catalog.ts";
 import type { ModelLease } from "./model-lease.ts";
 import type { OperationStore } from "./operation-store.ts";
 import { setWorkspacePhase } from "./workspace-profile.ts";
-import { dispatchNativeScopedAuto } from "./native-auto-dispatch.ts";
+import { dispatchNativeScopedAuto, NativeDispatchError } from "./native-auto-dispatch.ts";
 
 export type CommandHost = {
   store: OperationStore;
@@ -35,11 +35,13 @@ export type NativeCommandResult = {
 export type NativeStartResult = {
   started: boolean;
   milestoneLock: string;
+  dispatch?: Promise<void>;
 };
 
 export type NativeReviewResult = {
   findings: unknown[];
   productMutated: boolean;
+  executed?: boolean;
 };
 
 export type NativeReplanResult = {
@@ -50,7 +52,12 @@ export type NativeReplanResult = {
 
 export type NativeWorkflowOps = {
   startScopedAuto?: (input: { basePath: string; milestoneId: string; resume: boolean }) => Promise<NativeStartResult>;
-  publishReviewFindings?: (input: { basePath: string; milestoneId: string }) => Promise<NativeReviewResult>;
+  publishReviewFindings?: (input: {
+    basePath: string;
+    milestoneId: string;
+    operationId: string;
+    jobId: string;
+  }) => Promise<NativeReviewResult>;
   replanMilestone?: (input: { basePath: string; milestoneId: string; reason: string }) => Promise<NativeReplanResult>;
   dispatchWouldSelect?: (input: { basePath: string; milestoneId: string }) => Promise<{ unitType: string; unitId: string } | null>;
 };
@@ -59,6 +66,10 @@ const lastMilestoneLock = new Map<string, string>();
 let nativeOps: NativeWorkflowOps = {};
 const reviewFindings = new Map<string, NativeReviewResult>();
 const replanEvidence = new Map<string, string[]>();
+
+export function registerNativeWorkflowOps(ops: NativeWorkflowOps): void {
+  nativeOps = { ...nativeOps, ...ops };
+}
 
 export function registerNativeWorkflowOpsForTest(ops: NativeWorkflowOps | null): void {
   nativeOps = ops ?? {};
@@ -86,40 +97,72 @@ function storedFromContext(context: NativeCommandContext): StoredOperation | und
 async function defaultStart(input: { basePath: string; milestoneId: string; resume: boolean }): Promise<NativeStartResult> {
   lastMilestoneLock.set(input.basePath, input.milestoneId);
   process.env.GSD_MILESTONE_LOCK = input.milestoneId;
-  // Existing native auto via the RPC worker. Fire-and-forget: HTTP admission
-  // must not await generation (R4). Owner C06.
-  void dispatchNativeScopedAuto(input).catch((error) => {
-    console.error(
-      "[gsd] native auto dispatch failed:",
-      error instanceof Error ? error.stack ?? error.message : error,
-    );
+  const dispatch = dispatchNativeScopedAuto(input).then((result) => {
+    if (result.dispatched) return;
+    if (process.env.GSD_WEB_DAEMON_MODE === "1") {
+      throw new NativeDispatchError("native auto was not dispatched", false);
+    }
   });
-  return { started: true, milestoneLock: input.milestoneId };
-}
-
-async function defaultReview(input: { basePath: string; milestoneId: string }): Promise<NativeReviewResult> {
-  const existing = reviewFindings.get(`${input.basePath}:${input.milestoneId}`);
-  if (existing) return existing;
-  return { findings: [], productMutated: false };
+  return { started: true, milestoneLock: input.milestoneId, dispatch };
 }
 
 async function defaultReplan(input: { basePath: string; milestoneId: string; reason: string }): Promise<NativeReplanResult> {
   const key = `${input.basePath}:${input.milestoneId}`;
-  let invalidated = replanEvidence.get(key);
-  if (!invalidated) {
-    try {
-      const { invalidateAffectedVerificationEvidence } = await import("../resources/extensions/gsd/replan-evidence.ts");
-      invalidated = invalidateAffectedVerificationEvidence({
-        basePath: input.basePath,
-        milestoneId: input.milestoneId,
-        reason: input.reason,
-      });
-    } catch {
-      invalidated = [`evidence:${input.milestoneId}:${input.reason}`];
-    }
-  }
+  const recorded = replanEvidence.get(key);
+  if (recorded) return { preservedCompleted: true, evidenceInvalidated: recorded };
+  const { invalidateAffectedVerificationEvidence } = await import("../resources/extensions/gsd/replan-evidence.ts");
+  const invalidated = invalidateAffectedVerificationEvidence({
+    basePath: input.basePath,
+    milestoneId: input.milestoneId,
+    reason: input.reason,
+  });
   replanEvidence.set(key, invalidated);
   return { preservedCompleted: true, evidenceInvalidated: invalidated };
+}
+
+function failOperation(host: CommandHost, stored: StoredOperation, code: "runtime_unavailable" | "recovery_required" | "invalid_contract", message: string): void {
+  stored.operation.state = code === "recovery_required" ? "recovery_required" : "failed";
+  stored.operation.updated_at = nowIso(host.clock);
+  stored.operation.error = {
+    code,
+    message,
+    retryable: false,
+    operation_id: stored.operation.operation_id,
+  };
+  host.store.update(stored);
+}
+
+export function settleNativeDispatchFailure(host: CommandHost, operationId: string, error: unknown): void {
+  const stored = host.store.read(operationId);
+  if (!stored) return;
+  if (stored.operation.state !== "running" && stored.operation.state !== "accepted") return;
+  const began = error instanceof NativeDispatchError ? error.sideEffectsBegan : true;
+  const message = error instanceof Error ? error.message : String(error);
+  if (began) {
+    const recovery = issueCrashRecovery(host, operationId, stored.operation.job_id, message);
+    stored.operation.state = "recovery_required";
+    stored.operation.updated_at = nowIso(host.clock);
+    stored.operation.error = {
+      code: "recovery_required",
+      message,
+      retryable: false,
+      operation_id: operationId,
+    };
+    stored.operation.result = { ...(stored.operation.result ?? {}), recovery_id: recovery.recovery_id };
+    host.store.update(stored);
+    host.lease.retainForRecovery(operationId);
+    return;
+  }
+  failOperation(host, stored, "runtime_unavailable", message);
+  const held = host.lease.current();
+  if (held?.operation_id === operationId) host.lease.release(operationId);
+}
+
+function observeDispatch(host: CommandHost, operationId: string, dispatch: Promise<void> | undefined): void {
+  if (!dispatch) return;
+  void dispatch.catch((error) => {
+    settleNativeDispatchFailure(host, operationId, error);
+  });
 }
 
 export function recordReviewFindingsForTest(basePath: string, milestoneId: string, result: NativeReviewResult): void {
@@ -334,45 +377,79 @@ export async function productionCommandHandler(context: NativeCommandContext): P
     stored.operation.updated_at = nowIso(context.host.clock);
     stored.operation.result = { kind: "prepare", milestoneLock: start.milestoneLock, dispatched: true };
     context.host.store.update(stored);
+    observeDispatch(context.host, stored.operation.operation_id, start.dispatch);
     return { dispatch: true, holdLease: true };
   }
 
   if (action === "review") {
     setWorkspacePhase(basePath, "review");
-    const findings = await (nativeOps.publishReviewFindings ?? defaultReview)({ basePath, milestoneId });
-    if (findings.productMutated) {
-      stored.operation.state = "failed";
-      stored.operation.updated_at = nowIso(context.host.clock);
-      stored.operation.error = {
-        code: "invalid_contract",
-        message: "Review cannot mutate product code",
-        retryable: false,
-        operation_id: stored.operation.operation_id,
-      };
-      context.host.store.update(stored);
+    const publish = nativeOps.publishReviewFindings;
+    if (!publish) {
+      failOperation(context.host, stored, "runtime_unavailable", "Native review workflow is not registered");
       return { dispatch: false, holdLease: false };
     }
-    stored.operation.state = "succeeded";
-    stored.operation.updated_at = nowIso(context.host.clock);
-    stored.operation.result = { kind: "review", findings: findings.findings, product_mutated: false };
-    context.host.store.update(stored);
-    return { dispatch: false, holdLease: false };
+    try {
+      const findings = await publish({
+        basePath,
+        milestoneId,
+        operationId: stored.operation.operation_id,
+        jobId: context.job.job_id,
+      });
+      if (findings.executed !== true) {
+        failOperation(context.host, stored, "runtime_unavailable", "Native review did not publish findings");
+        return { dispatch: false, holdLease: false };
+      }
+      if (findings.productMutated) {
+        failOperation(context.host, stored, "invalid_contract", "Review cannot mutate product code");
+        return { dispatch: false, holdLease: false };
+      }
+      stored.operation.state = "succeeded";
+      stored.operation.updated_at = nowIso(context.host.clock);
+      stored.operation.error = null;
+      stored.operation.result = { kind: "review", findings: findings.findings, product_mutated: false };
+      context.host.store.update(stored);
+      return { dispatch: false, holdLease: false };
+    } catch (error) {
+      const began = error instanceof NativeDispatchError ? error.sideEffectsBegan : true;
+      if (began) {
+        settleNativeDispatchFailure(context.host, stored.operation.operation_id, error);
+        return { dispatch: false, holdLease: true };
+      }
+      failOperation(
+        context.host,
+        stored,
+        "runtime_unavailable",
+        error instanceof Error ? error.message : "Native review workflow failed",
+      );
+      return { dispatch: false, holdLease: false };
+    }
   }
 
   if (action === "replan") {
     const reason = String(context.request.parameters.reason ?? "");
-    const result = await (nativeOps.replanMilestone ?? defaultReplan)({ basePath, milestoneId, reason });
-    context.host.jobs.bumpRevision(context.job.job_id);
-    stored.operation.state = "succeeded";
-    stored.operation.updated_at = nowIso(context.host.clock);
-    stored.operation.result = {
-      kind: "replan",
-      preserved_completed: result.preservedCompleted,
-      evidence_invalidated: result.evidenceInvalidated,
-      reason,
-    };
-    context.host.store.update(stored);
-    return { dispatch: false, holdLease: false };
+    try {
+      const result = await (nativeOps.replanMilestone ?? defaultReplan)({ basePath, milestoneId, reason });
+      context.host.jobs.bumpRevision(context.job.job_id);
+      stored.operation.state = "succeeded";
+      stored.operation.updated_at = nowIso(context.host.clock);
+      stored.operation.error = null;
+      stored.operation.result = {
+        kind: "replan",
+        preserved_completed: result.preservedCompleted,
+        evidence_invalidated: result.evidenceInvalidated,
+        reason,
+      };
+      context.host.store.update(stored);
+      return { dispatch: false, holdLease: false };
+    } catch (error) {
+      failOperation(
+        context.host,
+        stored,
+        "runtime_unavailable",
+        error instanceof Error ? error.message : "Native replan failed",
+      );
+      return { dispatch: false, holdLease: false };
+    }
   }
 
   if (action === "start" || action === "resume") {
@@ -391,6 +468,7 @@ export async function productionCommandHandler(context: NativeCommandContext): P
       scoped: true,
     };
     context.host.store.update(stored);
+    observeDispatch(context.host, stored.operation.operation_id, start.dispatch);
     return { dispatch: true, holdLease: true };
   }
 

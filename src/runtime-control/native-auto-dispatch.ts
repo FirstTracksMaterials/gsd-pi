@@ -51,6 +51,16 @@ async function sendExistingBridgeAuto(input: NativeAutoDispatchInput): Promise<v
   throw lastError;
 }
 
+export class NativeDispatchError extends Error {
+  readonly sideEffectsBegan: boolean;
+
+  constructor(message: string, sideEffectsBegan: boolean) {
+    super(message);
+    this.name = "NativeDispatchError";
+    this.sideEffectsBegan = sideEffectsBegan;
+  }
+}
+
 export async function dispatchNativeScopedAuto(input: NativeAutoDispatchInput): Promise<{ dispatched: boolean }> {
   const dispatcher = testDispatcher ?? installedDispatcher;
   if (dispatcher) {

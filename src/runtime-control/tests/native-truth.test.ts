@@ -1,0 +1,178 @@
+// Project/App: gsd-pi
+// File Purpose: R3 native command truth: dispatch failure, review, and replan.
+
+import assert from "node:assert/strict";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { afterEach, test } from "node:test";
+
+import { admitCommand } from "../admission.ts";
+import { admitAnswer, registerAnswerWorkerLookup, registerPendingQuestion, verdictForAnswerSession } from "../answers.ts";
+import { NativeDispatchError, registerNativeAutoDispatchForTest, resetNativeAutoDispatchForTest } from "../native-auto-dispatch.ts";
+import { registerNativeWorkflowOpsForTest, resetNativeWorkflowOpsForTest } from "../native-commands.ts";
+import {
+  createControl,
+  resetC05,
+  seedReadyProject,
+  startRequest,
+  tempProject,
+  uuid,
+} from "./harness.ts";
+
+afterEach(() => {
+  resetC05();
+  resetNativeAutoDispatchForTest();
+  resetNativeWorkflowOpsForTest();
+  delete process.env.GSD_WEB_DAEMON_MODE;
+});
+
+function command(action: string, requestId: string, parameters: Record<string, unknown> = {}) {
+  return {
+    protocol_version: 1 as const,
+    request_id: requestId,
+    expected_revision: 1,
+    expected_epoch: 1,
+    action,
+    parameters,
+  };
+}
+
+async function flush(): Promise<void> {
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+}
+
+test("a refused native dispatch does not stay running", async () => {
+  const alpha = tempProject("dispatch-fail");
+  const { control } = createControl({ projects: [{ project_id: "alpha", target: alpha }] });
+  seedReadyProject(control, "alpha", alpha);
+  process.env.GSD_WEB_DAEMON_MODE = "1";
+  registerNativeAutoDispatchForTest(() => {
+    throw new NativeDispatchError("bridge refused the prompt", false);
+  });
+  const started = await admitCommand(control, "alpha:M001", startRequest(uuid(81)));
+  assert.equal(started.ok, true);
+  await flush();
+  const operationId = started.ok ? started.operation.operation_id : "";
+  const stored = control.store.read(operationId);
+  assert.equal(stored?.operation.state, "failed");
+  assert.equal(stored?.operation.error?.code, "runtime_unavailable");
+  assert.equal(control.lease.isHeld(), false);
+});
+
+test("a dispatch that already began side effects stays recovery_required", async () => {
+  const alpha = tempProject("dispatch-began");
+  const { control } = createControl({ projects: [{ project_id: "alpha", target: alpha }] });
+  seedReadyProject(control, "alpha", alpha);
+  process.env.GSD_WEB_DAEMON_MODE = "1";
+  registerNativeAutoDispatchForTest(() => {
+    throw new NativeDispatchError("prompt was sent and the response was lost", true);
+  });
+  const started = await admitCommand(control, "alpha:M001", startRequest(uuid(82)));
+  assert.equal(started.ok, true);
+  await flush();
+  const operationId = started.ok ? started.operation.operation_id : "";
+  const stored = control.store.read(operationId);
+  assert.equal(stored?.operation.state, "recovery_required");
+  assert.notEqual(stored?.operation.state, "succeeded");
+  assert.equal(control.lease.current()?.recovery_required, true);
+});
+
+test("review without a native workflow does not succeed with empty findings", async () => {
+  const alpha = tempProject("review-absent");
+  const marker = join(alpha, "src", "convert.py");
+  mkdirSync(join(alpha, "src"), { recursive: true });
+  writeFileSync(marker, "INCH_TO_MM = None\n");
+  const { control } = createControl({ projects: [{ project_id: "alpha", target: alpha }] });
+  seedReadyProject(control, "alpha", alpha);
+  const reviewed = await admitCommand(control, "alpha:M001", command("review", uuid(83)));
+  assert.equal(reviewed.ok, true);
+  if (reviewed.ok) {
+    assert.equal(reviewed.operation.state, "failed");
+    assert.match(reviewed.operation.error?.message ?? "", /not registered/);
+  }
+  assert.equal(control.store.read(reviewed.ok ? reviewed.operation.operation_id : "")?.operation.result?.findings, undefined);
+});
+
+test("replan surfaces an invalidation error instead of a synthetic success", async () => {
+  const alpha = tempProject("replan-fail");
+  mkdirSync(join(alpha, ".gsd"), { recursive: true });
+  writeFileSync(join(alpha, ".gsd", "evidence"), "not-a-directory");
+  const { control } = createControl({ projects: [{ project_id: "alpha", target: alpha }] });
+  seedReadyProject(control, "alpha", alpha);
+  const before = control.jobs.require("alpha:M001").revision;
+  const replanned = await admitCommand(control, "alpha:M001", command("replan", uuid(84), { reason: "scope" }));
+  assert.equal(replanned.ok, true);
+  if (replanned.ok) {
+    assert.equal(replanned.operation.state, "failed");
+    assert.notEqual(replanned.operation.state, "succeeded");
+  }
+  assert.equal(control.jobs.require("alpha:M001").revision, before);
+});
+
+test("review keeps the lease when the workflow started and cleanup is unknown", async () => {
+  const alpha = tempProject("review-began");
+  const { control } = createControl({ projects: [{ project_id: "alpha", target: alpha }] });
+  seedReadyProject(control, "alpha", alpha);
+  registerNativeWorkflowOpsForTest({
+    publishReviewFindings: async () => {
+      throw new NativeDispatchError("native review did not publish findings", true);
+    },
+  });
+  const reviewed = await admitCommand(control, "alpha:M001", command("review", uuid(87)));
+  assert.equal(reviewed.ok, true);
+  if (reviewed.ok) {
+    assert.equal(reviewed.operation.state, "recovery_required");
+    assert.notEqual(reviewed.operation.state, "succeeded");
+  }
+  assert.equal(control.lease.current()?.recovery_required, true);
+});
+
+test("review releases the lease when the workflow refuses before work starts", async () => {
+  const alpha = tempProject("review-refused");
+  const { control } = createControl({ projects: [{ project_id: "alpha", target: alpha }] });
+  seedReadyProject(control, "alpha", alpha);
+  registerNativeWorkflowOpsForTest({
+    publishReviewFindings: async () => {
+      throw new NativeDispatchError("native review workflow did not accept the review", false);
+    },
+  });
+  const reviewed = await admitCommand(control, "alpha:M001", command("review", uuid(88)));
+  assert.equal(reviewed.ok, true);
+  if (reviewed.ok) assert.equal(reviewed.operation.state, "failed");
+  assert.equal(control.lease.isHeld(), false);
+});
+
+test("the owning daemon question is accepted and another worker session is not", () => {
+  assert.equal(verdictForAnswerSession("pi-session", "daemon:alpha:M001").ok, true);
+  assert.equal(verdictForAnswerSession("pi-session", "pi-session").ok, true);
+  const rejected = verdictForAnswerSession("pi-session", "other-session");
+  assert.equal(rejected.ok, false);
+  if (!rejected.ok) assert.match(rejected.reason, /session/);
+});
+
+test("an answer for another session is rejected while the lease is held", async () => {
+  const alpha = tempProject("answer-session");
+  const { control } = createControl({ projects: [{ project_id: "alpha", target: alpha }] });
+  seedReadyProject(control, "alpha", alpha);
+  registerNativeAutoDispatchForTest(async () => undefined);
+  const started = await admitCommand(control, "alpha:M001", startRequest(uuid(85)));
+  assert.equal(started.ok, true);
+  registerAnswerWorkerLookup(() => ({ ok: false, reason: "answer session does not match the owning worker" }));
+  registerPendingQuestion({
+    question_id: "q-1",
+    job_id: "alpha:M001",
+    session_id: "other-session",
+  });
+  registerNativeWorkflowOpsForTest(null);
+  const answered = await admitAnswer(control, "alpha:M001", {
+    question_id: "q-1",
+    request_id: uuid(86),
+    expected_revision: 1,
+    expected_epoch: 1,
+    response: "yes",
+  });
+  assert.equal(answered.ok, false);
+  if (!answered.ok) assert.match(answered.body.error.message, /session/);
+  assert.equal(control.lease.isHeld(), true);
+});

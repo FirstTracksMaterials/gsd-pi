@@ -14,6 +14,17 @@ import {
 import type { AdmissionHost } from "./admission.ts";
 import type { Operation, StoredOperation } from "./types.ts";
 
+export function verdictForAnswerSession(
+  activeSessionId: string | null,
+  sessionId: string | null,
+): { ok: true } | { ok: false; reason: string } {
+  if (!activeSessionId || !sessionId || sessionId.startsWith("daemon:")) return { ok: true };
+  if (activeSessionId !== sessionId) {
+    return { ok: false, reason: "answer session does not match the owning worker" };
+  }
+  return { ok: true };
+}
+
 export type AnswerRequest = {
   question_id: string;
   request_id: string;

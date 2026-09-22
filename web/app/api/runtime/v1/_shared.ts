@@ -6,11 +6,13 @@ import {
   getOperation,
   getOperationByRequest,
 } from "../../../../../src/runtime-control/admission.ts";
-import { admitAnswer, registerAnswerWorkerLookup } from "../../../../../src/runtime-control/answers.ts";
+import { admitAnswer, registerAnswerWorkerLookup, verdictForAnswerSession } from "../../../../../src/runtime-control/answers.ts";
 import { admitImport } from "../../../../../src/runtime-control/import-jobs.ts";
 import { buildJobSnapshot, listProjectJobs } from "../../../../../src/runtime-control/snapshots.ts";
 import { ensureRuntimeControl } from "../../../../../src/runtime-control/control.ts";
-import { registerNativeAutoDispatch } from "../../../../../src/runtime-control/native-auto-dispatch.ts";
+import { registerNativeAutoDispatch, NativeDispatchError } from "../../../../../src/runtime-control/native-auto-dispatch.ts";
+import { registerNativeWorkflowOps } from "../../../../../src/runtime-control/native-commands.ts";
+import { publishNativeReviewFindings, replanNativeMilestone } from "../../../../../src/runtime-control/native-workflow.ts";
 import { registerCancelNativeOps } from "../../../../../src/runtime-control/cancel.ts";
 import { readJobHistory } from "../../../../../src/runtime-control/history.ts";
 import { subscribeProjectEvents } from "../../../../../src/runtime-control/event-hub.ts";
@@ -77,10 +79,22 @@ function bindNativeDispatch(): void {
   if (nativeDispatchBound) return;
   nativeDispatchBound = true;
   registerNativeAutoDispatch(async (input) => {
+    const fault = process.env.GSD_NATIVE_DISPATCH_FAULT;
+    if (fault === "refuse") {
+      throw new NativeDispatchError("native auto dispatch refused before the prompt", false);
+    }
+    if (fault === "lost") {
+      throw new NativeDispatchError("native auto dispatch lost the response after the prompt", true);
+    }
     const result = await sendBridgeInput({ type: "prompt", message: "/gsd auto" }, input.basePath);
     if (result && typeof result === "object" && "success" in result && result.success === false) {
-      console.error("[gsd] native auto sendBridgeInput failed:", result);
+      const message = "error" in result && typeof result.error === "string" ? result.error : "native auto dispatch failed";
+      throw new NativeDispatchError(message, false);
     }
+  });
+  registerNativeWorkflowOps({
+    publishReviewFindings: publishNativeReviewFindings,
+    replanMilestone: replanNativeMilestone,
   });
   registerCancelNativeOps({
     abortOwnedWorker: (input) => abortOwnedWorker(input.projectCwd, {
@@ -91,11 +105,7 @@ function bindNativeDispatch(): void {
   registerAnswerWorkerLookup((projectCwd, sessionId) => {
     const bridge = lookupProjectBridgeServiceForCwd(projectCwd);
     if (!bridge) return { ok: true };
-    const activeSessionId = bridge.getSnapshot().activeSessionId;
-    if (activeSessionId && sessionId && activeSessionId !== sessionId) {
-      return { ok: false, reason: "answer session does not match the owning worker" };
-    }
-    return { ok: true };
+    return verdictForAnswerSession(bridge.getSnapshot().activeSessionId, sessionId);
   });
 }
 
