@@ -9,7 +9,7 @@ session unless the prompt names that repo.
 
 R4 was not started. Staging was not started. No live generation.
 
-`bindNativeDispatch` registers the production start, review, and replan paths. `defaultStart` no longer swallows a dispatch failure. Review succeeds only when `publishNativeReviewFindings` returns `executed: true`. Replan no longer turns an invalidation error into a synthetic evidence id. `verdictForAnswerSession` accepts a `daemon:` pending question and rejects a different worker session. Runtime chunk `dist/web/standalone/.next/server/chunks/2896.js` SHA-256 `dc365f092c5b0932ad15c5b036d102ae0f383585c6b9c3a7d1b58544c642493c`. Node `src/runtime-control/tests/native-truth.test.ts` passed 8 tests.
+`bindNativeDispatch` registers the production start, review, and replan paths. `defaultStart` no longer swallows a dispatch failure. Review succeeds only when `publishNativeReviewFindings` returns `executed: true`. Replan no longer turns an invalidation error into a synthetic evidence id. `verdictForAnswerSession` accepts a `daemon:` pending question and rejects a different worker session. Runtime chunk `dist/web/standalone/.next/server/chunks/2896.js` SHA-256 `dc365f092c5b0932ad15c5b036d102ae0f383585c6b9c3a7d1b58544c642493c`. Node `src/runtime-control/tests/native-truth.test.ts` passed 8 tests. Commit `2642dfad22c070128e5b4ca80e2c58b43283517f` was not pushed.
 
 ## C16-R2 staging retirement (2026-09-22)
 
