@@ -7,7 +7,7 @@ session unless the prompt names that repo.
 
 ## C16-R2 close-out (2026-09-22)
 
-HEAD before this close-out remains `33c08e09fe6453dcb3efe10b9ae2326d63a06a52`. R3 was not started. Staging was not started.
+HEAD before this close-out was `33c08e09fe6453dcb3efe10b9ae2326d63a06a52`. Close-out commit `843f1d97de68675e2cfc27e479256d5d3cc0333c` was not pushed. R3 was not started. Staging was not started.
 
 `hasReconciliation` now reads the decision. An empty file, malformed JSON, a different operation id, a mismatched cancel id, or slot observations without `is_processing: false` and numeric `n_ctx` leave the false-success in force. Model-producing admission also refuses a `running`, `cancelling`, `recovery_required`, or interrupted `accepted` operation that the lease does not already name. That does not mark the operation succeeded and does not clear the lease.
 
