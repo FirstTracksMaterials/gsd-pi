@@ -30,6 +30,8 @@ import {
   type StoredOperation,
 } from "./types.ts";
 import { isRequiredPolicyReady } from "../resources/extensions/gsd/required-policy.ts";
+import { findUnreconciledFalseSuccesses } from "./reconciliation.ts";
+import { getRecovery } from "./recovery.ts";
 
 export type AdmissionHost = {
   registration: RegistrationRegistry;
@@ -51,6 +53,19 @@ function isUuid(value: string): boolean {
 
 function isModelProducing(action: CommandAction): boolean {
   return (MODEL_PRODUCING_ACTIONS as readonly string[]).includes(action);
+}
+
+function uncoveredModelOwnership(store: OperationStore, heldOperationId: string | null): string[] {
+  const ids: string[] = [];
+  for (const stored of store.list()) {
+    if (!isModelProducing(stored.operation.action)) continue;
+    const state = stored.operation.state;
+    const interrupted = state === "accepted" && stored.dispatch_intent === true;
+    if (state !== "running" && state !== "cancelling" && state !== "recovery_required" && !interrupted) continue;
+    if (stored.operation.operation_id === heldOperationId) continue;
+    ids.push(stored.operation.operation_id);
+  }
+  return ids;
 }
 
 function nowIso(clock: () => Date): string {
@@ -194,16 +209,67 @@ async function admitLocked(
     throw revisionConflict("expected_revision does not match the current job revision");
   }
 
-  const policy = await isRequiredPolicyReady(project.target_realpath);
-  if (!policy.ready) {
-    throw policyUnavailable(policy.reason ?? `Required policy ${project.required_policy} is not ready`);
-  }
-
   if (control.lease.ownershipUnknown()) {
     throw runtimeUnavailable("Lease file is unreadable; previous ownership is unknown. Do not admit work.");
   }
   const needsLease = isModelProducing(request.action);
   const currentLease = control.lease.current();
+  if (request.action === "cancel") {
+    if (!currentLease || currentLease.job_id !== decodedJobId) {
+      throw invalidRequest("cancel does not match the owning job");
+    }
+    const owner = control.store.read(currentLease.operation_id);
+    if (!owner || owner.operation.job_id !== decodedJobId) {
+      throw invalidRequest("cancel does not match the owning operation");
+    }
+    if (
+      currentLease.backend_binding
+      && owner.backend_binding
+      && currentLease.backend_binding.digest !== owner.backend_binding.digest
+    ) {
+      throw invalidRequest("cancel does not match the owning backend binding");
+    }
+  }
+  if (request.action === "recover") {
+    const recoveryId = String(request.parameters.recovery_id ?? "");
+    const diagnostic = getRecovery(recoveryId);
+    if (diagnostic?.job_id && diagnostic.job_id !== decodedJobId) {
+      throw invalidRequest("recover does not match the owning job");
+    }
+    if (diagnostic?.operation_id) {
+      const owner = control.store.read(diagnostic.operation_id);
+      if (owner && owner.operation.job_id !== decodedJobId) {
+        throw invalidRequest("recover does not match the owning operation");
+      }
+      if (
+        currentLease?.backend_binding
+        && owner?.backend_binding
+        && currentLease.backend_binding.digest !== owner.backend_binding.digest
+      ) {
+        throw invalidRequest("recover does not match the owning backend binding");
+      }
+    }
+  }
+  if (request.action !== "cancel" && request.action !== "recover") {
+    const policy = await isRequiredPolicyReady(project.target_realpath);
+    if (!policy.ready) {
+      throw policyUnavailable(policy.reason ?? `Required policy ${project.required_policy} is not ready`);
+    }
+  }
+  if (needsLease) {
+    const unresolved = findUnreconciledFalseSuccesses(control.store);
+    if (unresolved.length > 0) {
+      throw runtimeUnavailable(
+        `Unreconciled historical ownership blocks model-producing admission: ${unresolved.map((item) => item.operation_id).join(", ")}`,
+      );
+    }
+    const open = uncoveredModelOwnership(control.store, currentLease?.operation_id ?? null);
+    if (open.length > 0) {
+      throw runtimeUnavailable(
+        `Unresolved model ownership blocks admission: ${open.join(", ")}`,
+      );
+    }
+  }
   if (needsLease && currentLease) {
     throw modelBusy("A model-producing operation already owns admission", currentLease.operation_id);
   }

@@ -35,10 +35,18 @@ export type NativeAnswerRouter = (input: {
   question: PendingQuestion;
   response: unknown;
   request_id: string;
+  projectCwd?: string;
 }) => Promise<{ accepted: boolean; reason?: string }>;
+
+export type AnswerWorkerLookup = (projectCwd: string, sessionId: string) => { ok: boolean; reason?: string };
 
 const pending = new Map<string, PendingQuestion>();
 let nativeRouter: NativeAnswerRouter | null = null;
+let answerWorkerLookup: AnswerWorkerLookup | null = null;
+
+export function registerAnswerWorkerLookup(lookup: AnswerWorkerLookup | null): void {
+  answerWorkerLookup = lookup;
+}
 
 export function registerPendingQuestion(question: PendingQuestion): void {
   pending.set(`${question.job_id}:${question.question_id}`, question);
@@ -67,6 +75,7 @@ export function registerNativeAnswerRouterForTest(router: NativeAnswerRouter | n
 export function resetAnswersForTest(): void {
   pending.clear();
   nativeRouter = null;
+  answerWorkerLookup = null;
 }
 
 async function defaultNativeAnswerRouter(input: {
@@ -185,8 +194,21 @@ async function admitAnswerLocked(
     throw invalidRequest(`Question ${parsed.question_id} is not pending for job ${decodedJobId}`);
   }
 
+  const project = host.registration.getById(job.project_id);
+  if (answerWorkerLookup && project) {
+    const verdict = answerWorkerLookup(project.target_realpath, question.session_id);
+    if (!verdict.ok) {
+      throw invalidRequest(verdict.reason ?? "answer does not match the owning worker");
+    }
+  }
+
   const router = nativeRouter ?? defaultNativeAnswerRouter;
-  const routed = await router({ question, response: parsed.response, request_id: parsed.request_id });
+  const routed = await router({
+    question,
+    response: parsed.response,
+    request_id: parsed.request_id,
+    projectCwd: project?.target_realpath,
+  });
   if (routed.accepted) {
     persistDaemonAnswer({
       question_id: parsed.question_id,

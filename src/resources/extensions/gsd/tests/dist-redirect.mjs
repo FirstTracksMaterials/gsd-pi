@@ -174,6 +174,11 @@ export function resolve(specifier, context, nextResolve) {
   } else if (specifier.startsWith("@gsd/agent-core/")) {
     const subpath = specifier.replace(/^@gsd\/agent-core\//, "").replace(/\.js$/, ".ts");
     specifier = new URL(`packages/gsd-agent-core/src/${subpath}`, ROOT).href;
+  } else if (specifier === "@gsd/agent-modes") {
+    specifier = new URL("packages/gsd-agent-modes/src/index.ts", ROOT).href;
+  } else if (specifier.startsWith("@gsd/agent-modes/")) {
+    const subpath = specifier.replace(/^@gsd\/agent-modes\//, "").replace(/\.js$/, ".ts");
+    specifier = new URL(`packages/gsd-agent-modes/src/${subpath}`, ROOT).href;
   } else if (specifier === "@opengsd/contracts" || specifier === "@opengsd/contracts/dist/index.js") {
     specifier = new URL("packages/contracts/src/index.ts", ROOT).href;
   } else if (specifier.startsWith("@opengsd/contracts/")) {
@@ -258,6 +263,8 @@ export function load(url, context, nextLoad) {
   } else if (url.includes('/packages/pi-agent-core/dist/index.js')) {
     url = url.replace('/dist/index.js', '/src/index.ts');
   } else if (url.includes('/packages/gsd-agent-core/dist/')) {
+    url = url.replace('/dist/', '/src/').replace(/\.js$/, '.ts');
+  } else if (url.includes('/packages/gsd-agent-modes/dist/')) {
     url = url.replace('/dist/', '/src/').replace(/\.js$/, '.ts');
   } else if (url.includes('/packages/pi-tui/dist/index.js')) {
     url = url.replace('/dist/index.js', '/src/index.ts');

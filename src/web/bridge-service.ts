@@ -33,6 +33,7 @@ import {
   type SessionManageErrorResponse,
   type SessionManageResponse,
 } from "../../web/lib/session-browser-contract.ts";
+import { acceptWorkerCleanup, missingWorkerCleanup, type WorkerCleanupEvidence } from "../runtime-control/worker-cleanup.ts";
 import { authFilePath } from "../app-paths.ts";
 import { getProjectSessionsDir } from "../project-sessions.ts";
 import {
@@ -424,6 +425,7 @@ export interface BridgeRuntimeSnapshot {
   activeSessionFile: string | null;
   sessionState: RpcSessionState | null;
   lastError: BridgeLastError | null;
+  workerGeneration: number;
 }
 
 export interface BridgeRuntimeConfig {
@@ -1423,6 +1425,7 @@ export class BridgeService {
   private lifecycleError: Error | null = null;
   private disposed = false;
   private requestCounter = 0;
+  private workerGeneration = 0;
   private stderrBuffer = "";
   private snapshot: BridgeRuntimeSnapshot;
 
@@ -1442,6 +1445,7 @@ export class BridgeService {
       activeSessionFile: null,
       sessionState: null,
       lastError: null,
+      workerGeneration: 0,
     };
   }
 
@@ -1500,6 +1504,32 @@ export class BridgeService {
     if (this.lifecycleError) {
       throw this.lifecycleError;
     }
+  }
+
+  async readActiveSession(): Promise<string | null> {
+    if (!this.process?.stdin || this.snapshot.phase !== "ready") return this.snapshot.activeSessionId;
+    try {
+      await this.refreshState(false);
+    } catch {
+      // A failed refresh keeps the last observed session. It does not start a worker.
+    }
+    return this.snapshot.activeSessionId;
+  }
+
+  async sendAbort(control: {
+    operation_id: string;
+    job_id: string;
+    session_id: string | null;
+    worker_generation: number;
+  }): Promise<RpcResponse> {
+    if (!this.process?.stdin || this.snapshot.phase !== "ready") {
+      throw new Error("owning worker is not connected");
+    }
+    const timeoutMs = 10_000 + 5_000 + 5_000;
+    return sanitizeRpcResponse(await this.requestResponse({
+      type: "abort",
+      control,
+    } as RpcCommand, timeoutMs));
   }
 
   async sendInput(input: BridgeInput): Promise<RpcResponse | null> {
@@ -1699,6 +1729,9 @@ export class BridgeService {
 
     const spawnChild = this.deps.spawn ?? ((command, args, options) => spawn(command, args, options));
     const childEnv = { ...(this.deps.env ?? process.env) };
+    this.workerGeneration += 1;
+    this.snapshot.workerGeneration = this.workerGeneration;
+    childEnv.GSD_WORKER_GENERATION = String(this.workerGeneration);
     delete childEnv.GSD_CODING_AGENT_DIR;
     if (childEnv.GSD_WEB_DAEMON_MODE !== "1") {
       childEnv.GSD_WEB_BRIDGE_TUI = "1";
@@ -1967,6 +2000,10 @@ export class BridgeService {
     if (this.subscribers.size === 0) return;
     this.emit({ type: "bridge_status", bridge: this.getSnapshot() });
   }
+}
+
+export function lookupProjectBridgeServiceForCwd(projectCwd: string): BridgeService | null {
+  return projectBridgeRegistry.get(resolve(projectCwd)) ?? null;
 }
 
 export function getProjectBridgeServiceForCwd(projectCwd: string): BridgeService {
@@ -2512,6 +2549,70 @@ function emitProjectLiveStateInvalidation(
 ): BridgeLiveStateInvalidationEvent {
   const bridge = projectCwd ? getProjectBridgeServiceForCwd(projectCwd) : getProjectBridgeService();
   return bridge.publishLiveStateInvalidation(descriptor);
+}
+
+function evidenceFromAbort(response: RpcResponse): WorkerCleanupEvidence {
+  const record = response as RpcResponse & { data?: unknown; error?: string };
+  if (!record.success || record.command !== "abort") {
+    const reason = record.success ? "unexpected abort response" : (record.error ?? "abort failed");
+    return missingWorkerCleanup(reason);
+  }
+  const data = record.data && typeof record.data === "object"
+    ? record.data as Record<string, unknown>
+    : null;
+  if (!data) return missingWorkerCleanup("abort acknowledgement had no cleanup evidence");
+  return {
+    cleaned: data.cleaned === true,
+    dispatch_quiesced: data.dispatch_quiesced === true,
+    request_closed: data.request_closed === true,
+    tools_drained: data.tools_drained === true,
+    operation_id: typeof data.operation_id === "string" ? data.operation_id : null,
+    job_id: typeof data.job_id === "string" ? data.job_id : null,
+    session_id: typeof data.session_id === "string" ? data.session_id : null,
+    worker_generation: typeof data.worker_generation === "number" ? data.worker_generation : null,
+    reason: typeof data.reason === "string" ? data.reason : null,
+  };
+}
+
+export async function abortOwnedWorker(
+  projectCwd: string,
+  identity: { operationId: string; jobId: string },
+): Promise<WorkerCleanupEvidence> {
+  const bridge = lookupProjectBridgeServiceForCwd(projectCwd);
+  if (!bridge) {
+    return missingWorkerCleanup("missing worker; abort did not create one");
+  }
+  const generation = bridge.getSnapshot().workerGeneration;
+  const sessionId = await bridge.readActiveSession();
+  if (!generation) {
+    return missingWorkerCleanup("owning worker has no generation");
+  }
+  let response: RpcResponse;
+  try {
+    response = await bridge.sendAbort({
+      operation_id: identity.operationId,
+      job_id: identity.jobId,
+      session_id: sessionId,
+      worker_generation: generation,
+    });
+  } catch (error) {
+    return missingWorkerCleanup(`abort response lost: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const evidence = evidenceFromAbort(response);
+  const accepted = acceptWorkerCleanup(
+    {
+      operationId: identity.operationId,
+      jobId: identity.jobId,
+      sessionId,
+      generation,
+    },
+    evidence,
+    bridge.getSnapshot().workerGeneration,
+  );
+  if (!accepted.ok) {
+    return { ...evidence, cleaned: false, reason: accepted.reason };
+  }
+  return evidence;
 }
 
 export async function sendBridgeInput(input: BridgeInput, projectCwd?: string): Promise<RpcResponse | null> {

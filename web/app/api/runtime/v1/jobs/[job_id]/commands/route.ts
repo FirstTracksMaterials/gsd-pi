@@ -1,4 +1,4 @@
-import { admitCommand, admitResponse, control, dynamic, errorResponse, readJson, routeParam, runtime } from "../../../_shared.ts";
+import { admitCommand, admitResponse, control, controlError, dynamic, readJson, routeParam, runtime } from "../../../_shared.ts";
 
 export { dynamic, runtime };
 
@@ -12,11 +12,6 @@ export async function POST(
     const result = await admitCommand(await control(), jobId, body);
     return admitResponse(result);
   } catch (error) {
-    const status = error && typeof error === "object" && "status" in error ? Number((error as { status: number }).status) : 400;
-    return errorResponse(status, {
-      code: "invalid_request",
-      message: error instanceof Error ? error.message : String(error),
-      retryable: false,
-    });
+    return controlError(error);
   }
 }

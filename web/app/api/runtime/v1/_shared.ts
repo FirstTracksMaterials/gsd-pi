@@ -6,16 +6,17 @@ import {
   getOperation,
   getOperationByRequest,
 } from "../../../../../src/runtime-control/admission.ts";
-import { admitAnswer } from "../../../../../src/runtime-control/answers.ts";
+import { admitAnswer, registerAnswerWorkerLookup } from "../../../../../src/runtime-control/answers.ts";
 import { admitImport } from "../../../../../src/runtime-control/import-jobs.ts";
 import { buildJobSnapshot, listProjectJobs } from "../../../../../src/runtime-control/snapshots.ts";
 import { ensureRuntimeControl } from "../../../../../src/runtime-control/control.ts";
 import { registerNativeAutoDispatch } from "../../../../../src/runtime-control/native-auto-dispatch.ts";
+import { registerCancelNativeOps } from "../../../../../src/runtime-control/cancel.ts";
 import { readJobHistory } from "../../../../../src/runtime-control/history.ts";
 import { subscribeProjectEvents } from "../../../../../src/runtime-control/event-hub.ts";
 import { RuntimeControlError } from "../../../../../src/runtime-control/errors.ts";
 import type { Operation, RuntimeError } from "../../../../../src/runtime-control/types.ts";
-import { sendBridgeInput } from "../../../../../src/web/bridge-service.ts";
+import { abortOwnedWorker, lookupProjectBridgeServiceForCwd, sendBridgeInput } from "../../../../../src/web/bridge-service.ts";
 
 export { admitAnswer, admitCommand, admitImport, getOperation, getOperationByRequest };
 export { buildJobSnapshot, listProjectJobs, readJobHistory, subscribeProjectEvents };
@@ -80,6 +81,21 @@ function bindNativeDispatch(): void {
     if (result && typeof result === "object" && "success" in result && result.success === false) {
       console.error("[gsd] native auto sendBridgeInput failed:", result);
     }
+  });
+  registerCancelNativeOps({
+    abortOwnedWorker: (input) => abortOwnedWorker(input.projectCwd, {
+      operationId: input.operationId,
+      jobId: input.jobId,
+    }),
+  });
+  registerAnswerWorkerLookup((projectCwd, sessionId) => {
+    const bridge = lookupProjectBridgeServiceForCwd(projectCwd);
+    if (!bridge) return { ok: true };
+    const activeSessionId = bridge.getSnapshot().activeSessionId;
+    if (activeSessionId && sessionId && activeSessionId !== sessionId) {
+      return { ok: false, reason: "answer session does not match the owning worker" };
+    }
+    return { ok: true };
   });
 }
 

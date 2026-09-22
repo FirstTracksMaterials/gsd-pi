@@ -1,13 +1,9 @@
 // Project/App: gsd-pi
 // File Purpose: Typed runtime-v1 command adapters over existing GSD domain functions.
 
-import { existsSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
-
 import { evaluateCompulsoryPolicy } from "../resources/extensions/gsd/required-policy.ts";
 import { beginPrepareMode, endPrepareMode, isImplementationUnit } from "./prepare-boundary.ts";
-import { probeManagedIdle } from "./idle-probe.ts";
+import { acknowledgeOwnedWorker, executeCancel, probeIdleWithinTeardown } from "./cancel.ts";
 import { applyRecovery, getRecovery, issueRecoveryId } from "./recovery.ts";
 import type { CommandAction, CommandRequest, JobRecord, Operation, ResolvedProject, StoredOperation } from "./types.ts";
 import type { JobCatalog } from "./job-catalog.ts";
@@ -81,34 +77,6 @@ export function getLastMilestoneLock(basePath: string): string | undefined {
 
 function nowIso(clock: () => Date): string {
   return clock().toISOString().replace(/\.\d{3}Z$/, "Z");
-}
-
-async function loadExecuteCancel(): Promise<{ executeCancel: (input: {
-  host: CommandHost;
-  project: ResolvedProject;
-  cancelOperation: StoredOperation;
-}) => Promise<{ holdLease: boolean }> }> {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const packaged = process.env.GSD_WEB_PACKAGE_ROOT?.trim();
-  const candidates = [
-    packaged ? join(packaged, "src", "runtime-control", "cancel.ts") : "",
-    join(here, "cancel.ts"),
-  ].filter((path) => path && existsSync(path));
-  let lastError: unknown = new Error("cancel module was not found beside the runtime or GSD_WEB_PACKAGE_ROOT");
-  for (const candidate of candidates) {
-    try {
-      return await import(/* webpackIgnore: true */ pathToFileURL(candidate).href) as {
-        executeCancel: (input: {
-          host: CommandHost;
-          project: ResolvedProject;
-          cancelOperation: StoredOperation;
-        }) => Promise<{ holdLease: boolean }>;
-      };
-    } catch (error) {
-      lastError = error;
-    }
-  }
-  throw lastError;
 }
 
 function storedFromContext(context: NativeCommandContext): StoredOperation | undefined {
@@ -199,7 +167,6 @@ export async function productionCommandHandler(context: NativeCommandContext): P
   const milestoneId = context.job.milestone_id;
 
   if (action === "cancel") {
-    const { executeCancel } = await loadExecuteCancel();
     const result = await executeCancel({ host: context.host, project: context.project, cancelOperation: stored });
     return { dispatch: false, holdLease: result.holdLease };
   }
@@ -219,16 +186,27 @@ export async function productionCommandHandler(context: NativeCommandContext): P
       context.host.store.update(stored);
       return { dispatch: false, holdLease: false };
     }
+    const owner = context.host.store.read(diagnostic.operation_id);
+    if ((diagnostic.job_id && diagnostic.job_id !== context.job.job_id) || (owner && owner.operation.job_id !== context.job.job_id)) {
+      stored.operation.state = "failed";
+      stored.operation.updated_at = nowIso(context.host.clock);
+      stored.operation.error = {
+        code: "invalid_request",
+        message: "recover does not match the owning job",
+        retryable: false,
+        operation_id: stored.operation.operation_id,
+      };
+      context.host.store.update(stored);
+      return { dispatch: false, holdLease: true };
+    }
     if (diagnostic.next_state === "recovery_required") {
-      const owner = context.host.store.read(diagnostic.operation_id);
-      const idle = await probeManagedIdle(owner?.backend_binding ?? null);
-      if (!idle.idle) {
+      if (!owner?.backend_binding) {
         const blockedAt = nowIso(context.host.clock);
         stored.operation.state = "recovery_required";
         stored.operation.updated_at = blockedAt;
         stored.operation.error = {
           code: "recovery_required",
-          message: idle.reason,
+          message: "Operation has no backend binding; ownership is unknown. Retain recovery_required.",
           retryable: false,
           operation_id: stored.operation.operation_id,
         };
@@ -238,6 +216,37 @@ export async function productionCommandHandler(context: NativeCommandContext): P
           next_state: "recovery_required",
           idle_confirmed: false,
           replayed_shell: false,
+        };
+        context.host.store.update(stored);
+        return { dispatch: false, holdLease: true };
+      }
+      const evidence = await acknowledgeOwnedWorker({
+        projectCwd: context.project.target_realpath,
+        operationId: owner.operation.operation_id,
+        jobId: context.job.job_id,
+      });
+      const idle = evidence.cleaned ? await probeIdleWithinTeardown(owner.backend_binding) : null;
+      if (!evidence.cleaned || !idle?.idle) {
+        const blockedAt = nowIso(context.host.clock);
+        stored.operation.state = "recovery_required";
+        stored.operation.updated_at = blockedAt;
+        stored.operation.error = {
+          code: "recovery_required",
+          message: !evidence.cleaned
+            ? (evidence.reason ?? "worker cleanup was not acknowledged")
+            : (idle?.reason ?? "backend ownership remains uncertain"),
+          retryable: false,
+          operation_id: stored.operation.operation_id,
+        };
+        stored.operation.result = {
+          kind: "recover",
+          recovery_id: recoveryId,
+          next_state: "recovery_required",
+          idle_confirmed: false,
+          replayed_shell: false,
+          dispatch_quiesced: evidence.dispatch_quiesced,
+          request_closed: evidence.request_closed,
+          tools_drained: evidence.tools_drained,
         };
         context.host.store.update(stored);
         return { dispatch: false, holdLease: true };
@@ -257,7 +266,23 @@ export async function productionCommandHandler(context: NativeCommandContext): P
     context.host.store.update(stored);
     if (applied.next_state === "recovery_required") {
       reconcileIdleRecovery(context.host, applied.operation_id, applied.job_id, applied.recovery_id, recoveredAt);
-    } else {
+    } else if (context.host.lease.isHeld()) {
+      const evidence = await acknowledgeOwnedWorker({
+        projectCwd: context.project.target_realpath,
+        operationId: applied.operation_id,
+        jobId: applied.job_id ?? context.job.job_id,
+      });
+      if (!evidence.cleaned) {
+        stored.operation.state = "recovery_required";
+        stored.operation.error = {
+          code: "recovery_required",
+          message: evidence.reason ?? "worker cleanup was not acknowledged",
+          retryable: false,
+          operation_id: stored.operation.operation_id,
+        };
+        context.host.store.update(stored);
+        return { dispatch: false, holdLease: true };
+      }
       context.host.lease.release(applied.operation_id);
     }
     return { dispatch: false, holdLease: false };

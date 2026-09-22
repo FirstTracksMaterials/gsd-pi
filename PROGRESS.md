@@ -5,6 +5,37 @@ Save-point for future agents. This is the GSD fork worktree
 Do not write raid-night, product, or quake-cockpit from a gsd-pi C07
 session unless the prompt names that repo.
 
+## C16-R2 close-out (2026-09-22)
+
+HEAD before this close-out remains `33c08e09fe6453dcb3efe10b9ae2326d63a06a52`. R3 was not started. Staging was not started.
+
+`hasReconciliation` now reads the decision. An empty file, malformed JSON, a different operation id, a mismatched cancel id, or slot observations without `is_processing: false` and numeric `n_ctx` leave the false-success in force. Model-producing admission also refuses a `running`, `cancelling`, `recovery_required`, or interrupted `accepted` operation that the lease does not already name. That does not mark the operation succeeded and does not clear the lease.
+
+`src/runtime-control/tests/worker-cancel.test.ts` passed 10 tests. The live `3ef0e645` decision still validates. `79648da8` was not given a reconciliation file. `fba0f3be` was not opened on the live store. The rebuilt admission chunk is `dist/web/standalone/.next/server/chunks/1612.js` SHA-256 `b9a3d8967bf6138dc32154fea2b351a567b95bce7bb2c09e2dffbb05d7a43bbd`. Pre-existing untracked `packages/pi-coding-agent/src/*.js` is still not what the runtime loads.
+
+## C16-R2 worker cancel and historical reconciliation (2026-09-22)
+
+Not committed. HEAD remains `33c08e09fe6453dcb3efe10b9ae2326d63a06a52`.
+
+`lookupProjectBridgeServiceForCwd` does not create a worker.
+`abortOwnedWorker` is registered beside `sendBridgeInput` in
+`web/app/api/runtime/v1/_shared.ts`. Cleanup requires the three
+acknowledgement flags plus a matching operation, job, session, and
+worker generation. Idle is probed only after that, on the stored
+binding, inside the 10s/5s teardown window. Cancel and recover skip
+policy readiness. Model-producing admission refuses an unbound
+succeeded cancel that has no reconciliation file.
+
+`executeCancel` is the same module instance as that registration.
+`@gsd/agent-modes` resolves to source under the test loader so the RPC
+worker emits the cleanup receipt. `src/runtime-control/tests/worker-cancel.test.ts`
+passed 7 tests. The packaged proof is in raid-night, 11 passed.
+
+The live append for `3ef0e645-ebca-4f7a-a87f-574676ab766d` did not
+construct `RuntimeControl` and did not rewrite `fba0f3be`. R3 was not
+started. Pre-existing untracked `packages/pi-coding-agent/src/*.js` is
+still not what the runtime loads.
+
 ## C16-R1 backend binding (2026-09-22)
 
 No source commit. HEAD remains

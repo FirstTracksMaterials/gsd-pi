@@ -281,5 +281,6 @@ test("cancel probes the operation binding and ignores another idle server", asyn
   assert.equal(cancelStored.ok, true);
   if (cancelStored.ok) assert.equal(cancelStored.operation.state, "recovery_required");
   assert.equal(control.lease.isHeld(), true);
-  assert.deepEqual(seen, [bound.slot_probe_url]);
+  assert.ok(seen.length > 1);
+  assert.ok(seen.every((url) => url === bound.slot_probe_url));
 });

@@ -1,20 +1,17 @@
 // Project/App: gsd-pi
-// File Purpose: R8 cancel orchestration. Immediate cancelling; idle probe before lease release.
+// File Purpose: Cancel orchestration. Cleanup acknowledgement, then bound idle, before lease release.
 
-import { existsSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
-
-import {
-  requestAutoCancellation,
-  setAutoCancellationPhase,
-} from "../resources/extensions/gsd/auto-cancellation.ts";
 import { DEFAULT_KILL_VERIFY_MS, DEFAULT_TERM_GRACE_MS } from "../resources/extensions/gsd/host-check-runner.ts";
+import type { BackendBinding } from "./types.ts";
 import type { ModelLease } from "./model-lease.ts";
 import type { OperationStore } from "./operation-store.ts";
-import { probeManagedIdle } from "./idle-probe.ts";
+import { probeManagedIdle, type IdleProbeResult } from "./idle-probe.ts";
 import { configureRecoveryStore, issueRecoveryId } from "./recovery.ts";
 import type { Operation, ResolvedProject, StoredOperation } from "./types.ts";
+import {
+  missingWorkerCleanup,
+  type WorkerCleanupEvidence,
+} from "./worker-cleanup.ts";
 
 export type CancelHost = {
   store: OperationStore;
@@ -24,50 +21,164 @@ export type CancelHost = {
 
 export const CANCEL_TERM_GRACE_MS = DEFAULT_TERM_GRACE_MS;
 export const CANCEL_KILL_VERIFY_MS = DEFAULT_KILL_VERIFY_MS;
+const IDLE_POLL_MS = 200;
+
+export type OwnedWorkerAbort = (input: {
+  projectCwd: string;
+  operationId: string;
+  jobId: string;
+}) => Promise<WorkerCleanupEvidence>;
 
 export type CancelNativeOps = {
   stopAuto?: (reason: string) => Promise<void>;
   abortTools?: () => Promise<{ cleaned: boolean }>;
   abortProvider?: () => Promise<void>;
+  abortOwnedWorker?: OwnedWorkerAbort;
 };
 
 let cancelOps: CancelNativeOps = {};
 
-export function registerCancelNativeOpsForTest(ops: CancelNativeOps | null): void {
+export function registerCancelNativeOps(ops: CancelNativeOps | null): void {
   cancelOps = ops ?? {};
+}
+
+export function registerCancelNativeOpsForTest(ops: CancelNativeOps | null): void {
+  registerCancelNativeOps(ops);
 }
 
 export function resetCancelNativeOpsForTest(): void {
   cancelOps = {};
 }
 
+type CancellationModule = {
+  requestAutoCancellation: (phase?: string) => void;
+  setAutoCancellationPhase: (phase: string) => void;
+};
+
+let cancellationModule: Promise<CancellationModule | null> | null = null;
+
+function loadCancellation(): Promise<CancellationModule | null> {
+  if (!cancellationModule) {
+    cancellationModule = import(
+      /* webpackIgnore: true */
+      "../resources/extensions/gsd/auto-cancellation.ts"
+    ).then((loaded) => loaded as CancellationModule).catch(() => null);
+  }
+  return cancellationModule;
+}
+
+async function signalCancellation(phase: string): Promise<void> {
+  const loaded = await loadCancellation();
+  if (!loaded) return;
+  if (phase === "requested") loaded.requestAutoCancellation("requested");
+  else loaded.setAutoCancellationPhase(phase);
+}
+
 function nowIso(clock: () => Date): string {
   return clock().toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
-async function abortBridgeGeneration(projectCwd: string): Promise<void> {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const packaged = process.env.GSD_WEB_PACKAGE_ROOT?.trim();
-  const candidates = [
-    packaged ? join(packaged, "src", "web", "bridge-service.ts") : "",
-    join(here, "..", "web", "bridge-service.ts"),
-  ].filter((path) => path && existsSync(path));
-  let lastError: unknown = new Error("bridge-service was not found beside the runtime or GSD_WEB_PACKAGE_ROOT");
-  for (const candidate of candidates) {
-    try {
-      const loaded = await import(/* webpackIgnore: true */ pathToFileURL(candidate).href) as {
-        sendBridgeInput: (command: { type: "abort" }, cwd?: string) => Promise<{ success?: boolean; error?: unknown } | null>;
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export async function probeIdleWithinTeardown(binding: BackendBinding | null | undefined): Promise<IdleProbeResult> {
+  const deadline = Date.now() + CANCEL_TERM_GRACE_MS + CANCEL_KILL_VERIFY_MS;
+  let idle = await probeManagedIdle(binding ?? null);
+  while (!idle.idle && Date.now() < deadline) {
+    await sleep(IDLE_POLL_MS);
+    idle = await probeManagedIdle(binding ?? null);
+  }
+  return idle;
+}
+
+export async function acknowledgeOwnedWorker(input: {
+  projectCwd: string;
+  operationId: string;
+  jobId: string;
+}): Promise<WorkerCleanupEvidence> {
+  if (!cancelOps.abortOwnedWorker) {
+    return missingWorkerCleanup("no production cleanup acknowledgement");
+  }
+  try {
+    const evidence = await cancelOps.abortOwnedWorker(input);
+    if (
+      !evidence.cleaned
+      || !evidence.dispatch_quiesced
+      || !evidence.request_closed
+      || !evidence.tools_drained
+      || evidence.operation_id !== input.operationId
+      || evidence.job_id !== input.jobId
+    ) {
+      return {
+        ...evidence,
+        cleaned: false,
+        reason: evidence.reason ?? "worker cleanup was not acknowledged",
       };
-      const response = await loaded.sendBridgeInput({ type: "abort" }, projectCwd);
-      if (response && response.success === false) {
-        throw new Error(typeof response.error === "string" ? response.error : "bridge abort failed");
-      }
-      return;
-    } catch (error) {
-      lastError = error;
+    }
+    return evidence;
+  } catch (error) {
+    return missingWorkerCleanup(
+      `abort response lost: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+async function cleanupFromHooks(): Promise<{ evidence: WorkerCleanupEvidence; uncertain: boolean }> {
+  let uncertain = false;
+  if (cancelOps.abortProvider) {
+    try {
+      await cancelOps.abortProvider();
+    } catch {
+      uncertain = true;
     }
   }
-  throw lastError;
+  if (cancelOps.stopAuto) {
+    try {
+      await cancelOps.stopAuto("runtime-v1 cancel");
+    } catch {
+      uncertain = true;
+    }
+  }
+  let toolsDrained = false;
+  if (cancelOps.abortTools) {
+    try {
+      toolsDrained = (await cancelOps.abortTools()).cleaned === true;
+    } catch {
+      toolsDrained = false;
+    }
+  }
+  const cleaned = !uncertain && toolsDrained && Boolean(cancelOps.abortTools);
+  return {
+    uncertain,
+    evidence: {
+      cleaned,
+      dispatch_quiesced: !uncertain && Boolean(cancelOps.stopAuto || cancelOps.abortProvider || cancelOps.abortTools),
+      request_closed: !uncertain,
+      tools_drained: toolsDrained,
+      operation_id: null,
+      job_id: null,
+      session_id: null,
+      worker_generation: null,
+      reason: cleaned ? null : uncertain
+        ? "Provider abort did not complete; backend ownership remains uncertain"
+        : "no production cleanup acknowledgement",
+    },
+  };
+}
+
+function cleanupResult(evidence: WorkerCleanupEvidence, targetId: string | null): Record<string, unknown> {
+  return {
+    kind: "cancel",
+    target_operation_id: targetId,
+    cancelled: evidence.cleaned,
+    dispatch_quiesced: evidence.dispatch_quiesced,
+    request_closed: evidence.request_closed,
+    tools_drained: evidence.tools_drained,
+    worker_generation: evidence.worker_generation,
+    session_id: evidence.session_id,
+    operation_id: evidence.operation_id,
+  };
 }
 
 export async function executeCancel(input: {
@@ -80,8 +191,8 @@ export async function executeCancel(input: {
   const target = targetId ? host.store.read(targetId) : undefined;
   const stamp = nowIso(host.clock);
 
-  requestAutoCancellation("requested");
-  setAutoCancellationPhase("aborting-model");
+  await signalCancellation("requested");
+  await signalCancellation("aborting-model");
 
   if (target) {
     target.operation.state = "cancelling";
@@ -92,52 +203,42 @@ export async function executeCancel(input: {
   cancelOperation.operation.updated_at = stamp;
   host.store.update(cancelOperation);
 
-  let providerAbortUncertain = false;
-  try {
-    if (cancelOps.abortProvider) {
-      await cancelOps.abortProvider();
-    } else if (!cancelOps.stopAuto && process.env.GSD_WEB_DAEMON_MODE === "1") {
-      await abortBridgeGeneration(project.target_realpath);
+  let evidence: WorkerCleanupEvidence;
+  let uncertain = false;
+  if (cancelOps.abortOwnedWorker) {
+    evidence = await acknowledgeOwnedWorker({
+      projectCwd: project.target_realpath,
+      operationId: target?.operation.operation_id ?? cancelOperation.operation.operation_id,
+      jobId: target?.operation.job_id ?? cancelOperation.operation.job_id ?? "",
+    });
+    uncertain = !evidence.cleaned && (evidence.reason ?? "").includes("uncertain");
+  } else if (cancelOps.abortProvider || cancelOps.stopAuto || cancelOps.abortTools) {
+    const hooked = await cleanupFromHooks();
+    evidence = hooked.evidence;
+    if (target) {
+      evidence = { ...evidence, operation_id: target.operation.operation_id, job_id: target.operation.job_id };
     }
-  } catch {
-    providerAbortUncertain = true;
+    uncertain = hooked.uncertain;
+  } else {
+    evidence = missingWorkerCleanup("no production cleanup acknowledgement");
   }
 
-  try {
-    if (cancelOps.stopAuto) {
-      await cancelOps.stopAuto("runtime-v1 cancel");
-    } else {
-      const { stopAuto } = await import("../resources/extensions/gsd/auto.ts");
-      await stopAuto(undefined, undefined, "runtime-v1 cancel");
-    }
-  } catch {
-    // stopAuto is safe when idle; continue cleanup.
-  }
-
-  setAutoCancellationPhase("aborting-tools");
-  let cleaned = true;
-  try {
-    if (cancelOps.abortTools) {
-      const result = await cancelOps.abortTools();
-      cleaned = result.cleaned;
-    }
-  } catch {
-    cleaned = false;
-  }
-
-  setAutoCancellationPhase("draining");
+  await signalCancellation("aborting-tools");
+  await signalCancellation("draining");
   const stateDir = process.env.GSD_STATE_DIR?.trim();
   if (stateDir) configureRecoveryStore(stateDir);
-  const idle = await probeManagedIdle(target?.backend_binding ?? null);
-  if (!cleaned || !idle.idle || providerAbortUncertain) {
+
+  const binding = target?.backend_binding ?? null;
+  const idle = evidence.cleaned ? await probeIdleWithinTeardown(binding) : null;
+  if (!evidence.cleaned || !idle?.idle || uncertain) {
     const recovery = issueRecoveryId({
       operation_id: cancelOperation.operation.operation_id,
       job_id: cancelOperation.operation.job_id,
-      reason: providerAbortUncertain
+      reason: uncertain
         ? "Provider abort did not complete; backend ownership remains uncertain"
-        : idle.idle
-          ? "Process-group cleanup did not complete within TERM/KILL budgets"
-          : idle.reason,
+        : !evidence.cleaned
+          ? (evidence.reason ?? "worker cleanup was not acknowledged")
+          : (idle?.idle ? "Process-group cleanup did not complete within TERM/KILL budgets" : idle?.reason ?? "backend ownership remains uncertain"),
       issued_at: nowIso(host.clock),
       next_state: "recovery_required",
     });
@@ -163,7 +264,11 @@ export async function executeCancel(input: {
       retryable: false,
       operation_id: cancelOperation.operation.operation_id,
     };
-    cancelOperation.operation.result = { recovery_id: recovery.recovery_id, kind: "cancel" };
+    cancelOperation.operation.result = {
+      ...cleanupResult(evidence, targetId),
+      recovery_id: recovery.recovery_id,
+      kind: "cancel",
+    };
     host.store.update(cancelOperation);
     return { holdLease: true };
   }
@@ -177,13 +282,9 @@ export async function executeCancel(input: {
   }
   cancelOperation.operation.state = "succeeded";
   cancelOperation.operation.updated_at = done;
-  cancelOperation.operation.result = {
-    kind: "cancel",
-    target_operation_id: targetId,
-    cancelled: true,
-  };
+  cancelOperation.operation.result = cleanupResult({ ...evidence, cleaned: true }, targetId);
   host.store.update(cancelOperation);
-  setAutoCancellationPhase("cancelled");
+  await signalCancellation("cancelled");
   return { holdLease: false };
 }
 

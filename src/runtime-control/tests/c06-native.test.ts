@@ -123,6 +123,11 @@ test("AT-C06 start and resume set milestoneLock and dispatch-guard rejects anoth
   assert.match(getMilestoneLockBlocker("execute-task", "M002/S01/T01") ?? "", /locked to milestone M001/);
   assert.equal(getMilestoneLockBlocker("execute-task", "M001/S01/T01"), null);
 
+  const owner = stored.ok ? control.store.read(stored.operation.operation_id) : null;
+  if (owner) {
+    owner.operation.state = "succeeded";
+    control.store.update(owner);
+  }
   control.lease.release(stored.ok ? stored.operation.operation_id : "");
   const resume = await admitCommand(control, "alpha:M001", commandRequest("resume", uuid(42)));
   assert.equal(resume.ok, true);
@@ -276,6 +281,19 @@ test("recover releases a recovery_required lease only after an idle probe", asyn
     reason: "Could not parse /slots idle signal",
     issued_at: "2026-09-20T00:00:01Z",
     next_state: "recovery_required",
+  });
+  registerCancelNativeOpsForTest({
+    abortOwnedWorker: async (input) => ({
+      cleaned: true,
+      dispatch_quiesced: true,
+      request_closed: true,
+      tools_drained: true,
+      operation_id: input.operationId,
+      job_id: input.jobId,
+      session_id: null,
+      worker_generation: 1,
+      reason: null,
+    }),
   });
   registerIdleProbeForTest(async () => ({ idle: false, source: "slots", reason: "A backend slot is still processing" }));
   const refused = await admitCommand(control, "alpha:M001", commandRequest("recover", uuid(247), {

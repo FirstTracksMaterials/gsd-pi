@@ -12,6 +12,8 @@
  */
 
 import * as crypto from "node:crypto";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import type { AgentSession } from "@gsd/agent-core";
 import { extensionUiSnapshotFromRpcMaps } from "@gsd/agent-core";
 import type {
@@ -36,6 +38,66 @@ import type {
 	RpcSessionState,
 	RpcSlashCommand,
 } from "./rpc-types.js";
+
+const HOLD_VALIDATOR_SCRIPT = [
+	'const fs=require("fs");',
+	'const {spawn}=require("child_process");',
+	"const pidFile=process.env.GSD_TEST_VALIDATOR_PID_FILE;",
+	'if(pidFile) fs.writeFileSync(pidFile, String(process.pid));',
+	'spawn(process.execPath,["-e","process.on(\'SIGTERM\',()=>{});process.stdout.write(\'held\\\\n\');setInterval(()=>{},200);"],{stdio:["ignore","inherit","inherit"]});',
+	'process.on("SIGTERM",()=>process.exit(0));',
+	"setInterval(()=>{},200);",
+].join("");
+
+let holdValidatorStarted = false;
+
+async function maybeHoldValidator(cwd: string): Promise<void> {
+	if (process.env.GSD_TEST_HOLD_VALIDATOR !== "1" || holdValidatorStarted) return;
+	holdValidatorStarted = true;
+	const root = process.env.GSD_WEB_PACKAGE_ROOT?.trim();
+	if (!root) return;
+	const loaded = await import(pathToFileURL(join(root, "src/resources/extensions/gsd/host-check-runner.ts")).href) as {
+		runHostCheck: (request: {
+			cwd: string;
+			timeoutMs: number;
+			argv: string[];
+			termGraceMs?: number;
+			killVerifyMs?: number;
+			env?: NodeJS.ProcessEnv;
+		}) => Promise<unknown>;
+	};
+	void loaded.runHostCheck({
+		cwd,
+		timeoutMs: 60_000,
+		termGraceMs: 200,
+		killVerifyMs: 400,
+		env: process.env,
+		argv: [process.execPath, "-e", HOLD_VALIDATOR_SCRIPT],
+	});
+}
+
+async function stopOwnedAuto(): Promise<void> {
+	const root = process.env.GSD_WEB_PACKAGE_ROOT?.trim();
+	const specifier = root
+		? pathToFileURL(join(root, "src/resources/extensions/gsd/auto.ts")).href
+		: new URL("../../../../../src/resources/extensions/gsd/auto.ts", import.meta.url).href;
+	const loaded = await import(specifier) as {
+		stopAuto: (ctx?: unknown, pi?: unknown, reason?: string) => Promise<void>;
+	};
+	await loaded.stopAuto(undefined, undefined, "runtime-v1 cancel");
+}
+
+async function drainOwnedTools(): Promise<boolean> {
+	const root = process.env.GSD_WEB_PACKAGE_ROOT?.trim();
+	const specifier = root
+		? pathToFileURL(join(root, "src/resources/extensions/gsd/host-check-runner.ts")).href
+		: new URL("../../../../../src/resources/extensions/gsd/host-check-runner.ts", import.meta.url).href;
+	const loaded = await import(specifier) as {
+		drainOwnedHostChecks: () => Promise<{ drained: boolean }>;
+	};
+	const drained = await loaded.drainOwnedHostChecks();
+	return drained.drained === true;
+}
 
 // Re-export types for consumers
 export type {
@@ -566,6 +628,11 @@ export async function runRpcMode(session: AgentSession): Promise<never> {
 			// =================================================================
 
 			case "prompt": {
+				try {
+					void maybeHoldValidator(session.sessionManager.getCwd());
+				} catch {
+					void maybeHoldValidator(process.cwd());
+				}
 				// v2: generate runId for execution tracking
 				const runId = protocolVersion === 2 ? crypto.randomUUID() : undefined;
 				if (runId) currentRunId = runId;
@@ -599,12 +666,56 @@ export async function runRpcMode(session: AgentSession): Promise<never> {
 			}
 
 			case "abort": {
+				const control = (command as { control?: {
+					operation_id?: string;
+					job_id?: string;
+					session_id?: string | null;
+					worker_generation?: number;
+				} }).control;
+				if (process.env.GSD_ABORT_DROP_RESPONSE === "1") {
+					process.exit(0);
+				}
 				const cancelHook = (globalThis as Record<symbol, unknown>)[Symbol.for("gsd.runtimeCancelAbort")];
 				if (typeof cancelHook === "function") {
 					(cancelHook as () => void)();
 				}
-				await session.abort();
-				return success(id, "abort");
+				let stopFailed = false;
+				try {
+					await stopOwnedAuto();
+				} catch {
+					stopFailed = true;
+				}
+				let requestClosed = false;
+				try {
+					await session.abort();
+					session.abortRetry();
+					session.abortBash();
+					requestClosed = session.isStreaming !== true && session.isRetrying !== true && session.isCompacting !== true;
+				} catch {
+					requestClosed = false;
+				}
+				let toolsDrained = false;
+				try {
+					toolsDrained = await drainOwnedTools();
+				} catch {
+					toolsDrained = false;
+				}
+				const generation = Number(process.env.GSD_WORKER_GENERATION ?? "");
+				const reportedGeneration = process.env.GSD_ABORT_STALE_GENERATION === "1" ? 0 : generation;
+				const sessionId = process.env.GSD_ABORT_STALE_SESSION === "1" ? "stale-session" : (session.sessionId ?? null);
+				const dispatchQuiesced = !stopFailed;
+				const cleaned = dispatchQuiesced && requestClosed && toolsDrained && Number.isFinite(generation);
+				return success(id, "abort", {
+					operation_id: control?.operation_id ?? null,
+					job_id: control?.job_id ?? null,
+					session_id: sessionId,
+					worker_generation: Number.isFinite(reportedGeneration) ? reportedGeneration : null,
+					dispatch_quiesced: dispatchQuiesced,
+					request_closed: requestClosed,
+					tools_drained: toolsDrained,
+					cleaned,
+					reason: cleaned ? null : stopFailed ? "stopAuto failed" : "worker cleanup was not acknowledged",
+				});
 			}
 
 			case "new_session": {

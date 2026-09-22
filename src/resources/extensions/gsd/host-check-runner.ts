@@ -265,6 +265,26 @@ export function hostCheckProcessGroupAlive(pid: number): boolean {
   return processGroupHasMembers(pid);
 }
 
+type InFlightHostCheck = {
+  abort: () => void;
+  pid: number | undefined;
+  done: Promise<void>;
+};
+
+const inFlightHostChecks = new Set<InFlightHostCheck>();
+
+export async function drainOwnedHostChecks(): Promise<{ drained: boolean }> {
+  const pending = [...inFlightHostChecks];
+  for (const flight of pending) flight.abort();
+  await Promise.all(pending.map((flight) => flight.done));
+  const alive = pending.some((flight) => flight.pid !== undefined && hostCheckProcessGroupAlive(flight.pid));
+  return { drained: !alive };
+}
+
+export function inFlightHostCheckCountForTest(): number {
+  return inFlightHostChecks.size;
+}
+
 function classifyFailure(input: {
   timedOut: boolean;
   cancelled: boolean;
@@ -439,6 +459,19 @@ export async function runHostCheck(request: HostCheckRequest): Promise<HostCheck
     );
   };
 
+  let resolveFlight: () => void = () => undefined;
+  const flightDone = new Promise<void>((resolve) => {
+    resolveFlight = resolve;
+  });
+  const flight: InFlightHostCheck = {
+    abort: () => {
+      void abort("cancel");
+    },
+    pid: spawnedPid,
+    done: flightDone,
+  };
+  inFlightHostChecks.add(flight);
+
   timeoutHandle = setTimeout(() => {
     void abort("timeout");
   }, request.timeoutMs);
@@ -470,6 +503,8 @@ export async function runHostCheck(request: HostCheckRequest): Promise<HostCheck
     if ((cancelled || timedOut) && spawnedPid !== undefined) {
       await terminateProcessGroup(child, exitPromise, 0, budgets.killVerifyMs);
     }
+    inFlightHostChecks.delete(flight);
+    resolveFlight();
   }
 
   const stdout = readBoundedCommandOutput(stdoutPath);
