@@ -79,11 +79,25 @@ export type Operation = {
   target_operation_id: string | null;
 };
 
+export type BackendBinding = {
+  version: 1;
+  backend_id: string;
+  provider: string;
+  model_id: string;
+  api_base_url: string;
+  slot_probe_url: string;
+  expected_slot_ids: number[];
+  expected_slot_count: number;
+  expected_context_capacity: number;
+  digest: string;
+};
+
 export type StoredOperation = {
   operation: Operation;
   fingerprint: string;
   kind: OperationKind;
   dispatch_intent: boolean;
+  backend_binding?: BackendBinding | null;
 };
 
 export type ReferenceRegistration = {
@@ -100,6 +114,7 @@ export type ProjectRegistration = {
   required_policy: string;
   provider?: string | null;
   backend_idle_probe?: string | null;
+  backend_binding?: BackendBinding | null;
 };
 
 export type RegistrationFile = {
@@ -117,6 +132,7 @@ export type ResolvedProject = {
   required_policy: string;
   provider: string | null;
   backend_idle_probe: string | null;
+  backend_binding: BackendBinding | null;
 };
 
 export type JobRecord = {

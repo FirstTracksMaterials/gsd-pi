@@ -49,7 +49,7 @@ function listen(handler: (body: string, respond: (status: number, contentType: s
 	});
 }
 
-function model(port: number, provider = "llama-cpp"): Model<"openai-completions"> {
+function model(port: number, provider = "llama-cpp", buffered = true): Model<"openai-completions"> {
 	return {
 		id: "blaskgpt",
 		name: "blaskgpt",
@@ -61,6 +61,7 @@ function model(port: number, provider = "llama-cpp"): Model<"openai-completions"
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: 131072,
 		maxTokens: 32000,
+		compat: buffered ? { acceptBufferedChatCompletion: true } : undefined,
 	};
 }
 
@@ -198,7 +199,17 @@ describe("llama-cpp buffered chat completion", () => {
 		const { port, posts } = await listen((_body, respond) => {
 			respond(200, "application/json", textCompletion);
 		});
-		const message = await complete(model(port, "openai"), context(), { apiKey: "local-acceptance", maxRetries: 0 });
+		const message = await complete(model(port, "openai", false), context(), { apiKey: "local-acceptance", maxRetries: 0 });
+		expect(posts()).toBe(1);
+		expect(message.stopReason).not.toBe("stop");
+		expect(message.content.some((block) => block.type === "text" && block.text === "pong")).toBe(false);
+	});
+
+	it("does not translate buffered JSON for llama-cpp unless compat opts in", async () => {
+		const { port, posts } = await listen((_body, respond) => {
+			respond(200, "application/json", textCompletion);
+		});
+		const message = await complete(model(port, "llama-cpp", false), context(), { apiKey: "local-acceptance", maxRetries: 0 });
 		expect(posts()).toBe(1);
 		expect(message.stopReason).not.toBe("stop");
 		expect(message.content.some((block) => block.type === "text" && block.text === "pong")).toBe(false);

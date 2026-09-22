@@ -7,7 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { evaluateCompulsoryPolicy } from "../resources/extensions/gsd/required-policy.ts";
 import { beginPrepareMode, endPrepareMode, isImplementationUnit } from "./prepare-boundary.ts";
-import { probeBackendIdle } from "./idle-probe.ts";
+import { probeManagedIdle } from "./idle-probe.ts";
 import { applyRecovery, getRecovery, issueRecoveryId } from "./recovery.ts";
 import type { CommandAction, CommandRequest, JobRecord, Operation, ResolvedProject, StoredOperation } from "./types.ts";
 import type { JobCatalog } from "./job-catalog.ts";
@@ -220,7 +220,8 @@ export async function productionCommandHandler(context: NativeCommandContext): P
       return { dispatch: false, holdLease: false };
     }
     if (diagnostic.next_state === "recovery_required") {
-      const idle = await probeBackendIdle(context.project.backend_idle_probe);
+      const owner = context.host.store.read(diagnostic.operation_id);
+      const idle = await probeManagedIdle(owner?.backend_binding ?? null);
       if (!idle.idle) {
         const blockedAt = nowIso(context.host.clock);
         stored.operation.state = "recovery_required";

@@ -1,11 +1,19 @@
 // Project/App: gsd-pi
 // File Purpose: Read-only backend idle probe. No trial generation.
 
+import type { BackendBinding } from "./types.ts";
+
 export type IdleProbeResult =
   | { idle: true; source: string }
   | { idle: false; source: string; reason: string };
 
 export type IdleProbeFn = (url: string) => Promise<IdleProbeResult>;
+
+export type SlotCoverage = {
+  expectedSlotIds: number[];
+  expectedSlotCount: number;
+  expectedContextCapacity: number;
+};
 
 let testProbe: IdleProbeFn | null = null;
 
@@ -25,7 +33,7 @@ function slotRecords(parsed: unknown): unknown[] | null {
   return null;
 }
 
-export function parseSlots(body: string): IdleProbeResult {
+export function parseSlots(body: string, coverage?: SlotCoverage | null): IdleProbeResult {
   let parsed: unknown;
   try {
     parsed = JSON.parse(body);
@@ -50,19 +58,51 @@ export function parseSlots(body: string): IdleProbeResult {
   if (flags.some((flag) => flag)) {
     return { idle: false, source: "slots", reason: "A backend slot is still processing" };
   }
+  if (coverage) {
+    const covered = coverageResult(slots, coverage);
+    if (covered) return covered;
+  }
   return { idle: true, source: "slots" };
 }
 
-function parseMetrics(body: string): IdleProbeResult {
-  const busy = /prompt_tokens_processed_total\s+[1-9]/.test(body) && /n_idle_slots\s+0/.test(body);
-  if (/n_idle_slots\s+[1-9]/.test(body) || /idle/.test(body.toLowerCase())) {
-    return { idle: true, source: "metrics" };
+function coverageResult(slots: unknown[], coverage: SlotCoverage): IdleProbeResult | null {
+  if (slots.length !== coverage.expectedSlotCount) {
+    return { idle: false, source: "slots", reason: "Slot coverage does not match the backend binding" };
   }
-  if (busy) return { idle: false, source: "metrics", reason: "Metrics indicate a busy slot" };
-  return { idle: false, source: "metrics", reason: "Could not establish idleness from /metrics" };
+  const seen = new Set<number>();
+  for (const slot of slots) {
+    const record = slot as { id?: unknown; n_ctx?: unknown };
+    if (typeof record.id !== "number" || !Number.isInteger(record.id)) {
+      return { idle: false, source: "slots", reason: "Slot coverage does not match the backend binding" };
+    }
+    if (record.n_ctx !== coverage.expectedContextCapacity) {
+      return { idle: false, source: "slots", reason: "Slot context does not match the backend binding" };
+    }
+    seen.add(record.id);
+  }
+  for (const id of coverage.expectedSlotIds) {
+    if (!seen.has(id)) {
+      return { idle: false, source: "slots", reason: "Slot coverage does not match the backend binding" };
+    }
+  }
+  if (seen.size !== coverage.expectedSlotIds.length) {
+    return { idle: false, source: "slots", reason: "Slot coverage does not match the backend binding" };
+  }
+  return null;
 }
 
-export async function probeBackendIdle(probeUrl: string | null | undefined): Promise<IdleProbeResult> {
+function unboundResult(): IdleProbeResult {
+  return {
+    idle: false,
+    source: "unbound",
+    reason: "Operation has no backend binding; ownership is unknown. Retain recovery_required.",
+  };
+}
+
+export async function probeBackendIdle(
+  probeUrl: string | null | undefined,
+  coverage?: SlotCoverage | null,
+): Promise<IdleProbeResult> {
   if (testProbe) {
     if (!probeUrl) return testProbe("");
     return testProbe(probeUrl);
@@ -75,14 +115,22 @@ export async function probeBackendIdle(probeUrl: string | null | undefined): Pro
     };
   }
   const url = probeUrl.trim();
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return { idle: false, source: "slots", reason: "Managed idle observation accepts /slots only" };
+  }
+  if (!parsed.pathname.endsWith("/slots")) {
+    return { idle: false, source: "slots", reason: "Managed idle observation accepts /slots only" };
+  }
   try {
     const response = await fetch(url, { method: "GET", signal: AbortSignal.timeout(3000) });
     const body = await response.text();
-    if (url.includes("/slots")) return parseSlots(body);
-    if (url.includes("/metrics")) return parseMetrics(body);
-    const slots = parseSlots(body);
-    if (slots.idle || slots.source === "slots") return slots;
-    return parseMetrics(body);
+    if (!response.ok) {
+      return { idle: false, source: "slots", reason: `Idle probe HTTP ${response.status}` };
+    }
+    return parseSlots(body, coverage);
   } catch (error) {
     return {
       idle: false,
@@ -90,4 +138,13 @@ export async function probeBackendIdle(probeUrl: string | null | undefined): Pro
       reason: `Idle probe failed: ${error instanceof Error ? error.message : String(error)}`,
     };
   }
+}
+
+export async function probeManagedIdle(binding: BackendBinding | null | undefined): Promise<IdleProbeResult> {
+  if (!binding) return unboundResult();
+  return probeBackendIdle(binding.slot_probe_url, {
+    expectedSlotIds: binding.expected_slot_ids,
+    expectedSlotCount: binding.expected_slot_count,
+    expectedContextCapacity: binding.expected_context_capacity,
+  });
 }

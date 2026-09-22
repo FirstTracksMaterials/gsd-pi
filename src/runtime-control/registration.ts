@@ -8,8 +8,10 @@ import {
   clearProjectRequiredPolicy,
   configureProjectRequiredPolicy,
 } from "../resources/extensions/gsd/required-policy.ts";
+import { assertSharedBindingDigest, parseBackendBinding } from "./backend-binding.ts";
 import { invalidRequest, runtimeUnavailable } from "./errors.ts";
-import type { ProjectRegistration, RegistrationFile, ResolvedProject } from "./types.ts";
+import type { LeaseAdmissionGate } from "./model-lease.ts";
+import type { BackendBinding, ProjectRegistration, RegistrationFile, ResolvedProject } from "./types.ts";
 import { buildWorkspaceProfile, registerWorkspaceProfile, unregisterWorkspaceProfile } from "./workspace-profile.ts";
 
 export const REGISTRATION_ENV = "GSD_RUNTIME_REGISTRATION";
@@ -62,7 +64,17 @@ function parseProject(raw: unknown): ProjectRegistration {
     required_policy: asString(record.required_policy, "required_policy"),
     provider: typeof record.provider === "string" ? record.provider : null,
     backend_idle_probe: typeof record.backend_idle_probe === "string" ? record.backend_idle_probe : null,
+    backend_binding: parseOptionalBinding(record.backend_binding, record.backend_idle_probe),
   };
+}
+
+function parseOptionalBinding(raw: unknown, probe: unknown): BackendBinding | null {
+  if (raw === undefined || raw === null) return null;
+  const binding = parseBackendBinding(raw);
+  if (typeof probe === "string" && probe.trim() && probe.trim() !== binding.slot_probe_url) {
+    throw invalidRequest("backend_idle_probe does not match the backend binding");
+  }
+  return binding;
 }
 
 function resolveProject(project: ProjectRegistration): ResolvedProject {
@@ -84,8 +96,9 @@ function resolveProject(project: ProjectRegistration): ResolvedProject {
     reference_repositories: references,
     writable_cache_roots: project.writable_cache_roots.map((root) => canonicalRealpath(root)),
     required_policy: project.required_policy,
-    provider: project.provider ?? null,
-    backend_idle_probe: project.backend_idle_probe ?? null,
+    provider: project.backend_binding?.provider ?? project.provider ?? null,
+    backend_idle_probe: project.backend_binding?.slot_probe_url ?? project.backend_idle_probe ?? null,
+    backend_binding: project.backend_binding ?? null,
   };
 }
 
@@ -131,10 +144,10 @@ export class RegistrationRegistry {
   private byRealpath = new Map<string, ResolvedProject>();
   private sourcePath: string | null = null;
   private loadError: string | null = null;
-  private readonly leaseHeld: () => boolean;
+  private readonly leaseGate: () => LeaseAdmissionGate;
 
-  constructor(leaseHeld: () => boolean) {
-    this.leaseHeld = leaseHeld;
+  constructor(leaseGate: () => LeaseAdmissionGate) {
+    this.leaseGate = leaseGate;
   }
 
   get path(): string | null {
@@ -189,9 +202,6 @@ export class RegistrationRegistry {
   }
 
   reload(): void {
-    if (this.leaseHeld()) {
-      throw runtimeUnavailable("Registration reload refused while a model operation is active");
-    }
     if (this.sourcePath && this.sourcePath !== "<memory>" && existsSync(this.sourcePath)) {
       this.loadFromPath(this.sourcePath);
       return;
@@ -203,7 +213,19 @@ export class RegistrationRegistry {
     this.replace([], null, null);
   }
 
+  private assertInstallable(projects: ResolvedProject[]): void {
+    const digest = assertSharedBindingDigest(projects.map((project) => project.backend_binding?.digest ?? null));
+    const gate = this.leaseGate();
+    if (gate.unknown) {
+      throw runtimeUnavailable("Registration load refused while lease ownership is unknown");
+    }
+    if (gate.held && digest !== gate.bindingDigest) {
+      throw runtimeUnavailable("Backend binding change refused while a model operation is held");
+    }
+  }
+
   private replace(projects: ResolvedProject[], sourcePath: string | null, loadError: string | null): void {
+    this.assertInstallable(projects);
     for (const existing of this.projects.values()) {
       clearProjectRequiredPolicy(existing.target_realpath);
       unregisterWorkspaceProfile(existing.target_realpath);

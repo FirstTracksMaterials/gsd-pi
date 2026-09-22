@@ -241,12 +241,34 @@ test("recover releases a recovery_required lease only after an idle probe", asyn
     projects: [{ project_id: "alpha", target: alpha, backend_idle_probe: "http://127.0.0.1/slots" }],
   });
   seedReadyProject(control, "alpha", alpha);
+  const binding = control.registration.getById("alpha")?.backend_binding ?? null;
+  assert.ok(binding);
+  control.store.writeAccepted({
+    operation: {
+      protocol_version: 1,
+      operation_id: "op-held",
+      request_id: uuid(900),
+      job_id: "alpha:M001",
+      action: "start",
+      state: "recovery_required",
+      admitted_at: "2026-09-20T00:00:00Z",
+      updated_at: "2026-09-20T00:00:00Z",
+      result: null,
+      error: null,
+      target_operation_id: null,
+    },
+    fingerprint: "bound-op-held",
+    kind: "job-command",
+    dispatch_intent: false,
+    backend_binding: binding,
+  });
   control.lease.acquire({
     operation_id: "op-held",
     job_id: "alpha:M001",
     action: "start",
     acquired_at: "2026-09-20T00:00:00Z",
     recovery_required: true,
+    backend_binding: binding,
   });
   const blocked = issueRecoveryId({
     operation_id: "op-held",

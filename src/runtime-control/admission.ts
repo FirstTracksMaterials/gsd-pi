@@ -199,10 +199,16 @@ async function admitLocked(
     throw policyUnavailable(policy.reason ?? `Required policy ${project.required_policy} is not ready`);
   }
 
+  if (control.lease.ownershipUnknown()) {
+    throw runtimeUnavailable("Lease file is unreadable; previous ownership is unknown. Do not admit work.");
+  }
   const needsLease = isModelProducing(request.action);
   const currentLease = control.lease.current();
   if (needsLease && currentLease) {
     throw modelBusy("A model-producing operation already owns admission", currentLease.operation_id);
+  }
+  if (needsLease && !project.backend_binding) {
+    throw runtimeUnavailable("Project has no validated backend binding; refusing model-producing admission");
   }
 
   const admittedAt = nowIso(control.clock);
@@ -225,16 +231,18 @@ async function admitLocked(
     fingerprint,
     kind: "job-command",
     dispatch_intent: false,
+    backend_binding: needsLease ? project.backend_binding : null,
   };
 
   control.store.writeAccepted(stored);
-  if (needsLease) {
+  if (needsLease && project.backend_binding) {
     control.lease.acquire({
       operation_id: operationId,
       job_id: decodedJobId,
       action: request.action,
       acquired_at: admittedAt,
       recovery_required: false,
+      backend_binding: project.backend_binding,
     });
   }
 

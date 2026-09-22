@@ -461,8 +461,8 @@ export interface OpenAICompletionsCompat {
 	supportsUsageInStreaming?: boolean;
 	/**
 	 * Accept one already-received application/json chat.completion when the request
-	 * asked for stream:true. Does not issue another generation. Default: only the
-	 * configured llama-cpp provider.
+	 * asked for stream:true. Does not issue another generation. Default: false.
+	 * Enable only with an explicit model.compat opt-in.
 	 */
 	acceptBufferedChatCompletion?: boolean;
 	/** Which field to use for max tokens. Default: auto-detected from URL. */

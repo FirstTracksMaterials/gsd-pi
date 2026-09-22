@@ -5,6 +5,55 @@ Save-point for future agents. This is the GSD fork worktree
 Do not write raid-night, product, or quake-cockpit from a gsd-pi C07
 session unless the prompt names that repo.
 
+## C16-R1 backend binding (2026-09-22)
+
+No source commit. HEAD remains
+`19fee9f3647a08ae5c07a8b07e19076bed28e588`.
+
+`src/runtime-control/backend-binding.ts` seals version 1 and the
+SHA-256 digest. Registration derives `backend_idle_probe` from
+`slot_probe_url`. Model-producing admission copies the binding onto
+`StoredOperation` and the lease. The runtime-v1 `Operation` stays
+protocol 1. A digest change is rejected while a lease is held.
+Unreadable `lease.json` is unknown ownership and blocks admission.
+Managed idle is `/slots` only: HTTP success, boolean `is_processing`,
+and bound slot id, count, and `n_ctx`. Cancel and recover probe the
+stored operation binding. Unbound receipts stay `recovery_required`.
+
+`llama-cpp` no longer implies buffered completions. Explicit
+`model.compat.acceptBufferedChatCompletion` still opts in. The coding
+schema accepts that field. Local `packages/pi-ai` and
+`pi-coding-agent` dists were rebuilt, then `build:web-host` so
+standalone chunk `4246.js` is
+`111219ead425771bbb83d51f6bc804c06f80467613d101d5e4bed0090bd10a04`.
+`dist/web/standalone/server.js` is still
+`e427b981d7845b4d67659f82035f0444e3a70cdb1e5ede7150ad125d5fddd4c8`
+and does not identify this build. Provider dist
+`openai-completions.js` is
+`8685bfc1a35fefac0a5c1eda11739ef37a45c88fcbf3849ba7b5d31a44b7047d`.
+Model registry dist is
+`9b94f039e7374cca0594de39bceccf1ae3f64fee43285127246c23b0177113ab`.
+Chunk `1274.js` is
+`8d10510e68a96d8cfe8c4c8f156b3a635a9d9fbdd59f0f40effaf88b4329a021`.
+
+Focused node tests: 62 passed. Buffered vitest: 8 passed. Do not start
+staging. R2 still reconciles operation
+`3ef0e645-ebca-4f7a-a87f-574676ab766d`.
+
+## C16-R0 containment (2026-09-21)
+
+No source commit. HEAD remains
+`19fee9f3647a08ae5c07a8b07e19076bed28e588`. Untracked
+`packages/pi-coding-agent/src/*.js` and `.d.ts` are emit beside the
+tracked TypeScript. The staging process loaded `src` `.ts` through
+`resolve-ts.mjs`, not those `.js` files. Do not commit them.
+
+The live cancel of `3ef0e645-ebca-4f7a-a87f-574676ab766d` stored
+`succeeded` and released the lease from the `:8082` idle probe while
+both RPC workers were still in the staging cgroup. That is the
+known-wrong probe. R2 reconciles. Do not rebuild or start staging
+from this note.
+
 ## C16 repair (2026-09-21)
 
 Working tree only. No commit. llama-cpp buffered JSON completions are

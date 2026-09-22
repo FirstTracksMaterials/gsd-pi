@@ -11,6 +11,7 @@ import { JobCatalog } from "./job-catalog.ts";
 import { ModelLease } from "./model-lease.ts";
 import { OperationStore } from "./operation-store.ts";
 import { RegistrationRegistry } from "./registration.ts";
+import { runtimeUnavailable } from "./errors.ts";
 import { configureRecoveryStore, issueRecoveryId } from "./recovery.ts";
 import { publishOperationUpdated, publishSnapshotInvalidated } from "./event-hub.ts";
 import type { CrashHook, JobRecord, RegistrationFile } from "./types.ts";
@@ -35,7 +36,10 @@ export class RuntimeControl {
     this.stateRoot = options.stateRoot;
     mkdirSync(join(options.stateRoot, "runtime-control"), { recursive: true });
     this.lease = new ModelLease(options.stateRoot);
-    this.registration = new RegistrationRegistry(() => this.lease.isHeld());
+    this.registration = new RegistrationRegistry(() => this.lease.admissionGate());
+    if (this.lease.ownershipUnknown()) {
+      throw runtimeUnavailable("Lease file is unreadable; previous ownership is unknown");
+    }
     this.jobs = new JobCatalog(options.stateRoot);
     this.store = new OperationStore(options.stateRoot);
     this.clock = options.clock ?? (() => new Date());

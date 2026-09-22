@@ -12,7 +12,7 @@ import {
 import { DEFAULT_KILL_VERIFY_MS, DEFAULT_TERM_GRACE_MS } from "../resources/extensions/gsd/host-check-runner.ts";
 import type { ModelLease } from "./model-lease.ts";
 import type { OperationStore } from "./operation-store.ts";
-import { probeBackendIdle } from "./idle-probe.ts";
+import { probeManagedIdle } from "./idle-probe.ts";
 import { configureRecoveryStore, issueRecoveryId } from "./recovery.ts";
 import type { Operation, ResolvedProject, StoredOperation } from "./types.ts";
 
@@ -128,7 +128,7 @@ export async function executeCancel(input: {
   setAutoCancellationPhase("draining");
   const stateDir = process.env.GSD_STATE_DIR?.trim();
   if (stateDir) configureRecoveryStore(stateDir);
-  const idle = await probeBackendIdle(project.backend_idle_probe);
+  const idle = await probeManagedIdle(target?.backend_binding ?? null);
   if (!cleaned || !idle.idle || providerAbortUncertain) {
     const recovery = issueRecoveryId({
       operation_id: cancelOperation.operation.operation_id,
