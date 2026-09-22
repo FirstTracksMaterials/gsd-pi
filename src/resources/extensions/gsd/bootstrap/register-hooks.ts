@@ -1398,6 +1398,16 @@ export function registerHooks(
 
   pi.on("agent_end", async (event, ctx: ExtensionContext) => {
     approvalQuestionAbortInFlight = false;
+    try {
+      const { publishReviewCompletion, finishReplanSession } = await import("../native-workflow-session.js");
+      const workflowBase = contextBasePath(ctx);
+      const aborted = Boolean((event as { abortOrigin?: unknown; willRetry?: unknown }).abortOrigin)
+        || (event as { willRetry?: unknown }).willRetry === true;
+      publishReviewCompletion(workflowBase, Array.isArray((event as { messages?: unknown }).messages) ? (event as { messages: unknown[] }).messages : [], aborted);
+      finishReplanSession(workflowBase, aborted);
+    } catch {
+      // A missing workflow session is not a review or replan.
+    }
     recordRetryableTurnAbort(event);
     resetToolCallLoopGuard();
     resetPendingGatePauseGuard();

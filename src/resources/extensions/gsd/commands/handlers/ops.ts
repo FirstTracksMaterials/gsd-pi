@@ -17,6 +17,7 @@ import { handleRemote } from "../../../remote-questions/mod.js";
 import { handleShip } from "../../commands-ship.js";
 import { handleSessionReport } from "../../commands-session-report.js";
 import { handlePrBranch } from "../../commands-pr-branch.js";
+import { beginNativeWorkflow, completedTaskIdsInTree } from "../../native-workflow-session.js";
 import { currentDirectoryRoot, projectRoot } from "../context.js";
 import { findUnmergedCompletedMilestones } from "../../unmerged-milestone-guard.js";
 import { runMergeMilestoneBlocker } from "../../closeout-wizard.js";
@@ -262,7 +263,26 @@ Examples:
     return true;
   }
   if (trimmed === "dispatch" || trimmed.startsWith("dispatch ")) {
-    const phase = trimmed.replace(/^dispatch\s*/, "").trim();
+    const raw = trimmed.replace(/^dispatch\s*/, "").trim();
+    const operationId = raw.match(/--operation\s+(\S+)/i)?.[1];
+    const jobId = raw.match(/--job\s+(\S+)/i)?.[1];
+    const revision = Number(raw.match(/--revision\s+(\d+)/i)?.[1]);
+    const phase = raw
+      .replace(/--operation\s+\S+/gi, "")
+      .replace(/--job\s+\S+/gi, "")
+      .replace(/--revision\s+\S+/gi, "")
+      .trim();
+    if (operationId && jobId && Number.isInteger(revision) && phase.toLowerCase().startsWith("replan")) {
+      beginNativeWorkflow(projectRoot(), {
+        kind: "replan",
+        operation_id: operationId,
+        job_id: jobId,
+        milestone_id: (phase.match(/\bM\d+\b/i)?.[0] ?? "M001").toUpperCase(),
+        revision,
+        started_at: new Date().toISOString(),
+        completed_task_ids: completedTaskIdsInTree(projectRoot()),
+      });
+    }
     if (!phase) {
       ctx.ui.notify(
         "Usage: /gsd dispatch <phase>  (research|plan|execute|complete|complete-milestone|validate|reassess|uat|replan)",

@@ -11,6 +11,7 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@gsd/pi-coding-agent
 import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
+import { beginNativeWorkflow } from "./native-workflow-session.js";
 import { loadPrompt } from "./prompt-loader.js";
 import { currentDirectoryRoot, GSDNoProjectError, projectRoot, withCommandCwd } from "./commands/context.js";
 import { getUnmergedMilestoneBlockMessageForBase } from "./unmerged-milestone-guard.js";
@@ -550,8 +551,27 @@ export async function handleCodeReview(args: string, ctx: ExtensionCommandContex
 const REVIEWER_FLAGS = ["--gemini", "--claude", "--codex", "--opencode", "--qwen", "--cursor", "--agy", "--all"];
 
 /** /gsd review [--milestone Mxxx] [--claude] [--codex] ... [--all] */
+function flagValue(args: string, name: string): string | undefined {
+  const match = args.match(new RegExp(`--${name}\\s+(\\S+)`, "i"));
+  return match?.[1];
+}
+
 export async function handleReview(args: string, ctx: ExtensionCommandContext, pi: ExtensionAPI): Promise<void> {
   const milestoneMatch = args.match(/--milestone\s+(\S+)/i);
+  const operationId = flagValue(args, "operation");
+  const jobId = flagValue(args, "job");
+  const revision = Number(flagValue(args, "revision"));
+  if (milestoneMatch && operationId && jobId && Number.isInteger(revision)) {
+    beginNativeWorkflow(currentDirectoryRoot(), {
+      kind: "review",
+      operation_id: operationId,
+      job_id: jobId,
+      milestone_id: milestoneMatch[1],
+      revision,
+      started_at: new Date().toISOString(),
+      completed_task_ids: [],
+    });
+  }
   const target = milestoneMatch ? `Milestone ${milestoneMatch[1]}` : "Active slice (plan + recent execution)";
   const requested = REVIEWER_FLAGS.filter((f) => new RegExp(`(?:^|\\s)${f}(?=\\s|$)`).test(args));
   const reviewers = requested.length ? requested.map((f) => f.slice(2)).join(", ") : "default (single internal reviewer)";

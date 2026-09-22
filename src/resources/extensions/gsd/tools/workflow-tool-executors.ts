@@ -2,6 +2,7 @@
 // File Purpose: Adapts shared GSD workflow handlers for MCP executor calls.
 
 import { ensureDbOpen } from "../bootstrap/dynamic-tools.js";
+import { recordReplanPersistence } from "../native-workflow-session.js";
 import { sanitizeCompleteMilestoneParams } from "../bootstrap/sanitize-complete-milestone.js";
 import { loadWriteGateSnapshot, shouldBlockContextArtifactSaveInSnapshot, shouldBlockRootArtifactSaveInSnapshot } from "../bootstrap/write-gate.js";
 import {
@@ -2585,6 +2586,7 @@ export async function executeReplanSlice(
       isError: true,
       };
     }
+    recordReplanPersistence(basePath, result);
     return {
       content: [{ type: "text", text: `Replanned slice ${result.sliceId} (${result.milestoneId})` }],
       details: {

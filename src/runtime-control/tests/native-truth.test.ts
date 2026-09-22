@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { afterEach, test } from "node:test";
 
 import { admitCommand } from "../admission.ts";
-import { admitAnswer, registerAnswerWorkerLookup, registerPendingQuestion, verdictForAnswerSession } from "../answers.ts";
+import { admitAnswer, answerMatchesOwner, registerAnswerWorkerLookup, registerPendingQuestion, verdictForAnswerSession } from "../answers.ts";
 import { NativeDispatchError, registerNativeAutoDispatchForTest, resetNativeAutoDispatchForTest } from "../native-auto-dispatch.ts";
 import { registerNativeWorkflowOpsForTest, resetNativeWorkflowOpsForTest } from "../native-commands.ts";
 import {
@@ -94,7 +94,7 @@ test("review without a native workflow does not succeed with empty findings", as
   assert.equal(control.store.read(reviewed.ok ? reviewed.operation.operation_id : "")?.operation.result?.findings, undefined);
 });
 
-test("replan surfaces an invalidation error instead of a synthetic success", async () => {
+test("unregistered replan does not succeed from evidence invalidation", async () => {
   const alpha = tempProject("replan-fail");
   mkdirSync(join(alpha, ".gsd"), { recursive: true });
   writeFileSync(join(alpha, ".gsd", "evidence"), "not-a-directory");
@@ -105,7 +105,7 @@ test("replan surfaces an invalidation error instead of a synthetic success", asy
   assert.equal(replanned.ok, true);
   if (replanned.ok) {
     assert.equal(replanned.operation.state, "failed");
-    assert.notEqual(replanned.operation.state, "succeeded");
+    assert.match(replanned.operation.error?.message ?? "", /not registered/);
   }
   assert.equal(control.jobs.require("alpha:M001").revision, before);
 });
@@ -116,15 +116,16 @@ test("review keeps the lease when the workflow started and cleanup is unknown", 
   seedReadyProject(control, "alpha", alpha);
   registerNativeWorkflowOpsForTest({
     publishReviewFindings: async () => {
+      await Promise.resolve();
       throw new NativeDispatchError("native review did not publish findings", true);
     },
   });
   const reviewed = await admitCommand(control, "alpha:M001", command("review", uuid(87)));
   assert.equal(reviewed.ok, true);
-  if (reviewed.ok) {
-    assert.equal(reviewed.operation.state, "recovery_required");
-    assert.notEqual(reviewed.operation.state, "succeeded");
-  }
+  if (reviewed.ok) assert.equal(reviewed.operation.state, "running");
+  await flush();
+  const operationId = reviewed.ok ? reviewed.operation.operation_id : "";
+  assert.equal(control.store.read(operationId)?.operation.state, "recovery_required");
   assert.equal(control.lease.current()?.recovery_required, true);
 });
 
@@ -134,21 +135,44 @@ test("review releases the lease when the workflow refuses before work starts", a
   seedReadyProject(control, "alpha", alpha);
   registerNativeWorkflowOpsForTest({
     publishReviewFindings: async () => {
+      await Promise.resolve();
       throw new NativeDispatchError("native review workflow did not accept the review", false);
     },
   });
   const reviewed = await admitCommand(control, "alpha:M001", command("review", uuid(88)));
   assert.equal(reviewed.ok, true);
-  if (reviewed.ok) assert.equal(reviewed.operation.state, "failed");
+  if (reviewed.ok) assert.equal(reviewed.operation.state, "running");
+  await flush();
+  const operationId = reviewed.ok ? reviewed.operation.operation_id : "";
+  assert.equal(control.store.read(operationId)?.operation.state, "failed");
   assert.equal(control.lease.isHeld(), false);
 });
 
-test("the owning daemon question is accepted and another worker session is not", () => {
-  assert.equal(verdictForAnswerSession("pi-session", "daemon:alpha:M001").ok, true);
-  assert.equal(verdictForAnswerSession("pi-session", "pi-session").ok, true);
-  const rejected = verdictForAnswerSession("pi-session", "other-session");
+test("a daemon prefix alone does not authorise an answer", () => {
+  const question = { question_id: "q-1", job_id: "alpha:M001", session_id: "daemon:other" };
+  const rejected = answerMatchesOwner({
+    question,
+    jobId: "alpha:M001",
+    operationJobId: "alpha:M001",
+    activeQuestionId: "q-1",
+  });
   assert.equal(rejected.ok, false);
-  if (!rejected.ok) assert.match(rejected.reason, /session/);
+  const accepted = answerMatchesOwner({
+    question: { ...question, session_id: "daemon:alpha:M001" },
+    jobId: "alpha:M001",
+    operationJobId: "alpha:M001",
+    activeQuestionId: "q-1",
+  });
+  assert.equal(accepted.ok, true);
+  const otherQuestion = answerMatchesOwner({
+    question: { ...question, question_id: "q-2", session_id: "daemon:alpha:M001" },
+    jobId: "alpha:M001",
+    operationJobId: "alpha:M001",
+    activeQuestionId: "q-1",
+  });
+  assert.equal(otherQuestion.ok, false);
+  const rejectedSession = verdictForAnswerSession("pi-session", "other-session");
+  assert.equal(rejectedSession.ok, false);
 });
 
 test("an answer for another session is rejected while the lease is held", async () => {
@@ -174,5 +198,43 @@ test("an answer for another session is rejected while the lease is held", async 
   });
   assert.equal(answered.ok, false);
   if (!answered.ok) assert.match(answered.body.error.message, /session/);
+  assert.equal(control.lease.isHeld(), true);
+});
+
+test("a daemon prefix from another owner is not an answer for the active question", async () => {
+  const alpha = tempProject("answer-owner");
+  const { control } = createControl({ projects: [{ project_id: "alpha", target: alpha }] });
+  seedReadyProject(control, "alpha", alpha);
+  registerNativeAutoDispatchForTest(async () => undefined);
+  const started = await admitCommand(control, "alpha:M001", startRequest(uuid(89)));
+  assert.equal(started.ok, true);
+  registerPendingQuestion({
+    question_id: "q-1",
+    job_id: "alpha:M001",
+    session_id: "daemon:other-job",
+  });
+  const wrongOwner = await admitAnswer(control, "alpha:M001", {
+    question_id: "q-1",
+    request_id: uuid(90),
+    expected_revision: 1,
+    expected_epoch: 1,
+    response: "yes",
+  });
+  assert.equal(wrongOwner.ok, false);
+  if (!wrongOwner.ok) assert.match(wrongOwner.body.error.message, /owning/);
+  registerPendingQuestion({
+    question_id: "q-2",
+    job_id: "alpha:M001",
+    session_id: "daemon:alpha:M001",
+  });
+  const wrongQuestion = await admitAnswer(control, "alpha:M001", {
+    question_id: "q-2",
+    request_id: uuid(91),
+    expected_revision: 1,
+    expected_epoch: 1,
+    response: "yes",
+  });
+  assert.equal(wrongQuestion.ok, false);
+  if (!wrongQuestion.ok) assert.match(wrongQuestion.body.error.message, /active question/);
   assert.equal(control.lease.isHeld(), true);
 });

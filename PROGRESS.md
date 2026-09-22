@@ -9,7 +9,7 @@ session unless the prompt names that repo.
 
 R4 was not started. Staging was not started. No live generation.
 
-`bindNativeDispatch` registers the production start, review, and replan paths. `defaultStart` no longer swallows a dispatch failure. Review succeeds only when `publishNativeReviewFindings` returns `executed: true`. Replan no longer turns an invalidation error into a synthetic evidence id. `verdictForAnswerSession` accepts a `daemon:` pending question and rejects a different worker session. Runtime chunk `dist/web/standalone/.next/server/chunks/2896.js` SHA-256 `dc365f092c5b0932ad15c5b036d102ae0f383585c6b9c3a7d1b58544c642493c`. Node `src/runtime-control/tests/native-truth.test.ts` passed 8 tests. Commit `2642dfad22c070128e5b4ca80e2c58b43283517f` was not pushed.
+`bindNativeDispatch` still registers `publishNativeReviewFindings` and `replanNativeMilestone`. Review and replan stay `running` with the lease held until that promise settles. The extension session in `native-workflow-session.ts` writes `.gsd/reviews/<milestone>.json` on `agent_end` and `.gsd/runtime/native-replan.json` after `gsd_replan_slice` persists a plan that still contains the snapshotted completed task ids. `answerMatchesOwner` accepts `daemon:<jobId>` only for the active question and the lease owner. Runtime chunk `dist/web/standalone/.next/server/chunks/2896.js` SHA-256 `1d49aa461711b704b84b2c0a71b9b8c0f59bd9ca7103184b89b8458f8694bc17`. Node `native-truth.test.ts` and `c06-native.test.ts`: 27 passed. `admission.test.ts`: 12 passed. The earlier fail-closed commit `2642dfad22c070128e5b4ca80e2c58b43283517f` was not pushed.
 
 ## C16-R2 staging retirement (2026-09-22)
 

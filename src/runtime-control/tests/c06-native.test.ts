@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { afterEach, test } from "node:test";
 
@@ -569,10 +569,15 @@ test("review success is typed findings, not a prompt acknowledgement", async () 
   const { control } = createControl({ projects: [{ project_id: "alpha", target: alpha }] });
   seedReadyProject(control, "alpha", alpha);
   registerNativeWorkflowOpsForTest({
-    publishReviewFindings: async () => ({ findings: [{ id: "n1", summary: "ok" }], productMutated: false, executed: true }),
+    publishReviewFindings: async () => {
+      await new Promise((resolve) => setImmediate(resolve));
+      return { findings: [{ id: "n1", summary: "ok" }], productMutated: false, executed: true };
+    },
   });
   const result = await admitCommand(control, "alpha:M001", commandRequest("review", uuid(53)));
   assert.equal(result.ok, true);
+  if (result.ok) assert.equal(result.operation.state, "running");
+  await new Promise((resolve) => setImmediate(resolve));
   const stored = getOperationByRequest(control, uuid(53));
   assert.equal(stored.ok, true);
   if (stored.ok) {
@@ -583,23 +588,21 @@ test("review success is typed findings, not a prompt acknowledgement", async () 
   }
 });
 
-test("replan preserves completed work and records evidence invalidation", async () => {
+test("replan does not succeed from evidence invalidation alone", async () => {
   const alpha = tempProject("replan");
   mkdirSync(join(alpha, ".gsd", "evidence"), { recursive: true });
   writeFileSync(join(alpha, ".gsd", "evidence", "M001-host.json"), "{}");
   const { control } = createControl({ projects: [{ project_id: "alpha", target: alpha }] });
   seedReadyProject(control, "alpha", alpha);
+  const before = control.jobs.require("alpha:M001").revision;
   const result = await admitCommand(control, "alpha:M001", commandRequest("replan", uuid(54), { reason: "scope-change" }));
   assert.equal(result.ok, true);
-  const stored = getOperationByRequest(control, uuid(54));
-  assert.equal(stored.ok, true);
-  if (stored.ok) {
-    assert.equal(stored.operation.result?.kind, "replan");
-    assert.equal(stored.operation.result?.preserved_completed, true);
-    assert.ok(Array.isArray(stored.operation.result?.evidence_invalidated));
+  if (result.ok) {
+    assert.equal(result.operation.state, "failed");
+    assert.match(result.operation.error?.message ?? "", /not registered/);
   }
-  const stamp = JSON.parse(readFileSync(join(alpha, ".gsd", "runtime", "invalidated-evidence", "M001.json"), "utf-8")) as { deleted: boolean };
-  assert.equal(stamp.deleted, false);
+  assert.equal(control.jobs.require("alpha:M001").revision, before);
+  assert.equal(existsSync(join(alpha, ".gsd", "runtime", "invalidated-evidence", "M001.json")), false);
 });
 
 test("injected bwrap preflight still does not run unrestricted neighbour writes", () => {

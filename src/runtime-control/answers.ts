@@ -18,8 +18,27 @@ export function verdictForAnswerSession(
   activeSessionId: string | null,
   sessionId: string | null,
 ): { ok: true } | { ok: false; reason: string } {
-  if (!activeSessionId || !sessionId || sessionId.startsWith("daemon:")) return { ok: true };
+  if (!activeSessionId || !sessionId) return { ok: true };
   if (activeSessionId !== sessionId) {
+    return { ok: false, reason: "answer session does not match the owning worker" };
+  }
+  return { ok: true };
+}
+
+export function answerMatchesOwner(input: {
+  question: { question_id: string; job_id: string; session_id: string };
+  jobId: string;
+  operationJobId: string | null;
+  activeQuestionId: string | null;
+}): { ok: true } | { ok: false; reason: string } {
+  if (!input.question.session_id.startsWith("daemon:")) return { ok: true };
+  if (input.question.job_id !== input.jobId || input.operationJobId !== input.jobId) {
+    return { ok: false, reason: "answer does not match the owning operation" };
+  }
+  if (!input.activeQuestionId || input.question.question_id !== input.activeQuestionId) {
+    return { ok: false, reason: "answer does not match the active question" };
+  }
+  if (input.question.session_id !== `daemon:${input.jobId}`) {
     return { ok: false, reason: "answer session does not match the owning worker" };
   }
   return { ok: true };
@@ -206,7 +225,14 @@ async function admitAnswerLocked(
   }
 
   const project = host.registration.getById(job.project_id);
-  if (answerWorkerLookup && project) {
+  const owner = answerMatchesOwner({
+    question,
+    jobId: decodedJobId,
+    operationJobId: host.lease.current()?.job_id ?? null,
+    activeQuestionId: getPendingForJob(decodedJobId)?.question_id ?? null,
+  });
+  if (!owner.ok) throw invalidRequest(owner.reason);
+  if (!question.session_id.startsWith("daemon:") && answerWorkerLookup && project) {
     const verdict = answerWorkerLookup(project.target_realpath, question.session_id);
     if (!verdict.ok) {
       throw invalidRequest(verdict.reason ?? "answer does not match the owning worker");
