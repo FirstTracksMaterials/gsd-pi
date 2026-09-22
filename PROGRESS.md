@@ -5,6 +5,10 @@ Save-point for future agents. This is the GSD fork worktree
 Do not write raid-night, product, or quake-cockpit from a gsd-pi C07
 session unless the prompt names that repo.
 
+## C16-R2 staging retirement (2026-09-22)
+
+`src/runtime-control/tests/state-isolation.test.ts` passed. A replacement state root does not read the retired operation ids. Reopening a root that still has the false-success and the running start still refuses admission and does not mark that start succeeded. The live `state/staging` receipts were not rewritten by that test.
+
 ## C16-R2 close-out (2026-09-22)
 
 HEAD before this close-out was `33c08e09fe6453dcb3efe10b9ae2326d63a06a52`. Close-out commit `843f1d97de68675e2cfc27e479256d5d3cc0333c` was not pushed. R3 was not started. Staging was not started.
