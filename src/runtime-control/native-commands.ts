@@ -225,7 +225,11 @@ export async function productionCommandHandler(context: NativeCommandContext): P
       return { dispatch: false, holdLease: true };
     }
     if (diagnostic.next_state === "recovery_required") {
-      if (!owner?.backend_binding) {
+      const target = owner?.operation.target_operation_id
+        ? context.host.store.read(owner.operation.target_operation_id)
+        : undefined;
+      const binding = owner?.backend_binding ?? target?.backend_binding ?? null;
+      if (!binding) {
         const blockedAt = nowIso(context.host.clock);
         stored.operation.state = "recovery_required";
         stored.operation.updated_at = blockedAt;
@@ -250,7 +254,7 @@ export async function productionCommandHandler(context: NativeCommandContext): P
         operationId: owner.operation.operation_id,
         jobId: context.job.job_id,
       });
-      const idle = evidence.cleaned ? await probeIdleWithinTeardown(owner.backend_binding) : null;
+      const idle = evidence.cleaned ? await probeIdleWithinTeardown(binding) : null;
       if (!evidence.cleaned || !idle?.idle) {
         const blockedAt = nowIso(context.host.clock);
         stored.operation.state = "recovery_required";
