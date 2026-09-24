@@ -95,20 +95,6 @@ function bindNativeDispatch(): void {
   registerNativeWorkflowOps({
     publishReviewFindings: publishNativeReviewFindings,
     replanMilestone: replanNativeMilestone,
-    dispatchWouldSelect: async ({ basePath, milestoneId }) => {
-      const { deriveState } = await import("../../../../../src/resources/extensions/gsd/state/derive/index.ts");
-      const { resolveDispatch } = await import("../../../../../src/resources/extensions/gsd/auto-dispatch.ts");
-      const state = await deriveState(basePath);
-      const action = await resolveDispatch({
-        basePath,
-        mid: milestoneId,
-        midTitle: state.activeMilestone?.title ?? milestoneId,
-        state,
-        preview: true,
-      });
-      if (action.action !== "dispatch") return null;
-      return { unitType: action.unitType, unitId: action.unitId };
-    },
   });
   registerCancelNativeOps({
     abortOwnedWorker: (input) => abortOwnedWorker(input.projectCwd, {
