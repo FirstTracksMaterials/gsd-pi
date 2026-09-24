@@ -1,9 +1,15 @@
 # gsd-pi progress
 
+R5 save-point: execute-task claim adopts missing milestone and slice lifecycles before the running Attempt. `task-execution-domain-operation.test.ts` 17 passed. Resume start `22b934a8` has not dispatched. Do not bundle `auto-dispatch` into the Next host.
+
 Save-point for future agents. This is the GSD fork worktree
 (`migration/raidnight-native`) used for RaidNight native migration.
 Do not write raid-night, product, or quake-cockpit from a gsd-pi C07
 session unless the prompt names that repo.
+
+## C16-R5 staging acceptance (2026-09-24)
+
+Execute-task dispatch now adopts the milestone and slice canonical lifecycles that slice completion requires, then claims the running Attempt. Staging was restarted onto the compiled resource. C17 was not started.
 
 ## C16-R4 direct backend qualification (2026-09-23)
 

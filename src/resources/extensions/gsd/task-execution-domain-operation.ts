@@ -10,6 +10,7 @@ import {
 import { getDb } from "./db/engine.js";
 import type { KernelStage } from "./db/kernel-stage-policy.js";
 import {
+  adoptLifecycleIfMissing,
   adoptOrTransitionLifecycle,
   appendKernelCheckpoint,
   claimRunningAttempt,
@@ -185,6 +186,20 @@ function claimAttempt(
     sliceId: input.task.sliceId,
     taskId: input.task.taskId,
     unitId: taskIdentity(input),
+  });
+  // Slice and task completion both require the parent canonical lifecycles.
+  // An imported plan can have legacy rows only; the execute-task claim is the
+  // dispatch that has to establish them before the running Attempt.
+  adoptLifecycleIfMissing(context, {
+    itemKind: "milestone",
+    milestoneId: input.task.milestoneId,
+    lifecycleStatus: "ready",
+  });
+  adoptLifecycleIfMissing(context, {
+    itemKind: "slice",
+    milestoneId: input.task.milestoneId,
+    sliceId: input.task.sliceId,
+    lifecycleStatus: "ready",
   });
   const lifecycle = adoptOrTransitionLifecycle(context, {
     itemKind: "task",

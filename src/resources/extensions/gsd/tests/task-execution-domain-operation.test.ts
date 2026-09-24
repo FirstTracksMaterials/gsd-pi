@@ -284,9 +284,18 @@ test("claimTaskAttempt atomically records lifecycle, Attempt, execute checkpoint
   assert.equal(receipt.status, "committed");
   assert.equal(receipt.attemptNumber, 1);
   assert.equal(receipt.resultingRevision, beforeRevision + 1);
+  assert.deepEqual(rows(`
+    SELECT item_kind, lifecycle_status FROM workflow_item_lifecycles
+    ORDER BY item_kind
+  `), [
+    { item_kind: "milestone", lifecycle_status: "ready" },
+    { item_kind: "slice", lifecycle_status: "ready" },
+    { item_kind: "task", lifecycle_status: "in_progress" },
+  ]);
   assert.deepEqual(row(`
     SELECT lifecycle_status, state_version, last_operation_id, last_project_revision
     FROM workflow_item_lifecycles
+    WHERE item_kind = 'task'
   `), {
     lifecycle_status: "in_progress",
     state_version: 1,
