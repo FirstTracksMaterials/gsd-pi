@@ -16,7 +16,8 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { DISPATCH_RULES, type DispatchContext } from "../auto-dispatch.ts";
-import { closeDatabase, insertMilestone, insertSlice, openDatabase } from "../gsd-db.ts";
+import { closeDatabase, insertMilestone, insertSlice, insertTask, openDatabase } from "../gsd-db.ts";
+import { applyPrepareDispatchBoundary } from "../../../../runtime-control/prepare-boundary.ts";
 import type { GSDState, Phase } from "../types.ts";
 
 const RULE_NAME_TOKEN = "execution-entry phase (no context)";
@@ -96,6 +97,109 @@ describe("#4671 execution-entry phase missing-context recovery", () => {
       const action = await findRule().match(buildCtx(basePath, buildState("executing")));
       assert.strictEqual(action, null, "rule must fall through when CONTEXT.md exists");
     } finally {
+      rmSync(basePath, { recursive: true, force: true });
+    }
+  });
+
+async function firstDispatch(ctx: DispatchContext) {
+  for (const rule of DISPATCH_RULES) {
+    const action = await rule.match(ctx);
+    if (action) return { rule: rule.name, action };
+  }
+  return null;
+}
+
+  test("an imported pending task is the selected unit and prepare stops before it", async () => {
+    const basePath = makeBasePath("follow-plan");
+    try {
+      assert.equal(openDatabase(join(basePath, ".gsd", "gsd.db")), true);
+      insertMilestone({ id: "M001", title: "Test milestone", status: "queued" });
+      insertSlice({ id: "S01", milestoneId: "M001", title: "Imported slice", status: "pending" });
+      insertTask({
+        id: "T01",
+        sliceId: "S01",
+        milestoneId: "M001",
+        title: "Implement the conversion",
+        status: "pending",
+        planning: {
+          description: "Implement the conversion.",
+          estimate: "",
+          files: [],
+          verify: "",
+          inputs: [],
+          expectedOutput: [],
+          requiredWorkflowTools: [],
+          observabilityImpact: "",
+          fullPlanMd: "Implement the conversion.",
+        },
+      });
+      const state = buildState("executing");
+      state.activeSlice = { id: "S01", title: "Imported slice" };
+      state.activeTask = { id: "T01", title: "Implement the conversion" };
+      const selected = await firstDispatch(buildCtx(basePath, state));
+      assert.ok(selected);
+      assert.equal(selected.action.action, "dispatch");
+      if (selected.action.action === "dispatch") {
+        assert.equal(selected.action.unitType, "execute-task");
+        assert.equal(selected.action.unitId, "M001/S01/T01");
+        const boundary = applyPrepareDispatchBoundary(
+          { action: "dispatch", unitType: selected.action.unitType, unitId: selected.action.unitId },
+          { prepareMode: true, milestoneLock: "M001" },
+        );
+        assert.equal(boundary.kind, "prepared");
+      }
+    } finally {
+      closeDatabase();
+      rmSync(basePath, { recursive: true, force: true });
+    }
+  });
+
+  test("a milestone with no plan still selects discuss", async () => {
+    const basePath = makeBasePath("no-plan");
+    try {
+      const selected = await firstDispatch(buildCtx(basePath, buildState("executing")));
+      assert.ok(selected);
+      assert.equal(selected.action.action, "dispatch");
+      if (selected.action.action === "dispatch") {
+        assert.equal(selected.action.unitType, "discuss-milestone");
+        const boundary = applyPrepareDispatchBoundary(
+          { action: "dispatch", unitType: selected.action.unitType, unitId: selected.action.unitId },
+          { prepareMode: true, milestoneLock: "M001" },
+        );
+        assert.equal(boundary.kind, "allow");
+      }
+    } finally {
+      rmSync(basePath, { recursive: true, force: true });
+    }
+  });
+
+  test("phase=executing with a pending imported task and no CONTEXT.md → falls through", async () => {
+    const basePath = makeBasePath("pending-task");
+    try {
+      assert.equal(openDatabase(join(basePath, ".gsd", "gsd.db")), true);
+      insertMilestone({ id: "M001", title: "Test milestone", status: "queued" });
+      insertSlice({ id: "S01", milestoneId: "M001", title: "Imported slice", status: "pending" });
+      insertTask({
+        id: "T01",
+        sliceId: "S01",
+        milestoneId: "M001",
+        title: "Implement the conversion",
+        status: "pending",
+        planning: {
+          description: "Implement the conversion.",
+          estimate: "",
+          files: [],
+          verify: "",
+          inputs: [],
+          expectedOutput: [],
+          requiredWorkflowTools: [],
+          observabilityImpact: "",
+        },
+      });
+      const action = await findRule().match(buildCtx(basePath, buildState("executing")));
+      assert.strictEqual(action, null, "an imported pending task must execute instead of reopening discuss");
+    } finally {
+      closeDatabase();
       rmSync(basePath, { recursive: true, force: true });
     }
   });

@@ -26,6 +26,7 @@ import {
   getPendingGatesForTurn,
   markPendingGatesOmittedForTurn,
   getMilestone,
+  getSliceTasks,
   insertArtifact,
   insertAssessment,
   setSliceSketchFlag,
@@ -917,6 +918,11 @@ export const DISPATCH_RULES: DispatchRule[] = [
       // Align with the plan-v2 gate's lookup semantics: whitespace-only counts
       // as missing, and an auto worktree may fall back to GSD_PROJECT_ROOT.
       if (hasFinalizedMilestoneContext(artifactBasePath, mid)) return null;
+      if (isDbAvailable() && getMilestoneSlices(mid).some((slice) =>
+        getSliceTasks(mid, slice.id).some((task) => task.status === "pending" || task.status === "in_progress")
+      )) {
+        return null;
+      }
       // H6 fix (#4973): non-deep auto-mode has no human to answer the
       // depth-verification question, so pre-marking avoids a write-gate
       // deadlock. Deep planning is still user-driven even inside auto-mode,

@@ -4,6 +4,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync, existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { invalidRequest, requestIdConflict, revisionConflict, RuntimeControlError } from "./errors.ts";
 import { fingerprintImport } from "./fingerprint.ts";
@@ -144,6 +145,26 @@ function readPersistedIdentity(project: ResolvedProject, digest: string): { mile
   return null;
 }
 
+export function importedMilestoneRows(documents: JobImportDocument[]): {
+  status: "queued";
+  sliceId: "S01";
+  sliceStatus: "pending";
+  taskId: "T01";
+  taskStatus: "pending";
+  context: string;
+} | null {
+  const context = documents.map((doc) => doc.content.trim()).filter(Boolean).join("\n\n");
+  if (!context) return null;
+  return {
+    status: "queued",
+    sliceId: "S01",
+    sliceStatus: "pending",
+    taskId: "T01",
+    taskStatus: "pending",
+    context,
+  };
+}
+
 function nativeWriteMilestone(input: {
   project: ResolvedProject;
   milestoneId: string;
@@ -166,18 +187,97 @@ function nativeWriteMilestone(input: {
     title: input.title,
   });
   writeImportDocuments(input.project, input.digest, input.documents);
-  try {
-    // Runtime-v1 JobImport is not GSD markdown Import Application
-    // (applyLegacyImport requires preview/backup/consent). Identity is
-    // insertMilestone plus the durable catalog fingerprint.
-    const gsdDb = require("../resources/extensions/gsd/gsd-db.js") as {
-      insertMilestone?: (row: { id: string; title: string; status: string }) => boolean;
-    };
-    gsdDb.insertMilestone?.({ id: input.milestoneId, title: input.title, status: "queued" });
-  } catch {
-    // Catalog identity is still recorded when the project DB is not open.
-  }
+  persistImportedMilestone(input.project.target_realpath, input.milestoneId, input.title, input.digest, input.documents);
   return { milestoneId: input.milestoneId, revision: 1 };
+}
+
+function persistImportedMilestone(
+  target: string,
+  milestoneId: string,
+  title: string,
+  digest: string,
+  documents: JobImportDocument[],
+): void {
+  const plan = importedMilestoneRows(documents);
+  try {
+    const root = process.env.GSD_WEB_PACKAGE_ROOT?.trim();
+    if (!root) throw new Error("GSD_WEB_PACKAGE_ROOT is unset");
+    const nodeRequire = process.getBuiltinModule("module").createRequire(pathToFileURL(join(root, "package.json")));
+    const workspace = nodeRequire(join(root, "dist/resources/extensions/gsd/db-workspace.js")) as {
+      openWorkflowDatabase?: (basePath: string) => { ok: boolean };
+    };
+    const gsdDb = nodeRequire(join(root, "dist/resources/extensions/gsd/gsd-db.js")) as {
+      insertMilestone?: (row: { id: string; title: string; status: string; planning?: { vision?: string } }) => boolean;
+      insertArtifact?: (row: { path: string; artifact_type: string; milestone_id: string | null; slice_id: string | null; task_id: string | null; full_content: string }) => void;
+      insertSlice?: (row: { id: string; milestoneId: string; title: string; status: string }) => void;
+      insertTask?: (row: {
+        id: string;
+        sliceId: string;
+        milestoneId: string;
+        title: string;
+        status: string;
+        planning: { description: string; estimate: string; files: string[]; verify: string; inputs: string[]; expectedOutput: string[]; requiredWorkflowTools: string[]; observabilityImpact: string; fullPlanMd: string };
+      }) => void;
+    };
+    if (workspace.openWorkflowDatabase?.(target).ok && plan) {
+      const paths = nodeRequire(join(root, "dist/resources/extensions/gsd/paths.js")) as {
+        resolveMilestonePath?: (basePath: string, milestoneId: string) => string | null;
+      };
+      const layout = nodeRequire(join(root, "dist/resources/extensions/gsd/layout-policy.js")) as {
+        canonicalPhaseDirName?: (milestoneId: string, title?: string) => string;
+      };
+      const phaseNum = Number(/^M(\d+)/.exec(milestoneId)?.[1] ?? 0);
+      const contextName = `${String(phaseNum).padStart(2, "0")}-CONTEXT.md`;
+      const phaseDir = paths.resolveMilestonePath?.(target, milestoneId)
+        ?? join(target, ".gsd", "phases", layout.canonicalPhaseDirName?.(milestoneId, title) ?? milestoneId);
+      mkdirSync(phaseDir, { recursive: true });
+      writeFileSync(join(phaseDir, contextName), `${plan.context}\n`, "utf-8");
+    }
+    if (workspace.openWorkflowDatabase?.(target).ok) {
+      gsdDb.insertMilestone?.({
+        id: milestoneId,
+        title,
+        status: plan?.status ?? "queued",
+        planning: plan ? { vision: plan.context } : undefined,
+      });
+      if (plan) {
+        gsdDb.insertArtifact?.({
+          path: `.gsd/imports/${digest}/CONTEXT.md`,
+          artifact_type: "CONTEXT",
+          milestone_id: milestoneId,
+          slice_id: null,
+          task_id: null,
+          full_content: plan.context,
+        });
+        gsdDb.insertSlice?.({
+          id: plan.sliceId,
+          milestoneId,
+          title,
+          status: plan.sliceStatus,
+        });
+        gsdDb.insertTask?.({
+          id: plan.taskId,
+          sliceId: plan.sliceId,
+          milestoneId,
+          title,
+          status: plan.taskStatus,
+          planning: {
+            description: plan.context,
+            estimate: "",
+            files: [],
+            verify: "",
+            inputs: [],
+            expectedOutput: [],
+            requiredWorkflowTools: [],
+            observabilityImpact: "",
+            fullPlanMd: plan.context,
+          },
+        });
+      }
+    }
+  } catch (error) {
+    process.stderr.write(`import milestone plan was not written: ${error instanceof Error ? error.message : String(error)}\n`);
+  }
 }
 
 const ACTIVE_OR_COMPLETED = new Set(["running", "prepared", "completed", "active"]);
@@ -274,6 +374,7 @@ async function admitImportLocked(
     };
     if (existing) host.store.update(stored);
     else host.store.writeAccepted(stored);
+    persistImportedMilestone(project.target_realpath, digestMatch.milestone_id, parsed.title, parsed.import_digest, parsed.documents);
     return { ok: true, status: 202, operation: stored.operation };
   }
 
