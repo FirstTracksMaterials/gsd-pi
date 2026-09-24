@@ -7,7 +7,7 @@ session unless the prompt names that repo.
 
 ## C16-R4 direct backend qualification (2026-09-23)
 
-R5 was not started. The packaged worker still loads source `packages/gsd-agent-modes/src/modes/rpc/rpc-mode.ts` through `resolve-ts.mjs`. That file now drains both the compiled host-check runner and the source runner, and it starts the contract validator only when `GSD_R4_CONTRACT_VALIDATOR=1`. SHA-256 `45296b66bd7d9267d46dd6544cfda9f462717d56669b992d065f8c8147e81acc`. Standalone `server.js` and chunk `2896.js` were not rebuilt; their hashes match the R3 report. Live results are in `raid-night/docs/migration/reports/C16-R4.md`.
+R5 was not started. The packaged worker still loads source `packages/gsd-agent-modes/src/modes/rpc/rpc-mode.ts` through `resolve-ts.mjs`. That file now drains both the compiled host-check runner and the source runner, and it starts the contract validator only when `GSD_R4_CONTRACT_VALIDATOR=1`. SHA-256 `45296b66bd7d9267d46dd6544cfda9f462717d56669b992d065f8c8147e81acc`. Standalone `server.js` and chunk `2896.js` were not rebuilt; their hashes match the R3 report. Live results are in `raid-night/docs/migration/reports/C16-R4.md`. This drain commit is `80bee99d`, not pushed.
 
 ## C16-R3 native control truth (2026-09-22)
 
