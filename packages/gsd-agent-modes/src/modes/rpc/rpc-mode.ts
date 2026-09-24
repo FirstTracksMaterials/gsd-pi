@@ -12,6 +12,7 @@
  */
 
 import * as crypto from "node:crypto";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { AgentSession } from "@gsd/agent-core";
@@ -50,6 +51,28 @@ const HOLD_VALIDATOR_SCRIPT = [
 ].join("");
 
 let holdValidatorStarted = false;
+let contractValidatorStarted = false;
+
+async function maybeRunContractValidator(cwd: string): Promise<void> {
+	if (process.env.GSD_R4_CONTRACT_VALIDATOR !== "1" || contractValidatorStarted) return;
+	contractValidatorStarted = true;
+	const root = process.env.GSD_WEB_PACKAGE_ROOT?.trim();
+	if (!root) return;
+	const distPolicy = join(root, "dist/resources/extensions/gsd/required-policy.js");
+	const srcPolicy = join(root, "src/resources/extensions/gsd/required-policy.ts");
+	const policyPath = existsSync(distPolicy) ? distPolicy : srcPolicy;
+	const loaded = await import(pathToFileURL(policyPath).href) as {
+		evaluateCompulsoryPolicy: (basePath: string, options: { phase: "task" }) => Promise<{ kind?: string; result?: { verdict?: string } }>;
+	};
+	process.stderr.write("r4-contract-validator start\n");
+	try {
+		const result = await loaded.evaluateCompulsoryPolicy(cwd, { phase: "task" });
+		const verdict = result && typeof result === "object" && "result" in result ? result.result?.verdict : undefined;
+		process.stderr.write(`r4-contract-validator done kind=${result?.kind ?? "unknown"} verdict=${verdict ?? "none"}\n`);
+	} catch (error) {
+		process.stderr.write(`r4-contract-validator failed ${error instanceof Error ? error.message : String(error)}\n`);
+	}
+}
 
 async function maybeHoldValidator(cwd: string): Promise<void> {
 	if (process.env.GSD_TEST_HOLD_VALIDATOR !== "1" || holdValidatorStarted) return;
@@ -87,16 +110,35 @@ async function stopOwnedAuto(): Promise<void> {
 	await loaded.stopAuto(undefined, undefined, "runtime-v1 cancel");
 }
 
-async function drainOwnedTools(): Promise<boolean> {
+function hostCheckRunnerSpecifiers(): string[] {
 	const root = process.env.GSD_WEB_PACKAGE_ROOT?.trim();
-	const specifier = root
-		? pathToFileURL(join(root, "src/resources/extensions/gsd/host-check-runner.ts")).href
-		: new URL("../../../../../src/resources/extensions/gsd/host-check-runner.ts", import.meta.url).href;
-	const loaded = await import(specifier) as {
-		drainOwnedHostChecks: () => Promise<{ drained: boolean }>;
-	};
-	const drained = await loaded.drainOwnedHostChecks();
-	return drained.drained === true;
+	if (!root) {
+		return [new URL("../../../../../src/resources/extensions/gsd/host-check-runner.ts", import.meta.url).href];
+	}
+	const specifiers: string[] = [];
+	const distRunner = join(root, "dist/resources/extensions/gsd/host-check-runner.js");
+	const srcRunner = join(root, "src/resources/extensions/gsd/host-check-runner.ts");
+	if (existsSync(distRunner)) specifiers.push(pathToFileURL(distRunner).href);
+	if (existsSync(srcRunner)) specifiers.push(pathToFileURL(srcRunner).href);
+	return specifiers;
+}
+
+async function drainOwnedTools(): Promise<boolean> {
+	const specifiers = hostCheckRunnerSpecifiers();
+	if (specifiers.length === 0) return false;
+	let drained = true;
+	for (const specifier of specifiers) {
+		try {
+			const loaded = await import(specifier) as {
+				drainOwnedHostChecks: () => Promise<{ drained: boolean }>;
+			};
+			const result = await loaded.drainOwnedHostChecks();
+			if (result.drained !== true) drained = false;
+		} catch {
+			drained = false;
+		}
+	}
+	return drained;
 }
 
 // Re-export types for consumers
@@ -628,11 +670,14 @@ export async function runRpcMode(session: AgentSession): Promise<never> {
 			// =================================================================
 
 			case "prompt": {
+				let validatorCwd = process.cwd();
 				try {
-					void maybeHoldValidator(session.sessionManager.getCwd());
+					validatorCwd = session.sessionManager.getCwd();
 				} catch {
-					void maybeHoldValidator(process.cwd());
+					validatorCwd = process.cwd();
 				}
+				void maybeHoldValidator(validatorCwd);
+				void maybeRunContractValidator(validatorCwd);
 				// v2: generate runId for execution tracking
 				const runId = protocolVersion === 2 ? crypto.randomUUID() : undefined;
 				if (runId) currentRunId = runId;
