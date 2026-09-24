@@ -229,13 +229,15 @@ export async function runDispatch(
     dispatchMid = pendingRetryDispatch.mid ?? mid;
     dispatchMidTitle = pendingRetryDispatch.midTitle ?? midTitle;
     s.pendingVerificationRetryDispatch = null;
-    const retryBoundary = applyManagedPrepareBoundary(
+    const retryBounded = applyPrepareDispatchBoundary(
       { action: "dispatch", unitType, unitId },
-      s.basePath,
-      s.sessionMilestoneLock,
+      { prepareMode: isPrepareMode(s.basePath), milestoneLock: s.sessionMilestoneLock },
     );
-    if (retryBoundary.action === "stop") {
-      await closeoutAndStop(ctx, pi, s, deps, retryBoundary.reason);
+    if (retryBounded.kind === "prepared" || retryBounded.kind === "refuse") {
+      if (retryBounded.kind === "prepared" && retryBounded.unitType) {
+        recordPrepareBoundaryStop(s.basePath, retryBounded.unitType, retryBounded.unitId);
+      }
+      await closeoutAndStop(ctx, pi, s, deps, retryBounded.reason ?? "Prepare stopped before implementation");
       return { action: "break", reason: "dispatch-stop" };
     }
     debugLog("autoLoop", {
