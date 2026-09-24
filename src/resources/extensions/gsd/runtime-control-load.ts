@@ -67,6 +67,7 @@ type WorkspaceProfileModule = {
 
 type PrepareBoundaryModule = {
   isPrepareMode: (basePath: string) => boolean;
+  recordPrepareBoundaryStop: (basePath: string, unitType: string, unitId?: string) => void;
   applyPrepareDispatchBoundary: (
     dispatch: { action: string; unitType?: string; unitId?: string },
     options: { prepareMode: boolean; milestoneLock?: string | null },
@@ -106,6 +107,10 @@ export function rejectOutOfContractTargetChanges(
 
 export function isPrepareMode(basePath: string): boolean {
   return prepareBoundary().isPrepareMode(basePath);
+}
+
+export function recordPrepareBoundaryStop(basePath: string, unitType: string, unitId?: string): void {
+  prepareBoundary().recordPrepareBoundaryStop(basePath, unitType, unitId);
 }
 
 export function applyPrepareDispatchBoundary(

@@ -15,7 +15,7 @@ import { registerIdleProbeForTest } from "../idle-probe.ts";
 import { admitImport } from "../import-jobs.ts";
 import { getLastMilestoneLock, registerNativeWorkflowOpsForTest } from "../native-commands.ts";
 import { registerNativeAutoDispatchForTest } from "../native-auto-dispatch.ts";
-import { applyPrepareDispatchBoundary, beginPrepareMode, endPrepareMode } from "../prepare-boundary.ts";
+import { applyPrepareDispatchBoundary, beginPrepareMode, endPrepareMode, isPrepareMode, resetPrepareModeForTest } from "../prepare-boundary.ts";
 import { issueRecoveryId } from "../recovery.ts";
 import {
   assertTrustedGitRepo,
@@ -103,6 +103,25 @@ test("AT-C05 prepare mode auto dispatch stops before implementation", () => {
   );
   assert.equal(research.kind, "allow");
   endPrepareMode("/tmp/prepare-mode");
+});
+
+test("prepare mode on disk stops execute-task and still allows discussion", () => {
+  const base = tempProject("prepare-disk");
+  beginPrepareMode(base, { jobId: "alpha:M001", milestoneId: "M001", operationId: "op-disk" });
+  resetPrepareModeForTest();
+  assert.equal(isPrepareMode(base), true);
+  const stopped = applyPrepareDispatchBoundary(
+    { action: "dispatch", unitType: "execute-task", unitId: "M001/S01/T01" },
+    { prepareMode: isPrepareMode(base), milestoneLock: "M001" },
+  );
+  assert.equal(stopped.kind, "prepared");
+  const planning = applyPrepareDispatchBoundary(
+    { action: "dispatch", unitType: "discuss-milestone", unitId: "M001" },
+    { prepareMode: isPrepareMode(base), milestoneLock: "M001" },
+  );
+  assert.equal(planning.kind, "allow");
+  endPrepareMode(base);
+  assert.equal(isPrepareMode(base), false);
 });
 
 test("AT-C06 start and resume set milestoneLock and dispatch-guard rejects another milestone", async () => {

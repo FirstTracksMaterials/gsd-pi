@@ -4,6 +4,7 @@
 import { randomUUID } from "node:crypto";
 
 import { getCommandHandler } from "./command-handlers.ts";
+import { settlePrepareBoundary } from "./native-commands.ts";
 import {
   invalidRequest,
   modelBusy,
@@ -209,6 +210,7 @@ async function admitLocked(
     throw revisionConflict("expected_revision does not match the current job revision");
   }
 
+  settlePrepareBoundary(control, project.target_realpath);
   if (control.lease.ownershipUnknown()) {
     throw runtimeUnavailable("Lease file is unreadable; previous ownership is unknown. Do not admit work.");
   }

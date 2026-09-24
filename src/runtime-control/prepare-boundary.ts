@@ -1,6 +1,9 @@
 // Project/App: gsd-pi
 // File Purpose: Prepare dispatch policy. Research/plan only; stop before implementation.
 
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
 export const PREPARE_ALLOWED_UNIT_TYPES = new Set([
   "research-project",
   "research-milestone",
@@ -38,20 +41,77 @@ export type PrepareBoundaryResult =
 
 const activePrepare = new Map<string, { jobId: string; milestoneId: string; operationId: string }>();
 
+function prepareMarkerPath(basePath: string): string {
+  return join(basePath, ".gsd", "runtime", "prepare-mode.json");
+}
+
+function readPrepareMarker(basePath: string): { jobId: string; milestoneId: string; operationId: string } | undefined {
+  try {
+    const parsed = JSON.parse(readFileSync(prepareMarkerPath(basePath), "utf-8")) as {
+      jobId?: string;
+      milestoneId?: string;
+      operationId?: string;
+    };
+    if (!parsed.jobId || !parsed.milestoneId || !parsed.operationId) return undefined;
+    return { jobId: parsed.jobId, milestoneId: parsed.milestoneId, operationId: parsed.operationId };
+  } catch {
+    return undefined;
+  }
+}
+
 export function beginPrepareMode(basePath: string, record: { jobId: string; milestoneId: string; operationId: string }): void {
-  activePrepare.set(canonicalKey(basePath), record);
+  const key = canonicalKey(basePath);
+  activePrepare.set(key, record);
+  const marker = prepareMarkerPath(key);
+  mkdirSync(join(key, ".gsd", "runtime"), { recursive: true });
+  writeFileSync(marker, JSON.stringify(record) + "\n", "utf-8");
 }
 
 export function endPrepareMode(basePath: string): void {
-  activePrepare.delete(canonicalKey(basePath));
+  const key = canonicalKey(basePath);
+  activePrepare.delete(key);
+  rmSync(prepareMarkerPath(key), { force: true });
+  rmSync(join(key, ".gsd", "runtime", "prepare-boundary.json"), { force: true });
 }
 
 export function isPrepareMode(basePath: string): boolean {
-  return activePrepare.has(canonicalKey(basePath));
+  const key = canonicalKey(basePath);
+  if (activePrepare.has(key)) return true;
+  const marker = readPrepareMarker(key);
+  if (!marker) return false;
+  activePrepare.set(key, marker);
+  return true;
+}
+
+export function recordPrepareBoundaryStop(basePath: string, unitType: string, unitId?: string): void {
+  const key = canonicalKey(basePath);
+  const record = activePrepare.get(key) ?? readPrepareMarker(key);
+  if (!record) return;
+  mkdirSync(join(key, ".gsd", "runtime"), { recursive: true });
+  writeFileSync(join(key, ".gsd", "runtime", "prepare-boundary.json"), JSON.stringify({
+    ...record,
+    unitType,
+    unitId: unitId ?? null,
+  }) + "\n", "utf-8");
+}
+
+export function readPrepareBoundaryStop(basePath: string): { operationId: string; unitType: string; unitId?: string } | undefined {
+  try {
+    const parsed = JSON.parse(readFileSync(join(canonicalKey(basePath), ".gsd", "runtime", "prepare-boundary.json"), "utf-8")) as {
+      operationId?: string;
+      unitType?: string;
+      unitId?: string | null;
+    };
+    if (!parsed.operationId || !parsed.unitType) return undefined;
+    return { operationId: parsed.operationId, unitType: parsed.unitType, unitId: parsed.unitId ?? undefined };
+  } catch {
+    return undefined;
+  }
 }
 
 export function getPrepareMode(basePath: string): { jobId: string; milestoneId: string; operationId: string } | undefined {
-  return activePrepare.get(canonicalKey(basePath));
+  const key = canonicalKey(basePath);
+  return activePrepare.get(key) ?? readPrepareMarker(key);
 }
 
 export function isPrepareAllowedUnit(unitType: string): boolean {

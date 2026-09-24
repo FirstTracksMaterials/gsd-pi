@@ -24,7 +24,7 @@ import {
 import type { PendingVerificationRetry } from "./session.js";
 import type { IterationContext, IterationData, LoopState, PhaseResult, PreDispatchData } from "./types.js";
 import { shouldRefuseNewWork } from "../auto-cancellation.js";
-import { applyPrepareDispatchBoundary, isPrepareMode } from "../runtime-control-load.js";
+import { applyPrepareDispatchBoundary, isPrepareMode, recordPrepareBoundaryStop } from "../runtime-control-load.js";
 
 export function getAlreadyClosedDispatchReason(unitType: string, unitId: string): string | null {
   if (!isDbAvailable()) return null;
@@ -76,6 +76,7 @@ function applyManagedPrepareBoundary(
     milestoneLock,
   });
   if (bounded.kind === "prepared") {
+    if (bounded.unitType) recordPrepareBoundaryStop(basePath, bounded.unitType, bounded.unitId);
     return {
       action: "stop",
       reason: bounded.reason ?? "Prepare reached the implementation boundary",
@@ -228,6 +229,15 @@ export async function runDispatch(
     dispatchMid = pendingRetryDispatch.mid ?? mid;
     dispatchMidTitle = pendingRetryDispatch.midTitle ?? midTitle;
     s.pendingVerificationRetryDispatch = null;
+    const retryBoundary = applyManagedPrepareBoundary(
+      { action: "dispatch", unitType, unitId },
+      s.basePath,
+      s.sessionMilestoneLock,
+    );
+    if (retryBoundary.action === "stop") {
+      await closeoutAndStop(ctx, pi, s, deps, retryBoundary.reason);
+      return { action: "break", reason: "dispatch-stop" };
+    }
     debugLog("autoLoop", {
       phase: "dispatch-pending-verification-retry",
       unitType,

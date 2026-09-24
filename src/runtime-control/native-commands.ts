@@ -2,7 +2,7 @@
 // File Purpose: Typed runtime-v1 command adapters over existing GSD domain functions.
 
 import { evaluateCompulsoryPolicy } from "../resources/extensions/gsd/required-policy.ts";
-import { beginPrepareMode, endPrepareMode, isImplementationUnit } from "./prepare-boundary.ts";
+import { beginPrepareMode, endPrepareMode, isImplementationUnit, readPrepareBoundaryStop } from "./prepare-boundary.ts";
 import { acknowledgeOwnedWorker, executeCancel, probeIdleWithinTeardown } from "./cancel.ts";
 import { applyRecovery, getRecovery, issueRecoveryId } from "./recovery.ts";
 import type { CommandAction, CommandRequest, JobRecord, Operation, ResolvedProject, StoredOperation } from "./types.ts";
@@ -153,6 +153,32 @@ function observeDispatch(host: CommandHost, operationId: string, dispatch: Promi
   void dispatch.catch((error) => {
     settleNativeDispatchFailure(host, operationId, error);
   });
+}
+
+export function settlePrepareBoundary(host: CommandHost, basePath: string): boolean {
+  const stop = readPrepareBoundaryStop(basePath);
+  if (!stop) return false;
+  const stored = host.store.read(stop.operationId);
+  if (!stored || stored.operation.action !== "prepare") return false;
+  if (stored.operation.state === "succeeded" && stored.operation.result?.boundary === "prepared") {
+    endPrepareMode(basePath);
+    return true;
+  }
+  if (stored.operation.state !== "running") return false;
+  stored.operation.state = "succeeded";
+  stored.operation.updated_at = nowIso(host.clock);
+  stored.operation.result = {
+    kind: "prepare",
+    boundary: "prepared",
+    stopped_before: stop.unitType,
+    unit_id: stop.unitId ?? null,
+    implementation: false,
+  };
+  host.store.update(stored);
+  const held = host.lease.current();
+  if (held?.operation_id === stop.operationId) host.lease.release(stop.operationId);
+  endPrepareMode(basePath);
+  return true;
 }
 
 function reconcileIdleRecovery(

@@ -187,18 +187,34 @@ function nativeWriteMilestone(input: {
     title: input.title,
   });
   writeImportDocuments(input.project, input.digest, input.documents);
-  persistImportedMilestone(input.project.target_realpath, input.milestoneId, input.title, input.digest, input.documents);
+  persistImportedMilestone(input.project, input.milestoneId, input.title, input.digest, input.documents);
   return { milestoneId: input.milestoneId, revision: 1 };
 }
 
+function referenceReadNote(project: ResolvedProject): string {
+  const paths = project.reference_repositories.map((ref) => join(ref.realpath, "units.md"));
+  if (paths.length === 0) return "";
+  return [
+    "",
+    "Registered read-only reference. Read this file with the read tool before choosing a conversion factor. Do not write it.",
+    ...paths.map((path) => `- ${path}`),
+    "",
+  ].join("\n");
+}
+
 function persistImportedMilestone(
-  target: string,
+  project: ResolvedProject,
   milestoneId: string,
   title: string,
   digest: string,
   documents: JobImportDocument[],
 ): void {
+  const target = project.target_realpath;
   const plan = importedMilestoneRows(documents);
+  if (plan) {
+    const note = referenceReadNote(project);
+    if (note) plan.context = `${plan.context.trim()}\n${note}`;
+  }
   try {
     const root = process.env.GSD_WEB_PACKAGE_ROOT?.trim();
     if (!root) throw new Error("GSD_WEB_PACKAGE_ROOT is unset");

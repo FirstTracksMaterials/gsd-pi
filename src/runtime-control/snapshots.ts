@@ -26,6 +26,7 @@ import type {
   SnapshotReference,
   StoredOperation,
 } from "./types.ts";
+import { settlePrepareBoundary } from "./native-commands.ts";
 import { getWorkspacePhase } from "./workspace-profile.ts";
 
 export type NativeObservationInput = {
@@ -269,6 +270,7 @@ export async function buildJobSnapshot(control: RuntimeControl, jobId: string): 
   if (!job) throw unknownJob(`Unknown job ${decoded}`);
   const project = control.registration.getById(job.project_id);
   if (!project) throw invalidRequest(`Unknown project ${job.project_id}`);
+  settlePrepareBoundary(control, project.target_realpath);
   const native = await readNative(project.target_realpath);
   const observation = getObservation(job.job_id);
   if (native) {
