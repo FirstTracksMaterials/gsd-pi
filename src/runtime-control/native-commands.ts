@@ -249,11 +249,27 @@ export async function productionCommandHandler(context: NativeCommandContext): P
         context.host.store.update(stored);
         return { dispatch: false, holdLease: true };
       }
-      const evidence = await acknowledgeOwnedWorker({
+      let evidence = await acknowledgeOwnedWorker({
         projectCwd: context.project.target_realpath,
         operationId: owner.operation.operation_id,
         jobId: context.job.job_id,
       });
+      const prior = owner.operation.result;
+      if (
+        !evidence.cleaned
+        && (evidence.reason ?? "").includes("missing worker")
+        && prior?.dispatch_quiesced === true
+        && prior.request_closed === true
+        && prior.tools_drained === true
+      ) {
+        evidence = {
+          ...evidence,
+          cleaned: true,
+          dispatch_quiesced: true,
+          request_closed: true,
+          tools_drained: true,
+        };
+      }
       const idle = evidence.cleaned ? await probeIdleWithinTeardown(binding) : null;
       if (!evidence.cleaned || !idle?.idle) {
         const blockedAt = nowIso(context.host.clock);
