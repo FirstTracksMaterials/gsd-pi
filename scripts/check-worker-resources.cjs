@@ -17,6 +17,12 @@ const pairs = [
     needle: "recordPrepareBoundaryStop",
     missing: "RPC worker auto/dispatch.js is missing the prepare-boundary stop present in source.",
   },
+  {
+    source: "src/runtime-control/prepare-boundary.ts",
+    loaded: "dist/runtime-control/prepare-boundary.js",
+    needle: "prepare-mode.json",
+    missing: "RPC worker prepare-boundary.js is missing the on-disk prepare marker present in source.",
+  },
 ];
 
 function sha256(path) {
