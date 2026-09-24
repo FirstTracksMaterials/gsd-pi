@@ -28,6 +28,7 @@ import {
 } from "../state-reconciliation.js";
 import { isLegalEdge, IllegalPhaseTransitionError } from "../state-transition-matrix.js";
 import { hasPendingDeepStage, resolveDispatch } from "../auto-dispatch.js";
+import { applyPrepareDispatchBoundary, isPrepareMode, recordPrepareBoundaryStop } from "../runtime-control-load.js";
 import { classifyFailure } from "../recovery-classification.js";
 import { compileUnitToolContract } from "../tool-contract.js";
 import { createWorktreeSafetyModule } from "../worktree-safety.js";
@@ -1385,6 +1386,32 @@ export class AutoOrchestrator implements AutoOrchestrationModule {
         this.journalTransition({ name: "advance-blocked", reason: blocked.reason });
         this.postAdvanceRecord(blocked);
         return this.withLivenessInput(blocked, { guardId: decision.guardId });
+      }
+
+      const prepareBase = [this.getLiveDispatchBasePath(), this.s.basePath, this.s.originalBasePath]
+        .find((path): path is string => Boolean(path) && isPrepareMode(path));
+      if (prepareBase) {
+        const bounded = applyPrepareDispatchBoundary(
+          { action: "dispatch", unitType: decision.unitType, unitId: decision.unitId },
+          { prepareMode: true, milestoneLock: this.s.sessionMilestoneLock },
+        );
+        if (bounded.kind === "prepared" || bounded.kind === "refuse") {
+          if (bounded.kind === "prepared" && bounded.unitType) {
+            recordPrepareBoundaryStop(prepareBase, bounded.unitType, bounded.unitId);
+          }
+          const stopped: AutoAdvanceResult = {
+            kind: "stopped",
+            reason: bounded.reason ?? "Prepare stopped before implementation",
+            stateSnapshot: reconciliation.stateSnapshot,
+          };
+          this.status.phase = "stopped";
+          this.status.activeUnit = undefined;
+          this.discardActiveUnitRun(stopped.reason);
+          this.bumpTransition();
+          this.journalTransition({ name: "advance-stopped", reason: stopped.reason, unitType: decision.unitType, unitId: decision.unitId });
+          this.postAdvanceRecord(stopped);
+          return stopped;
+        }
       }
 
       const priorSliceBlocker = this.findPriorSliceCompletionBlocker(decision.unitType, decision.unitId);

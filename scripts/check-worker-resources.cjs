@@ -12,6 +12,12 @@ const pairs = [
     missing: "RPC worker auto-dispatch.js is missing the pending-task guard present in source.",
   },
   {
+    source: "src/resources/extensions/gsd/auto/orchestrator.ts",
+    loaded: "dist/resources/extensions/gsd/auto/orchestrator.js",
+    needle: "recordPrepareBoundaryStop",
+    missing: "RPC worker auto/orchestrator.js is missing the prepare-boundary stop present in source.",
+  },
+  {
     source: "src/resources/extensions/gsd/auto/dispatch.ts",
     loaded: "dist/resources/extensions/gsd/auto/dispatch.js",
     needle: "recordPrepareBoundaryStop",
