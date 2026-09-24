@@ -76,9 +76,11 @@ export function endPrepareMode(basePath: string): void {
 
 export function isPrepareMode(basePath: string): boolean {
   const key = canonicalKey(basePath);
-  if (activePrepare.has(key)) return true;
   const marker = readPrepareMarker(key);
-  if (!marker) return false;
+  if (!marker) {
+    activePrepare.delete(key);
+    return false;
+  }
   activePrepare.set(key, marker);
   return true;
 }
