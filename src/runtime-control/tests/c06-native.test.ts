@@ -339,6 +339,76 @@ test("recover releases a recovery_required lease only after an idle probe", asyn
   }
 });
 
+test("recover releases when the stalled start never created a worker and the slot is idle", async () => {
+  const alpha = tempProject("recover-no-worker");
+  const { control } = createControl({
+    projects: [{ project_id: "alpha", target: alpha, backend_idle_probe: "http://127.0.0.1/slots" }],
+  });
+  seedReadyProject(control, "alpha", alpha);
+  const binding = control.registration.getById("alpha")?.backend_binding ?? null;
+  assert.ok(binding);
+  control.store.writeAccepted({
+    operation: {
+      protocol_version: 1,
+      operation_id: "op-stalled",
+      request_id: uuid(901),
+      job_id: "alpha:M001",
+      action: "start",
+      state: "recovery_required",
+      admitted_at: "2026-09-24T20:52:46Z",
+      updated_at: "2026-09-24T20:52:47Z",
+      result: { kind: "start", milestoneLock: "M001", scoped: true },
+      error: null,
+      target_operation_id: null,
+    },
+    fingerprint: "bound-op-stalled",
+    kind: "job-command",
+    dispatch_intent: true,
+    backend_binding: binding,
+  });
+  control.lease.acquire({
+    operation_id: "op-stalled",
+    job_id: "alpha:M001",
+    action: "start",
+    acquired_at: "2026-09-24T20:52:46Z",
+    recovery_required: true,
+    backend_binding: binding,
+  });
+  const recovery = issueRecoveryId({
+    operation_id: "op-stalled",
+    job_id: "alpha:M001",
+    reason: "missing worker; abort did not create one",
+    issued_at: "2026-09-25T02:45:58Z",
+    next_state: "recovery_required",
+  });
+  registerCancelNativeOpsForTest({
+    abortOwnedWorker: async () => ({
+      cleaned: false,
+      dispatch_quiesced: false,
+      request_closed: false,
+      tools_drained: false,
+      operation_id: null,
+      job_id: null,
+      session_id: null,
+      worker_generation: null,
+      reason: "missing worker; abort did not create one",
+    }),
+  });
+  registerIdleProbeForTest(async () => ({ idle: false, source: "slots", reason: "A backend slot is still processing" }));
+  const busy = await admitCommand(control, "alpha:M001", commandRequest("recover", uuid(249), {
+    recovery_id: recovery.recovery_id,
+  }));
+  assert.equal(busy.ok, true);
+  assert.equal(control.lease.isHeld(), true);
+
+  registerIdleProbeForTest(async () => ({ idle: true, source: "slots" }));
+  const released = await admitCommand(control, "alpha:M001", commandRequest("recover", uuid(250), {
+    recovery_id: recovery.recovery_id,
+  }));
+  assert.equal(released.ok, true);
+  assert.equal(control.lease.isHeld(), false);
+});
+
 test("AT-C07 recover applies an issued recovery_id and never invents a shell replay", async () => {
   const alpha = tempProject("recover");
   const { control } = createControl({ projects: [{ project_id: "alpha", target: alpha }] });

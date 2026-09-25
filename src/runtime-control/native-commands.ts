@@ -296,6 +296,23 @@ export async function productionCommandHandler(context: NativeCommandContext): P
           tools_drained: true,
         };
       }
+      if (
+        !evidence.cleaned
+        && (evidence.reason ?? "").includes("abort did not create one")
+        && evidence.worker_generation == null
+      ) {
+        const absent = await probeIdleWithinTeardown(binding);
+        if (absent.idle) {
+          evidence = {
+            ...evidence,
+            cleaned: true,
+            dispatch_quiesced: true,
+            request_closed: true,
+            tools_drained: true,
+            reason: null,
+          };
+        }
+      }
       const idle = evidence.cleaned ? await probeIdleWithinTeardown(binding) : null;
       if (!evidence.cleaned || !idle?.idle) {
         const blockedAt = nowIso(context.host.clock);

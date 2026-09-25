@@ -58,9 +58,13 @@ export function publicationBlockedByCancellation(args: {
   return Boolean(runtime?.cancellationPhase && runtime.cancellationPhase !== "none");
 }
 
-export function resetAutoCancellationForTest(): void {
+export function clearAutoCancellationForAdmission(): void {
   autoSession.cancellationRequested = false;
   autoSession.cancellationPhase = "none";
+}
+
+export function resetAutoCancellationForTest(): void {
+  clearAutoCancellationForAdmission();
   cancelledAttemptIds.clear();
 }
 

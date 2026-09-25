@@ -1,6 +1,6 @@
 # gsd-pi progress
 
-R5 save-point: execute-task claim adopts missing milestone and slice lifecycles before the running Attempt. `task-execution-domain-operation.test.ts` 17 passed. Resume start `22b934a8` has not dispatched. Do not bundle `auto-dispatch` into the Next host.
+R5 save-point: a paused resume clears the cancellation flag before the loop, and recover releases a start that never created a worker when the slot is idle. Resume `22b934a8` is reconciled. Start `f79ce0bc` is in `validate-milestone`. Do not bundle `auto-dispatch` into the Next host.
 
 Save-point for future agents. This is the GSD fork worktree
 (`migration/raidnight-native`) used for RaidNight native migration.

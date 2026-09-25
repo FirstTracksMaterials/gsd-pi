@@ -360,6 +360,7 @@ import {
 } from "./stop-notice.js";
 import { abortActiveUnitTurn } from "./auto/unit-turn-abort.js";
 import {
+  clearAutoCancellationForAdmission,
   requestAutoCancellation,
   setAutoCancellationPhase,
 } from "./auto-cancellation.js";
@@ -2973,6 +2974,7 @@ export async function startAuto(
     }
 
     s.paused = false;
+    clearAutoCancellationForAdmission();
     s.active = true;
     s.verbose = verboseMode;
     s.stepMode = requestedStepMode;
