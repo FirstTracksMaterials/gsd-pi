@@ -19,6 +19,7 @@ import type {
   ExtensionCommandContext,
   SessionMessageEntry,
 } from "@gsd/pi-coding-agent";
+import { setBeforeAgentStartContext } from "@gsd/pi-coding-agent";
 
 import { deriveState, invalidateStateCache } from "./state.js";
 import {
@@ -1420,6 +1421,7 @@ function handleLostSessionLock(
   s.active = false;
   s.paused = false;
   deactivateGSD();
+  setBeforeAgentStartContext(undefined);
   clearUnitTimeout();
   stopAutoCommandPolling();
   restoreProjectRootEnv();
@@ -1541,6 +1543,7 @@ export async function cleanupAfterLoopExit(ctx: ExtensionContext): Promise<void>
   s.clearCurrentUnit();
   s.active = false;
   deactivateGSD();
+  setBeforeAgentStartContext(undefined);
   clearUnitTimeout();
   stopAutoCommandPolling();
   restoreProjectRootEnv();
@@ -2368,6 +2371,7 @@ export async function pauseAuto(
   }
 
   deactivateGSD();
+  setBeforeAgentStartContext(undefined);
   restoreProjectRootEnv();
   restoreMilestoneLockEnv();
   s.pendingVerificationRetry = null;
