@@ -37,6 +37,7 @@ test("doctor reports closed-milestone validation source drift as non-fixable wit
   assert.match(formatted, /0 fixable/);
   assert.match(formatted, /ad-hoc-helper\.ps1/);
   assert.match(formatted, /git reset --mixed HEAD\^/);
+  assert.match(formatted, /\/gsd dispatch validate <id>/);
   assert.doesNotMatch(formatted, /run `\/gsd validate-milestone/);
 });
 
@@ -53,9 +54,11 @@ test("clean-tree drift keeps the inspection fallback and the same non-fixable cl
   assert.doesNotMatch(issue.message, /run `\/gsd validate-milestone M013`/);
 });
 
-test("the guidance hint for validation source drift prescribes no validate-milestone rerun", () => {
+test("the guidance hint composes the dispatch-validate rerun and the closed-milestone dead end", () => {
   const hint = doctorFixHint("validation_source_revision_mismatch");
   assert.ok(hint, "hint must exist");
   assert.doesNotMatch(hint!, /re-run `\/gsd validate-milestone/);
   assert.match(hint!, /unreachable/);
+  assert.match(hint!, /\/gsd dispatch validate <id>/);
 });
+
