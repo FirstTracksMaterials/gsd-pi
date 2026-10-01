@@ -52,6 +52,7 @@ import {
   markFailed as markDispatchFailed,
   getRecentForUnit as getRecentDispatchesForUnit,
 } from "../db/unit-dispatches.js";
+import { getRuntimeKv, setRuntimeKv } from "../db/runtime-kv.js";
 import {
   claimMilestoneLease,
   getMilestoneLease,
@@ -214,6 +215,14 @@ const TASK_EXECUTION_CUTOVER_DEPS = {
   readTaskAttempt,
   readTaskRecoveryRoute,
   readTaskTechnicalVerdict,
+  // #2416: the resumed-successor grace must apply at most once per Attempt —
+  // a durable attempt-scoped marker turns the grace off for same-dispatch
+  // claim replays so they re-enter the ordinary settlement.
+  readGrantedResumeGrace: (attemptId: string): boolean =>
+    getRuntimeKv<boolean>("global", attemptId, "task-recovery-resume-grace") === true,
+  markResumeGraceGranted: (attemptId: string): void => {
+    setRuntimeKv("global", attemptId, "task-recovery-resume-grace", true);
+  },
   // #2443: the Attempt claim must carry the currently held fencing token, not
   // a session-cached one that can lag after the lease TTL elapses mid-unit.
   resolveHeldMilestoneLeaseToken: (milestoneId: string, workerId: string): number | null => {
