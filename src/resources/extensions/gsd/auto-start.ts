@@ -1237,7 +1237,13 @@ export async function bootstrapAutoSession(
       return releaseLockAndReturn();
     }
 
-    openWorkflowDatabase(base);
+    // Workflow history without a database: stop before any state derivation
+    // or dispatch can run against a missing authority.
+    const firstDbOpen = openWorkflowDatabase(base);
+    if (!firstDbOpen.ok && firstDbOpen.reason === "authority-missing") {
+      ctx.ui.notify(firstDbOpen.error.message, "error");
+      return releaseLockAndReturn();
+    }
 
     // Ensure .gitignore has baseline patterns.
     // ensureGitignore checks for git-tracked .gsd/ files and skips the
@@ -1843,7 +1849,7 @@ export async function bootstrapAutoSession(
     // ── DB lifecycle ──
     const gsdDbPath = resolveProjectRootDbPath(s.basePath);
     const initialDbOpen = openWorkflowDatabase(s.basePath);
-    if (!initialDbOpen.ok && (initialDbOpen.reason === "open-failed" || initialDbOpen.reason === "locked")) {
+    if (!initialDbOpen.ok && (initialDbOpen.reason === "open-failed" || initialDbOpen.reason === "locked" || initialDbOpen.reason === "authority-missing")) {
       logError("engine", `failed to initialize project database: ${initialDbOpen.error?.message ?? "open failed"}`);
     }
     if (_shouldAbortBootstrapForUnavailableDbForTest(gsdDbPath, isDbAvailable())) {
@@ -1866,11 +1872,9 @@ export async function bootstrapAutoSession(
         ? "The database file could not be opened"
         : dbStatus.lastPhase === "initSchema"
           ? "The database schema could not be initialized"
-          : dbStatus.lastPhase === "vacuum-recovery"
-            ? "Corruption recovery (VACUUM) failed"
-            : dbStatus.attempted
-              ? "The database could not be opened (phase unknown)"
-              : "The database provider could not be loaded";
+          : dbStatus.attempted
+            ? "The database could not be opened (phase unknown)"
+            : "The database provider could not be loaded";
       const errorDetail = dbStatus.lastError ? ` (${dbStatus.lastError.message})` : "";
       const providerHint = dbStatus.provider
         ? ` Provider: ${dbStatus.provider}.`
