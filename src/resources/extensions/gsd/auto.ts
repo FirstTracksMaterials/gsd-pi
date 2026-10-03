@@ -421,8 +421,9 @@ function registerAutoWorkerForSession(
       if (session.currentMilestoneId && session.milestoneLeaseToken) {
         releaseMilestoneLease(staleWorkerId, session.currentMilestoneId, session.milestoneLeaseToken);
       }
-    } catch {
+    } catch (err) {
       // Best-effort: the stale lease still expires via TTL.
+      debugLog("auto-register-stale-lease-release", { error: err instanceof Error ? err.message : String(err) });
     }
     session.milestoneLeaseToken = null;
     session.workerId = null;
