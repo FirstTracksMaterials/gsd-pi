@@ -26,7 +26,7 @@ gsd-db.ts  ← compatibility barrel over the explicit single-writer allowlist
        ├── db/lifecycle-shadow-comparison.ts
        │                    ← pure legacy/canonical lifecycle comparison
        ├── db/writers/*.ts  ← the Single Writer Layer (one write subsystem per file)
-       ├── db/{milestone-leases,unit-dispatches,auto-workers,runtime-kv,command-queue}.ts
+       ├── db/{milestone-leases,unit-dispatches,auto-workers,runtime-kv}.ts
        │                    ← typed coordination/runtime writers
        ├── schema/migration helper modules
        │                    ← write-capable helpers are explicitly listed by
@@ -728,7 +728,7 @@ result_json  TEXT
 ```
 
 - Index: `idx_command_queue_pending` (target_worker, claimed_at)
-- Claiming is a read-then-write path and uses `immediateTransaction()` so WAL workers serialize before selecting the pending row instead of failing a deferred write upgrade with `SQLITE_BUSY_SNAPSHOT`.
+- No code produces or claims rows in this table at present; the unused `db/command-queue.ts` module was deleted.
 
 ---
 
