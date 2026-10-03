@@ -489,6 +489,18 @@ test("Tool Surface composer: planning-dispatch lists allowed subagents", () => {
   assert.match(out, /active worktree/);
 });
 
+test("Tool Surface composer: fan-out units require synchronous subagent dispatch (#2533)", () => {
+  for (const unitType of ["research-slice", "plan-slice", "validate-milestone", "reactive-execute"] as const) {
+    const out = composeToolSurfaceInstructions(unitType, { renderMode: "standalone" });
+    assert.match(out, /run_in_background: false/, `${unitType} must require synchronous dispatch`);
+    assert.match(
+      out,
+      /native `Agent` tool/,
+      `${unitType} must cover hosts where the native Agent tool is the only dispatch path`,
+    );
+  }
+});
+
 test("Tool Surface composer: planning_subagents updates plan-milestone dispatch guidance", (t) => {
   const originalGsdHome = process.env.GSD_HOME;
   const tempProject = mkdtempSync(join(tmpdir(), "gsd-tool-surface-planning-subagents-"));

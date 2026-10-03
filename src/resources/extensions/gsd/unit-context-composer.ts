@@ -217,6 +217,15 @@ export interface ComposeToolSurfaceInstructionOptions {
   readonly sessionProvider?: string;
 }
 
+/**
+ * Synchronous-dispatch requirement for every unit that fans out subagents and
+ * must persist artifacts within the same turn (#2312 generalized per #2533).
+ * Phrased so it is satisfiable on hosts where the GSD `subagent` tool is not
+ * presented and the native `Agent` tool is the only dispatch path.
+ */
+const SYNCHRONOUS_SUBAGENT_DISPATCH =
+  "Dispatch synchronously: every subagent call MUST set `run_in_background: false` — backgrounded subagents finish after the turn ends, so their results never reach what this unit must persist. If only the native `Agent` tool is presented on this host, use it with `run_in_background: false`.";
+
 const TOOL_SURFACE_GUIDANCE_BY_UNIT: Record<string, string> = {
   "run-uat":
     "Do not call `gsd_exec`, `Bash`, `Write`, or `Edit` — they are unavailable in this unit. Run every automated check through `gsd_uat_exec` with the appropriate `intent`. For browser UAT modes, use `browser_*` tools when presented; if browser automation fails, record the failure honestly and use `gsd_uat_exec` for the best objective substitute.",
@@ -225,11 +234,11 @@ const TOOL_SURFACE_GUIDANCE_BY_UNIT: Record<string, string> = {
   "gate-evaluate":
     "Dispatch only **tester** subagents via the GSD `subagent` tool — never the native `Agent` tool and never with `run_in_background: true`. Wait for every subagent to finish, then persist each gate with `gsd_save_gate_result`. Do not use `ToolSearch` — it is not available.",
   "reactive-execute":
-    "Dispatch only **worker** subagents via `subagent`. Do not call `gsd_task_complete` from this parent batch — each worker owns its task completion. If a failed task left no summary, call `gsd_summary_save` with `blocker_discovered: true`.",
+    `Dispatch only **worker** subagents via \`subagent\`. ${SYNCHRONOUS_SUBAGENT_DISPATCH} Do not call \`gsd_task_complete\` from this parent batch — each worker owns its task completion. If a failed task left no summary, call \`gsd_summary_save\` with \`blocker_discovered: true\`.`,
   "execute-task":
     "Complete only this task via `gsd_task_complete`. Do not call `gsd_slice_complete`, `gsd_validate_milestone`, or `gsd_complete_milestone` — the orchestrator owns phase transitions.",
   "validate-milestone":
-    "Run shell verification commands through `gsd_exec` — `bash` is not available in this unit, and `gsd_uat_exec` belongs to run-uat. Dispatch `reviewer` subagents in parallel, then persist the verdict via `gsd_validate_milestone`. Do not query `.gsd/gsd.db` directly — use `gsd_milestone_status` and inlined context. Validation reports on the milestone as planned; it does not extend it. Call `gsd_reassess_roadmap` only when validation FAILS and the roadmap must change to fix it — never to add slices or scope to a milestone whose planned work is complete.",
+    `Run shell verification commands through \`gsd_exec\` — \`bash\` is not available in this unit, and \`gsd_uat_exec\` belongs to run-uat. Dispatch \`reviewer\` subagents in parallel. ${SYNCHRONOUS_SUBAGENT_DISPATCH} Persist the verdict via \`gsd_validate_milestone\`. Do not query \`.gsd/gsd.db\` directly — use \`gsd_milestone_status\` and inlined context. Validation reports on the milestone as planned; it does not extend it. Call \`gsd_reassess_roadmap\` only when validation FAILS and the roadmap must change to fix it — never to add slices or scope to a milestone whose planned work is complete.`,
   "complete-milestone":
     "Persist completion only through `gsd_complete_milestone` after verification passes. Do not query `.gsd/gsd.db` directly. Do not write `.gsd/PROJECT.md` or `.gsd/REQUIREMENTS.md` by hand — use `gsd_summary_save` and `gsd_requirement_update`.",
   "replan-slice":
@@ -254,26 +263,26 @@ function guidanceForUnitToolsPolicy(
   sessionProvider?: string,
 ): string | undefined {
   if (unitType === "research-slice" && policy.mode === "planning-dispatch") {
-    return `Dispatch subagents only to ${formatAllowedAgents(policy.allowedSubagents, sessionProvider)} for reconnaissance. Do not edit user source files outside \`.gsd/**\`.`;
+    return `Dispatch subagents only to ${formatAllowedAgents(policy.allowedSubagents, sessionProvider)} for reconnaissance. ${SYNCHRONOUS_SUBAGENT_DISPATCH} Do not edit user source files outside \`.gsd/**\`.`;
   }
 
   if (unitType === "plan-slice") {
     const dispatch = policy.mode === "planning-dispatch"
-      ? ` Dispatch subagents only to ${formatAllowedAgents(policy.allowedSubagents, sessionProvider)} for reconnaissance — not implementation agents.`
+      ? ` Dispatch subagents only to ${formatAllowedAgents(policy.allowedSubagents, sessionProvider)} for reconnaissance — not implementation agents. ${SYNCHRONOUS_SUBAGENT_DISPATCH}`
       : " Do not dispatch subagents.";
     return `Persist planning through \`gsd_plan_slice\` and \`gsd_plan_task\`.${dispatch} Do not edit user source files outside \`.gsd/**\`. Keep self-verification inside the active worktree: inspect with read-only tools and run any required command through \`gsd_exec\` or \`gsd_exec_search\`, not a direct shell or an out-of-worktree path.`;
   }
 
   if (unitType === "refine-slice") {
     const dispatch = policy.mode === "planning-dispatch"
-      ? ` Dispatch subagents only to ${formatAllowedAgents(policy.allowedSubagents, sessionProvider)}.`
+      ? ` Dispatch subagents only to ${formatAllowedAgents(policy.allowedSubagents, sessionProvider)}. ${SYNCHRONOUS_SUBAGENT_DISPATCH}`
       : " Do not dispatch subagents.";
     return `Persist refinements through \`gsd_plan_slice\` only.${dispatch} Do not edit user source files outside \`.gsd/**\`.`;
   }
 
   if (unitType === "plan-milestone") {
     const dispatch = policy.mode === "planning-dispatch"
-      ? ` Dispatch subagents only to ${formatAllowedAgents(policy.allowedSubagents, sessionProvider)}.`
+      ? ` Dispatch subagents only to ${formatAllowedAgents(policy.allowedSubagents, sessionProvider)}. ${SYNCHRONOUS_SUBAGENT_DISPATCH}`
       : "";
     return `Persist milestone planning through \`gsd_plan_milestone\` / \`gsd_plan_slice\`.${dispatch} Do not edit user source files outside \`.gsd/**\`.`;
   }

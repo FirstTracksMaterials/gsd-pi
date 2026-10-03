@@ -14,6 +14,8 @@ Dispatch ALL slices simultaneously using the `subagent` tool in **parallel mode*
 
 **Tool call format:** Call `subagent` with `tasks: [...]` as a **native JSON array** — one object per slice. Do NOT JSON.stringify the array into a string; the tool validates that `tasks` is an array, and a serialized string will be rejected with "must be array".
 
+**Critical:** Dispatch synchronously within this turn — every dispatch MUST set `run_in_background: false`. Do not background any dispatch: a backgrounded subagent finishes after your turn ends, so its RESEARCH file is never verified and the unit settles without its artifact. If only the native `Agent` tool is presented on this host, use it — still with `run_in_background: false` — one call per slice, all in the same message so they run in parallel. Your turn may NOT end until every slice's RESEARCH file is written (or has its `## BLOCKER` note).
+
 ## Execution Protocol
 
 1. Call `subagent` with `tasks: [{ agent: "{{scoutAgentType}}", task: "<prompt>" }, ...]` containing one entry per slice below

@@ -774,6 +774,21 @@ test("parallel subagent prompts forbid serialized tasks arrays", () => {
   }
 });
 
+test("parallel-research-slices prompt requires synchronous dispatch (#2533)", () => {
+  const prompt = readPrompt("parallel-research-slices");
+  assert.match(prompt, /run_in_background: false/, "must require synchronous dispatch");
+  assert.match(
+    prompt,
+    /native `Agent` tool/,
+    "must cover hosts where the native Agent tool is the only dispatch path",
+  );
+  assert.match(
+    prompt,
+    /may NOT end until/,
+    "the turn must be fenced on every slice's artifact",
+  );
+});
+
 test("gate-evaluate prompt requires gate result findings field", () => {
   const prompt = readPrompt("gate-evaluate");
   assert.match(prompt, /`findings`/);

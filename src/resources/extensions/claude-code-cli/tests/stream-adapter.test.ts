@@ -60,6 +60,7 @@ import { autoSession } from "../../gsd/auto-runtime-state.ts";
 import { getInFlightToolCount, hasInteractiveToolInFlight, clearInFlightTools, isInteractiveElicitationInFlight } from "../../gsd/auto-tool-tracking.ts";
 import { clearMcpConfigCache } from "../../mcp-client/manager.ts";
 import { UNIT_TOOL_CONTRACTS, getRequiredWorkflowToolsForUnit } from "../../gsd/unit-tool-contracts.ts";
+import { getActiveWorkers, resetWorkerRegistry } from "../../subagent/worker-registry.ts";
 
 // ---------------------------------------------------------------------------
 // Env helpers — `GSD_WORKFLOW_MCP_*` save/restore
@@ -5753,5 +5754,51 @@ describe("stream-adapter — background task results (#2534)", () => {
 			.filter((block: any) => block.type === "text")
 			.map((block: any) => block.text);
 		assert.ok(texts.includes("FINISHED"), "the follow-up turn's output must reach the user");
+	});
+
+	test("surfaces native background tasks in the worker registry for the dashboard (#2533)", async (t) => {
+		resetWorkerRegistry();
+		t.after(() => resetWorkerRegistry());
+		const sid = "session-2533";
+		const stream = streamViaClaudeCode(
+			{ id: "claude-sonnet-4-6" } as any,
+			{ messages: [{ role: "user", content: "Dispatch agents and wait." } as Message] },
+			{
+				_skipWorkflowMcpPreflightForTest: true,
+				async *_sdkQueryForTest() {
+					yield makeSdkSystem("task_started", sid, { task_id: "task-1", task_type: "local_agent", description: "Agent: rewrite docs" });
+					yield makeSdkSystem("task_started", sid, { task_id: "task-2", task_type: "local_bash", description: "Bash: run tests" });
+					yield makeSdkResult("r1", sid, { result: "WAITING" });
+					// task-1 completes; task-2's process dies before any notification
+					// arrives — the attempt-end cleanup must settle its row.
+					yield makeSdkSystem("task_notification", sid, { task_id: "task-1", status: "completed", output_file: "/tmp/o1", summary: "done" });
+					yield makeSdkResult("r2", sid, { result: "FINISHED" });
+				},
+			} as any,
+		);
+
+		const events: any[] = [];
+		for await (const event of stream) {
+			events.push(event);
+		}
+
+		assert.equal(events.some((event) => event.type === "error"), false);
+		const workers = getActiveWorkers();
+		assert.equal(workers.length, 2, "both native tasks must be visible as worker rows");
+		assert.deepEqual(
+			workers.map((worker) => worker.agent).sort(),
+			["local_agent", "local_bash"],
+		);
+		for (const worker of workers) {
+			assert.equal(worker.batchSize, 2, "the batch header total must grow with the fan-out");
+		}
+		const completed = workers.find((worker) => worker.task === "Agent: rewrite docs");
+		assert.equal(completed?.status, "completed");
+		const unsettled = workers.find((worker) => worker.task === "Bash: run tests");
+		assert.equal(
+			unsettled?.status,
+			"failed",
+			"a task whose notification never arrived must not linger as running",
+		);
 	});
 });

@@ -144,6 +144,53 @@ export function updateWorker(id: string, status: "completed" | "failed"): void {
 }
 
 /**
+ * Register a host-native background task (e.g. a Claude Code `Agent`/`Bash`
+ * fan-out reported through the SDK's `task_started` messages) for dashboard
+ * visibility (#2533). Unlike `registerWorker`, the batch size is not known up
+ * front: a per-batch total (independent of row expiry) grows as tasks register
+ * and every row in the batch tracks it, so the dashboard's `done/total` header
+ * stays honest even when early rows have already aged out. The owning stream
+ * attempt calls {@link releaseHostTaskBatch} when it ends. Returns the
+ * registry worker id for later `updateWorker` calls.
+ */
+const hostTaskBatchTotals = new Map<string, number>();
+
+export function registerHostTaskWorker(input: {
+  batchId: string;
+  agent: string;
+  task: string;
+}): string {
+  const total = (hostTaskBatchTotals.get(input.batchId) ?? 0) + 1;
+  hostTaskBatchTotals.set(input.batchId, total);
+  const batchRows = Array.from(activeWorkers.values()).filter(
+    (entry) => entry.batchId === input.batchId,
+  );
+  const id = `worker-${++workerIdCounter}`;
+  activeWorkers.set(id, {
+    id,
+    agent: input.agent,
+    task: input.task,
+    startedAt: Date.now(),
+    status: "running",
+    index: total - 1,
+    batchSize: total,
+    batchId: input.batchId,
+  });
+  for (const entry of batchRows) {
+    entry.batchSize = total;
+  }
+  return id;
+}
+
+/**
+ * Drop a host-task batch's running total once its owning stream attempt has
+ * ended, so batch accounting never outlives the stream that created it.
+ */
+export function releaseHostTaskBatch(batchId: string): void {
+  hostTaskBatchTotals.delete(batchId);
+}
+
+/**
  * Get all currently-tracked workers (running + recently completed).
  */
 export function getActiveWorkers(): WorkerEntry[] {
@@ -178,5 +225,6 @@ export function hasActiveWorkers(): boolean {
  */
 export function resetWorkerRegistry(): void {
   activeWorkers.clear();
+  hostTaskBatchTotals.clear();
   workerIdCounter = 0;
 }
