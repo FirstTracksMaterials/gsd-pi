@@ -40,23 +40,16 @@ interface GsdMcpBridge {
   getPendingGates: (...args: any[]) => any;
   getSliceTasks: (...args: any[]) => any;
   insertDecision: (...args: any[]) => any;
-  insertMilestone: (...args: any[]) => any;
   insertSlice: (...args: any[]) => any;
   openDatabase: (...args: any[]) => any;
   upsertMilestonePlanning: (...args: any[]) => any;
   invalidateStateCache: (...args: any[]) => any;
-  isReusableGhostMilestone: (...args: any[]) => any;
   readProgressFromDb: (...args: any[]) => any;
   loadEffectiveGSDPreferences: (...args: any[]) => any;
   saveDecisionToDb: (...args: any[]) => any;
   saveRequirementToDb: (...args: any[]) => any;
   updateRequirementInDb: (...args: any[]) => any;
   queryJournal: (...args: any[]) => any;
-  claimReservedId: (...args: any[]) => any;
-  findMilestoneIds: (...args: any[]) => any;
-  getReservedMilestoneIds: (...args: any[]) => any;
-  milestoneIdSort: (...args: any[]) => any;
-  nextMilestoneId: (...args: any[]) => any;
 }
 
 type WorkflowDatabaseOpenResult =
@@ -495,6 +488,35 @@ type WorkflowToolExecutors = {
     basePath: string,
     invocation: ExecutionInvocation,
   ) => Promise<unknown>;
+  executeMilestoneGenerateId: (
+    basePath: string,
+    invocation: ExecutionInvocation,
+  ) => Promise<unknown>;
+  executeMilestonePark: (
+    params: { milestoneId: string; reason: string },
+    basePath: string,
+    invocation: ExecutionInvocation,
+  ) => Promise<unknown>;
+  executeMilestoneUnpark: (
+    params: { milestoneId: string },
+    basePath: string,
+    invocation: ExecutionInvocation,
+  ) => Promise<unknown>;
+  executeMilestoneDiscard: (
+    params: { milestoneId: string; reason: string },
+    basePath: string,
+    invocation: ExecutionInvocation,
+  ) => Promise<unknown>;
+  executeMilestoneReorder: (
+    params: { order: string[] },
+    basePath: string,
+    invocation: ExecutionInvocation,
+  ) => Promise<unknown>;
+  executeMilestoneSetDependencies: (
+    params: { milestoneId: string; dependsOn: string[] },
+    basePath: string,
+    invocation: ExecutionInvocation,
+  ) => Promise<unknown>;
 };
 
 type WorkflowWriteGateModule = {
@@ -798,6 +820,12 @@ function isWorkflowToolExecutors(value: unknown): value is WorkflowToolExecutors
     "executeSliceReopen",
     "executeSkipSlice",
     "executeMilestoneReopen",
+    "executeMilestoneGenerateId",
+    "executeMilestonePark",
+    "executeMilestoneUnpark",
+    "executeMilestoneDiscard",
+    "executeMilestoneReorder",
+    "executeMilestoneSetDependencies",
   ];
 
   return Array.isArray(record.SUPPORTED_SUMMARY_ARTIFACT_TYPES) &&
@@ -1586,6 +1614,18 @@ async function handleMilestoneReopen(
   );
 }
 
+/** Generate-id, park, unpark, discard, reorder and set-dependencies share one gate-and-run path. */
+async function handleMilestoneHierarchyTool(
+  toolName: string,
+  projectDir: string,
+  milestoneId: string | null,
+  run: (executors: WorkflowToolExecutors) => Promise<unknown>,
+): Promise<unknown> {
+  await enforceWorkflowWriteGate(toolName, projectDir, milestoneId);
+  const executors = await getWorkflowToolExecutors();
+  return adaptExecutorResult(await runSerializedWorkflowOperation(() => run(executors)));
+}
+
 async function handleSliceComplete(
   projectDir: string,
   args: z.infer<typeof sliceCompleteSchema>,
@@ -1817,86 +1857,6 @@ async function handleSaveGateResult(
   return adaptExecutorResult(
     await runSerializedWorkflowOperation(() => executeSaveGateResult(params, projectDir, invocation)),
   );
-}
-
-async function ensureMilestoneDbRow(milestoneId: string): Promise<void> {
-  try {
-    const bridge = await importBridgeModule();
-    bridge.insertMilestone({ id: milestoneId, status: "queued" });
-  } catch {
-    // Ignore pre-existing rows or transient DB availability issues.
-  }
-}
-
-async function findDatabaseMilestoneIds(): Promise<string[]> {
-  try {
-    const bridge = await importBridgeModule();
-    return (bridge.getAllMilestones?.() ?? [])
-      .map((milestone: unknown) => {
-        const id = (milestone as { id?: unknown })?.id;
-        return typeof id === "string" ? id : null;
-      })
-      .filter((id: string | null): id is string => id !== null);
-  } catch {
-    return [];
-  }
-}
-
-/**
- * Fix #4996: Shared helper for both gsd_milestone_generate_id and
- * gsd_generate_milestone_id. Reuses the lowest reusable ghost milestone ID
- * (a disk-only stub with no DB row, no worktree, no content files) before
- * falling back to max+1. Uses the stricter `isReusableGhostMilestone` —
- * not `isGhostMilestone` — to avoid racing with in-flight queued DB rows
- * from an earlier call to this same tool.
- */
-async function generateOrReuseMilestoneId(projectDir: string): Promise<string> {
-  const bridge = await importBridgeModule();
-  const {
-    claimReservedId,
-    findMilestoneIds,
-    getReservedMilestoneIds,
-    nextMilestoneId,
-    milestoneIdSort,
-  } = bridge;
-
-  const reserved = claimReservedId();
-  if (reserved) {
-    await ensureMilestoneDbRow(reserved);
-    return reserved;
-  }
-
-  const allIds = [
-    ...new Set([
-      ...findMilestoneIds(projectDir),
-      ...getReservedMilestoneIds(),
-      ...(await findDatabaseMilestoneIds()),
-    ]),
-  ];
-
-  // Attempt ghost-ID reuse before falling back to max+1.
-  const { isReusableGhostMilestone } = bridge;
-  const sorted = [...allIds].sort(milestoneIdSort);
-  for (const candidate of sorted) {
-    if (isReusableGhostMilestone(projectDir, candidate)) {
-      await ensureMilestoneDbRow(candidate);
-      return candidate;
-    }
-  }
-
-  const prefsMod = await importBridgeModule().catch(() => null);
-  // Graceful degradation: a corrupt preferences file should not crash
-  // milestone-id generation. Fall back to non-unique IDs if anything
-  // throws here — matches the pre-fix behavior for missing prefs.
-  let uniqueEnabled = false;
-  try {
-    uniqueEnabled = !!prefsMod?.loadEffectiveGSDPreferences?.(projectDir)?.preferences?.unique_milestone_ids;
-  } catch {
-    uniqueEnabled = false;
-  }
-  const nextId = nextMilestoneId(allIds, uniqueEnabled);
-  await ensureMilestoneDbRow(nextId);
-  return nextId;
 }
 
 // projectDir is optional. When omitted, the server uses process.cwd(). This
@@ -2635,6 +2595,39 @@ const milestoneReopenParams = {
 };
 const milestoneReopenSchema = z.object(milestoneReopenParams);
 
+const milestoneParkParams = {
+  projectDir: projectDirParam,
+  milestoneId: nonEmptyString("milestoneId").describe("Milestone ID (e.g. M003)"),
+  reason: nonEmptyString("reason").describe("Why the milestone is parked"),
+};
+const milestoneParkSchema = z.object(milestoneParkParams);
+
+const milestoneUnparkParams = {
+  projectDir: projectDirParam,
+  milestoneId: nonEmptyString("milestoneId").describe("Milestone ID (e.g. M003)"),
+};
+const milestoneUnparkSchema = z.object(milestoneUnparkParams);
+
+const milestoneDiscardParams = {
+  projectDir: projectDirParam,
+  milestoneId: nonEmptyString("milestoneId").describe("Milestone ID (e.g. M003)"),
+  reason: nonEmptyString("reason").describe("Why the milestone is discarded (recorded in the Waiver)"),
+};
+const milestoneDiscardSchema = z.object(milestoneDiscardParams);
+
+const milestoneReorderParams = {
+  projectDir: projectDirParam,
+  order: z.array(z.string()).min(1).describe("Open milestone IDs in execution order"),
+};
+const milestoneReorderSchema = z.object(milestoneReorderParams);
+
+const milestoneSetDependenciesParams = {
+  projectDir: projectDirParam,
+  milestoneId: nonEmptyString("milestoneId").describe("Milestone ID (e.g. M003)"),
+  dependsOn: z.array(z.string()).describe("Milestone IDs that must be complete first; [] removes all"),
+};
+const milestoneSetDependenciesSchema = z.object(milestoneSetDependenciesParams);
+
 const milestoneStatusParams = {
   projectDir: projectDirParam,
   milestoneId: z.string().describe("Milestone ID to query (e.g. M001)"),
@@ -3161,15 +3154,13 @@ export function registerWorkflowTools(
 
   server.tool(
     "gsd_milestone_generate_id",
-    "Generate the next milestone ID for a new GSD milestone.",
+    "Generate the next milestone ID for a new GSD milestone and register its database row in one Domain Operation.",
     milestoneGenerateIdParams,
-    async (args: Record<string, unknown>) => {
+    async (args: Record<string, unknown>, extra?: WorkflowMcpRequestExtra) => {
       const { projectDir } = parseWorkflowArgs(milestoneGenerateIdSchema, args);
-      await enforceWorkflowWriteGate("gsd_milestone_generate_id", projectDir);
-      const id = await runSerializedWorkflowDbOperation(projectDir, () =>
-        generateOrReuseMilestoneId(projectDir),
-      );
-      return { content: [{ type: "text" as const, text: id }] };
+      const invocation = mcpWorkflowExecutionInvocation("gsd_milestone_generate_id", extra);
+      return handleMilestoneHierarchyTool("gsd_milestone_generate_id", projectDir, null, (executors) =>
+        executors.executeMilestoneGenerateId(projectDir, invocation));
     },
   );
 
@@ -3177,14 +3168,12 @@ export function registerWorkflowTools(
     "gsd_generate_milestone_id",
     "Alias for gsd_milestone_generate_id. Generate the next milestone ID for a new GSD milestone.",
     milestoneGenerateIdParams,
-    async (args: Record<string, unknown>) => {
+    async (args: Record<string, unknown>, extra?: WorkflowMcpRequestExtra) => {
       logAliasUsage("gsd_generate_milestone_id", "gsd_milestone_generate_id");
       const { projectDir } = parseWorkflowArgs(milestoneGenerateIdSchema, args);
-      await enforceWorkflowWriteGate("gsd_milestone_generate_id", projectDir);
-      const id = await runSerializedWorkflowDbOperation(projectDir, () =>
-        generateOrReuseMilestoneId(projectDir),
-      );
-      return { content: [{ type: "text" as const, text: id }] };
+      const invocation = mcpWorkflowExecutionInvocation("gsd_milestone_generate_id", extra);
+      return handleMilestoneHierarchyTool("gsd_milestone_generate_id", projectDir, null, (executors) =>
+        executors.executeMilestoneGenerateId(projectDir, invocation));
     },
   );
 
@@ -3771,6 +3760,66 @@ export function registerWorkflowTools(
         milestoneArgs,
         mcpWorkflowExecutionInvocation("gsd_milestone_reopen", extra),
       );
+    },
+  );
+
+  server.tool(
+    "gsd_milestone_park",
+    "Park a Milestone in one SQLite Domain Operation: it leaves the run, keeps its work, and can be unparked later. The PARKED marker is rendered from the database.",
+    milestoneParkParams,
+    async (args: Record<string, unknown>, extra?: WorkflowMcpRequestExtra) => {
+      const { projectDir, ...params } = parseWorkflowArgs(milestoneParkSchema, args);
+      const invocation = mcpWorkflowExecutionInvocation("gsd_milestone_park", extra);
+      return handleMilestoneHierarchyTool("gsd_milestone_park", projectDir, params.milestoneId, (executors) =>
+        executors.executeMilestonePark(params, projectDir, invocation));
+    },
+  );
+
+  server.tool(
+    "gsd_milestone_unpark",
+    "Return a parked Milestone to the run in one SQLite Domain Operation. The PARKED marker is removed after the commit.",
+    milestoneUnparkParams,
+    async (args: Record<string, unknown>, extra?: WorkflowMcpRequestExtra) => {
+      const { projectDir, ...params } = parseWorkflowArgs(milestoneUnparkSchema, args);
+      const invocation = mcpWorkflowExecutionInvocation("gsd_milestone_unpark", extra);
+      return handleMilestoneHierarchyTool("gsd_milestone_unpark", projectDir, params.milestoneId, (executors) =>
+        executors.executeMilestoneUnpark(params, projectDir, invocation));
+    },
+  );
+
+  server.tool(
+    "gsd_milestone_discard",
+    "Discard a Milestone in one SQLite Domain Operation: the Milestone and its open Slices and Tasks are cancelled with a Waiver, its id is never reused, and its files, worktree and branch are removed after the commit. This cannot be undone.",
+    milestoneDiscardParams,
+    async (args: Record<string, unknown>, extra?: WorkflowMcpRequestExtra) => {
+      const { projectDir, ...params } = parseWorkflowArgs(milestoneDiscardSchema, args);
+      const invocation = mcpWorkflowExecutionInvocation("gsd_milestone_discard", extra);
+      return handleMilestoneHierarchyTool("gsd_milestone_discard", projectDir, params.milestoneId, (executors) =>
+        executors.executeMilestoneDiscard(params, projectDir, invocation));
+    },
+  );
+
+  server.tool(
+    "gsd_milestone_reorder",
+    "Set the execution order of the open Milestones in one SQLite Domain Operation. List every open Milestone in the wanted order; one that is not listed keeps its relative position after the listed ones. An order that puts a Milestone before one it depends on is refused. QUEUE-ORDER.json is rendered from the database.",
+    milestoneReorderParams,
+    async (args: Record<string, unknown>, extra?: WorkflowMcpRequestExtra) => {
+      const { projectDir, ...params } = parseWorkflowArgs(milestoneReorderSchema, args);
+      const invocation = mcpWorkflowExecutionInvocation("gsd_milestone_reorder", extra);
+      return handleMilestoneHierarchyTool("gsd_milestone_reorder", projectDir, null, (executors) =>
+        executors.executeMilestoneReorder(params, projectDir, invocation));
+    },
+  );
+
+  server.tool(
+    "gsd_milestone_set_dependencies",
+    "Replace the depends_on list of one open Milestone in one SQLite Domain Operation. Unknown or discarded Milestones and dependency cycles are refused.",
+    milestoneSetDependenciesParams,
+    async (args: Record<string, unknown>, extra?: WorkflowMcpRequestExtra) => {
+      const { projectDir, ...params } = parseWorkflowArgs(milestoneSetDependenciesSchema, args);
+      const invocation = mcpWorkflowExecutionInvocation("gsd_milestone_set_dependencies", extra);
+      return handleMilestoneHierarchyTool("gsd_milestone_set_dependencies", projectDir, params.milestoneId, (executors) =>
+        executors.executeMilestoneSetDependencies(params, projectDir, invocation));
     },
   );
 

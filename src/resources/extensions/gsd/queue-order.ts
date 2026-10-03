@@ -23,6 +23,9 @@ import {
   upsertMilestonePlanning,
 } from "./gsd-db.js";
 import { readDomainOperationFence } from "./db/writers/lifecycle-commands.js";
+import type { DomainOperationRequest } from "./db/domain-operation.js";
+import type { ExecutionInvocation } from "./execution-invocation.js";
+import { isClosedStatus, isDiscardedMilestoneStatus } from "./status-guards.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -84,28 +87,108 @@ export function renderQueueOrder(basePath: string, order: string[]): void {
   saveJsonFile(queueOrderPath(basePath), data);
 }
 
+/** Render QUEUE-ORDER.json from milestones.sequence. Returns the file path. */
+export function renderQueueOrderFromDb(basePath: string): string {
+  renderQueueOrder(basePath, queueOrderFromDb());
+  return queueOrderPath(basePath);
+}
+
+function queueOrderFromDb(): string[] {
+  return getAllMilestones()
+    .filter((milestone) => (milestone.sequence ?? 0) > 0 && !isDiscardedMilestoneStatus(milestone.status))
+    .map((milestone) => milestone.id);
+}
+
+/**
+ * The operation identity of a queue change. A slash command has no call
+ * identity, so its key is the project revision. A tool call passes its
+ * invocation, and a retry of the same call replays the committed receipt.
+ */
+function queueOperationRequest(
+  operationType: string,
+  commandKey: string,
+  payload: DomainOperationRequest["payload"],
+  invocation?: ExecutionInvocation,
+): DomainOperationRequest {
+  const fence = readDomainOperationFence(invocation?.idempotencyKey);
+  return {
+    operationType,
+    idempotencyKey: invocation?.idempotencyKey ?? `command/${commandKey}/${fence.revision}`,
+    expectedRevision: fence.revision,
+    expectedAuthorityEpoch: fence.authorityEpoch,
+    actorType: invocation?.actorType ?? "operator",
+    ...(invocation?.actorId ? { actorId: invocation.actorId } : {}),
+    sourceTransport: invocation?.sourceTransport ?? "internal",
+    ...(invocation?.traceId ? { traceId: invocation.traceId } : {}),
+    ...(invocation?.turnId ? { turnId: invocation.turnId } : {}),
+    payload,
+  };
+}
+
+/** Dependency map and closed-milestone set of the database, for validateQueueOrder. */
+function loadDependencyGraph(): { depsMap: Map<string, string[]>; closedIds: Set<string> } {
+  const depsMap = new Map<string, string[]>();
+  const closedIds = new Set<string>();
+  for (const milestone of getAllMilestones()) {
+    if (isClosedStatus(milestone.status)) closedIds.add(milestone.id);
+    else if (milestone.depends_on.length > 0) depsMap.set(milestone.id, milestone.depends_on);
+  }
+  return { depsMap, closedIds };
+}
+
 /**
  * Reorder milestones in one milestone.reorder Domain Operation: write
  * milestones.sequence and drop the listed depends_on edges, then render
  * QUEUE-ORDER.json from the committed sequence.
+ *
+ * The effective order is the listed ids, then each open, non-parked milestone
+ * the order does not list, in its current relative order. Returns the
+ * committed queue order and one warning for each dependency of an open
+ * milestone that has no database row; no order can fix such a dependency, so
+ * it does not block the reorder.
+ *
+ * Throws when the order names an unknown or closed milestone, repeats an id,
+ * or when the effective order puts a milestone before one it still depends
+ * on or has a dependency cycle.
  */
 export function reorderMilestones(
   basePath: string,
   order: string[],
   depsToRemove: ReadonlyArray<{ milestone: string; dep: string }> = [],
-): void {
+  invocation?: ExecutionInvocation,
+): { order: string[]; warnings: string[] } {
   if (!isDbAvailable()) throw new Error("milestone reorder requires the GSD database");
-  const fence = readDomainOperationFence();
-  executeDomainOperation({
-    operationType: "milestone.reorder",
-    idempotencyKey: `command/reorder/${fence.revision}`,
-    expectedRevision: fence.revision,
-    expectedAuthorityEpoch: fence.authorityEpoch,
-    actorType: "operator",
-    sourceTransport: "internal",
-    payload: { order, depsToRemove: depsToRemove.map((edge) => ({ ...edge })) },
-  }, () => {
-    setMilestoneQueueOrder(order);
+  const request = queueOperationRequest(
+    "milestone.reorder",
+    "reorder",
+    { order, depsToRemove: depsToRemove.map((edge) => ({ ...edge })) },
+    invocation,
+  );
+  executeDomainOperation(request, () => {
+    if (new Set(order).size !== order.length) throw new Error("queue order repeats a milestone id");
+    const { depsMap, closedIds } = loadDependencyGraph();
+    for (const id of order) {
+      if (!getMilestone(id)) throw new Error(`milestone ${id} does not exist`);
+      if (closedIds.has(id)) throw new Error(`milestone ${id} is closed and has no place in the queue`);
+    }
+    for (const edge of depsToRemove) {
+      depsMap.set(edge.milestone, (depsMap.get(edge.milestone) ?? []).filter((dep) => dep !== edge.dep));
+    }
+    // A parked milestone that the order does not list is not in the queue, but
+    // it is still a valid dependency.
+    const listed = new Set(order);
+    const outsideQueue = new Set(closedIds);
+    const effectiveOrder = [...order];
+    for (const milestone of getAllMilestones()) {
+      if (listed.has(milestone.id) || closedIds.has(milestone.id)) continue;
+      if (milestone.status === "parked") outsideQueue.add(milestone.id);
+      else effectiveOrder.push(milestone.id);
+    }
+    const violation = validateQueueOrder(effectiveOrder, depsMap, outsideQueue)
+      .violations.find((entry) => entry.type !== "missing_dep");
+    if (violation) throw new Error(violation.message);
+
+    setMilestoneQueueOrder(effectiveOrder);
     for (const edge of depsToRemove) {
       const milestone = getMilestone(edge.milestone);
       if (!milestone) throw new Error(`milestone ${edge.milestone} does not exist`);
@@ -126,10 +209,75 @@ export function reorderMilestones(
       }],
     };
   });
-  const committed = getAllMilestones()
-    .filter((milestone) => (milestone.sequence ?? 0) > 0)
-    .map((milestone) => milestone.id);
-  renderQueueOrder(basePath, committed);
+  const committedOrder = queueOrderFromDb();
+  renderQueueOrder(basePath, committedOrder);
+  const milestones = getAllMilestones();
+  const knownIds = new Set(milestones.map((milestone) => milestone.id));
+  const warnings = milestones
+    .filter((milestone) => !isClosedStatus(milestone.status))
+    .flatMap((milestone) => milestone.depends_on
+      .filter((dep) => !knownIds.has(dep))
+      .map((dep) => `${milestone.id} depends on ${dep}, but ${dep} does not exist.`));
+  return { order: committedOrder, warnings };
+}
+
+/**
+ * Replace the depends_on list of one open milestone in a
+ * milestone.set_dependencies Domain Operation.
+ *
+ * Throws when the milestone is unknown or closed, when a dependency is
+ * unknown, discarded or the milestone itself, or when the new list makes a
+ * dependency cycle.
+ */
+export function setMilestoneDependencies(
+  milestoneId: string,
+  dependsOn: string[],
+  invocation?: ExecutionInvocation,
+): void {
+  if (!isDbAvailable()) throw new Error("milestone dependency update requires the GSD database");
+  const request = queueOperationRequest(
+    "milestone.set_dependencies",
+    `set-dependencies/${milestoneId}`,
+    { milestoneId, dependsOn },
+    invocation,
+  );
+  executeDomainOperation(request, () => {
+    const milestone = getMilestone(milestoneId);
+    if (!milestone) throw new Error(`milestone ${milestoneId} does not exist`);
+    if (isClosedStatus(milestone.status)) {
+      throw new Error(`milestone ${milestoneId} is closed (${milestone.status}); its dependencies cannot change`);
+    }
+    if (new Set(dependsOn).size !== dependsOn.length) throw new Error("depends_on repeats a milestone id");
+    for (const depId of dependsOn) {
+      if (depId === milestoneId) throw new Error(`milestone ${milestoneId} cannot depend on itself`);
+      const dep = getMilestone(depId);
+      if (!dep) throw new Error(`depends_on references unknown milestone: ${depId}`);
+      if (isDiscardedMilestoneStatus(dep.status)) {
+        throw new Error(`depends_on milestone ${depId} was discarded and can never be complete`);
+      }
+    }
+    const { depsMap, closedIds } = loadDependencyGraph();
+    depsMap.set(milestoneId, dependsOn);
+    const cycle = validateQueueOrder([...depsMap.keys()], depsMap, closedIds)
+      .violations.find((violation) => violation.type === "circular");
+    if (cycle) throw new Error(cycle.message);
+
+    upsertMilestonePlanning(milestoneId, { depends_on: dependsOn });
+    return {
+      events: [{
+        eventType: "milestone.dependencies_set",
+        entityType: "milestone",
+        entityId: milestoneId,
+        payload: { milestoneId, dependsOn, previous: milestone.depends_on },
+        destinations: ["db"],
+      }],
+      projections: [{
+        projectionKey: `milestone/${milestoneId.toLowerCase()}/dependencies`,
+        projectionKind: "milestone-status",
+        rendererVersion: "1",
+      }],
+    };
+  });
 }
 
 // ─── Sorting ─────────────────────────────────────────────────────────────────

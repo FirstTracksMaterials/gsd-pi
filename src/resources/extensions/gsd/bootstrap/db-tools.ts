@@ -927,99 +927,25 @@ export function registerDbTools(pi: ExtensionAPI): void {
 	// ─── gsd_milestone_generate_id (formerly gsd_generate_milestone_id) ────
 
 	const milestoneGenerateIdExecute = async (
-		_toolCallId: string,
+		toolCallId: string,
 		_params: any,
 		_signal: AbortSignal | undefined,
 		_onUpdate: unknown,
 		_ctx: unknown,
 	) => {
-		try {
-			const basePath = resolveCtxCwd(_ctx);
-			// Milestone IDs are allocated against DB rows; with no DB, refuse
-			// before a preview reservation is consumed (ADR-046).
-			if (!(await ensureDbOpen(basePath))) {
-				throw new Error("workflow DB is unavailable");
-			}
-			// Claim a reserved ID if the guided-flow already previewed one to the user.
-			// This guarantees the ID shown in the UI matches the one materialised on disk.
-			const {
-				claimReservedId,
-				findMilestoneIds,
-				getReservedMilestoneIds,
-				nextMilestoneId,
-			} = await import("../guided-flow.js");
-			const reserved = claimReservedId();
-			if (reserved) {
-				await ensureMilestoneDbRow(reserved, basePath);
-				return {
-					content: [{ type: "text" as const, text: reserved }],
-					details: {
-						operation: "generate_milestone_id",
-						id: reserved,
-						source: "reserved",
-					} as any,
-				};
-			}
-
-			const { getAllMilestones } = await import("../gsd-db.js");
-			const existingIds = [
-				...findMilestoneIds(basePath),
-				...getAllMilestones().map((m) => m.id),
-			];
-			const uniqueEnabled =
-				!!loadEffectiveGSDPreferences(basePath)?.preferences
-					?.unique_milestone_ids;
-			const allIds = [
-				...new Set([...existingIds, ...getReservedMilestoneIds()]),
-			];
-			const newId = nextMilestoneId(allIds, uniqueEnabled);
-			await ensureMilestoneDbRow(newId, basePath);
-			return {
-				content: [{ type: "text" as const, text: newId }],
-				details: {
-					operation: "generate_milestone_id",
-					id: newId,
-					existingCount: existingIds.length,
-					uniqueEnabled,
-				} as any,
-			};
-		} catch (err) {
-			const msg = err instanceof Error ? err.message : String(err);
-			return {
-				content: [
-					{
-						type: "text" as const,
-						text: `Error generating milestone ID: ${msg}`,
-					},
-				],
-				details: { operation: "generate_milestone_id", error: msg } as any,
-			};
-		}
+		const { executeMilestoneGenerateId } = await loadWorkflowExecutors();
+		return executeMilestoneGenerateId(
+			resolveCtxCwd(_ctx),
+			piExecutionInvocation("gsd_milestone_generate_id", toolCallId),
+		);
 	};
-
-	/**
-	 * Insert a minimal DB row for a milestone ID so it's visible to the state
-	 * machine. Uses INSERT OR IGNORE — safe to call even if gsd_plan_milestone
-	 * later writes the full row. Throws when the DB is unavailable or the
-	 * insert fails, so the tool never reports an ID that has no row.
-	 */
-	async function ensureMilestoneDbRow(
-		milestoneId: string,
-		basePath: string,
-	): Promise<void> {
-		if (!(await ensureDbOpen(basePath))) {
-			throw new Error("workflow DB is unavailable");
-		}
-		const { insertMilestone } = await import("../gsd-db.js");
-		insertMilestone({ id: milestoneId, status: "queued" });
-	}
 
 	const milestoneGenerateIdTool = {
 		name: "gsd_milestone_generate_id",
 		label: "Generate Milestone ID",
 		description:
-			"Generate the next milestone ID for a new GSD milestone. " +
-			"Scans existing milestones on disk and respects the unique_milestone_ids preference. " +
+			"Generate the next milestone ID for a new GSD milestone and register its database row. " +
+			"Respects the unique_milestone_ids preference. " +
 			"Always use this tool when creating a new milestone — never invent milestone IDs manually.",
 		promptSnippet:
 			"Generate a valid milestone ID (respects unique_milestone_ids preference)",
@@ -1047,9 +973,7 @@ export function registerDbTools(pi: ExtensionAPI): void {
 					0,
 				);
 			}
-			let text = theme.fg("success", `Generated ${d?.id ?? "ID"}`);
-			if (d?.source === "reserved") text += theme.fg("dim", " (reserved)");
-			return new Text(text, 0, 0);
+			return new Text(theme.fg("success", `Generated ${d?.id ?? "ID"}`), 0, 0);
 		},
 	};
 
@@ -2901,6 +2825,142 @@ export function registerDbTools(pi: ExtensionAPI): void {
 	};
 
 	registerWorkflowTool(pi, reopenMilestoneTool);
+
+	// ─── Milestone hierarchy: park, unpark, discard, reorder, dependencies ──
+
+	type MilestoneHierarchyExecutor =
+		| "executeMilestonePark"
+		| "executeMilestoneUnpark"
+		| "executeMilestoneDiscard"
+		| "executeMilestoneReorder"
+		| "executeMilestoneSetDependencies";
+
+	const milestoneHierarchyExecute =
+		(toolName: string, executor: MilestoneHierarchyExecutor) =>
+		async (
+			toolCallId: string,
+			params: any,
+			_signal: AbortSignal | undefined,
+			_onUpdate: unknown,
+			_ctx: unknown,
+		) => {
+			const executors = await loadWorkflowExecutors();
+			return executors[executor](
+				params,
+				resolveWorkflowToolBasePath(_ctx, params),
+				piExecutionInvocation(toolName, toolCallId),
+			);
+		};
+
+	const hierarchyMilestoneId = Type.String({
+		description: "Milestone ID (e.g. M003)",
+	});
+
+	registerWorkflowTool(pi, {
+		name: "gsd_milestone_park",
+		label: "Park Milestone",
+		description:
+			"Park a Milestone in one SQLite Domain Operation: it leaves the run, keeps all its work, and can be unparked later. The PARKED marker file is rendered from the database.",
+		promptSnippet: "Park a GSD Milestone (reversible)",
+		promptGuidelines: [
+			"Use gsd_milestone_park to shelve a milestone. Never create or edit a PARKED.md file; the database is the only source of park state.",
+			"A closed milestone cannot be parked.",
+		],
+		parameters: Type.Object({
+			milestoneId: hierarchyMilestoneId,
+			reason: Type.String({
+				minLength: 1,
+				description: "Why the milestone is parked",
+			}),
+		}),
+		execute: milestoneHierarchyExecute(
+			"gsd_milestone_park",
+			"executeMilestonePark",
+		),
+	});
+
+	registerWorkflowTool(pi, {
+		name: "gsd_milestone_unpark",
+		label: "Unpark Milestone",
+		description:
+			"Return a parked Milestone to the run in one SQLite Domain Operation. The PARKED marker file is removed after the commit.",
+		promptSnippet: "Unpark a parked GSD Milestone",
+		promptGuidelines: [
+			"Use gsd_milestone_unpark to reactivate a parked milestone. Never delete the PARKED.md file by hand.",
+		],
+		parameters: Type.Object({ milestoneId: hierarchyMilestoneId }),
+		execute: milestoneHierarchyExecute(
+			"gsd_milestone_unpark",
+			"executeMilestoneUnpark",
+		),
+	});
+
+	registerWorkflowTool(pi, {
+		name: "gsd_milestone_discard",
+		label: "Discard Milestone",
+		description:
+			"Discard a Milestone in one SQLite Domain Operation: the Milestone and its open Slices and Tasks are cancelled with a Waiver, its id is never reused, and its files, worktree and branch are removed after the commit. This cannot be undone.",
+		promptSnippet: "Discard a GSD Milestone permanently",
+		promptGuidelines: [
+			"Use gsd_milestone_discard only after the user explicitly confirmed the discard. Never delete a milestone directory by hand.",
+			"A complete milestone cannot be discarded. Prefer gsd_milestone_park when the milestone has completed work.",
+		],
+		parameters: Type.Object({
+			milestoneId: hierarchyMilestoneId,
+			reason: Type.String({
+				minLength: 1,
+				description: "Why the milestone is discarded (recorded in the Waiver)",
+			}),
+		}),
+		execute: milestoneHierarchyExecute(
+			"gsd_milestone_discard",
+			"executeMilestoneDiscard",
+		),
+	});
+
+	registerWorkflowTool(pi, {
+		name: "gsd_milestone_reorder",
+		label: "Reorder Milestones",
+		description:
+			"Set the execution order of the open Milestones in one SQLite Domain Operation. List every open Milestone in the wanted order; one that is not listed keeps its relative position after the listed ones. An order that puts a Milestone before one it depends on is refused. QUEUE-ORDER.json is rendered from the database.",
+		promptSnippet: "Set the execution order of open GSD Milestones",
+		promptGuidelines: [
+			"Use gsd_milestone_reorder to change the queue order. Never write QUEUE-ORDER.json by hand.",
+			"List every open milestone ID, first to run first; a milestone you do not list keeps its relative position after the listed ones. The tool refuses an order that puts a milestone before one it depends on; change the dependency first with gsd_milestone_set_dependencies.",
+		],
+		parameters: Type.Object({
+			order: Type.Array(Type.String(), {
+				minItems: 1,
+				description: "Open milestone IDs in execution order",
+			}),
+		}),
+		execute: milestoneHierarchyExecute(
+			"gsd_milestone_reorder",
+			"executeMilestoneReorder",
+		),
+	});
+
+	registerWorkflowTool(pi, {
+		name: "gsd_milestone_set_dependencies",
+		label: "Set Milestone Dependencies",
+		description:
+			"Replace the depends_on list of one open Milestone in one SQLite Domain Operation.",
+		promptSnippet: "Set which Milestones a GSD Milestone depends on",
+		promptGuidelines: [
+			"Use gsd_milestone_set_dependencies to change dependencies. Never edit depends_on in a CONTEXT.md file; the database is the only source.",
+			"dependsOn replaces the whole list; pass [] to remove all dependencies. Unknown or discarded milestones and dependency cycles are refused.",
+		],
+		parameters: Type.Object({
+			milestoneId: hierarchyMilestoneId,
+			dependsOn: Type.Array(Type.String(), {
+				description: "Milestone IDs that must be complete first",
+			}),
+		}),
+		execute: milestoneHierarchyExecute(
+			"gsd_milestone_set_dependencies",
+			"executeMilestoneSetDependencies",
+		),
+	});
 
 	// ─── gsd_save_gate_result ──────────────────────────────────────────────
 
