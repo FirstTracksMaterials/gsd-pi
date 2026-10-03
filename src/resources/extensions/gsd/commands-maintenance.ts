@@ -13,6 +13,7 @@ import {
 import { createHash, randomUUID } from "node:crypto";
 import { basename, dirname, join, resolve } from "node:path";
 import { deriveState } from "./state.js";
+import { MILESTONE_ID_RE } from "./milestone-ids.js";
 import { nativeBranchList, nativeDetectMainBranch, nativeBranchListMerged, nativeBranchDelete, nativeForEachRef, nativeUpdateRef } from "./native-git-bridge.js";
 import { logWarning } from "./workflow-logger.js";
 import type { DbAdapter } from "./db-adapter.js";
@@ -248,50 +249,86 @@ export async function handleCleanupWorktrees(ctx: ExtensionCommandContext, baseP
   ctx.ui.notify(lines.join("\n"), safeToRemove.length > 0 ? "success" : "info");
 }
 
+/**
+ * /gsd skip — cancel a Slice or Task through its Domain Operation. Each
+ * cancellation records a Waiver, so the closed item no longer blocks
+ * dispatch, dependencies or closeout.
+ */
 export async function handleSkip(unitArg: string, ctx: ExtensionCommandContext, basePath: string): Promise<void> {
+  const usage = "Usage: /gsd skip <unit-id>  (e.g., /gsd skip M001/S01/T03, /gsd skip M001/S02, or /gsd skip T03)";
   if (!unitArg) {
-    ctx.ui.notify("Usage: /gsd skip <unit-id>  (e.g., /gsd skip execute-task/M001/S01/T03 or /gsd skip T03)", "info");
+    ctx.ui.notify(usage, "info");
+    return;
+  }
+  const { ensureDbOpen } = await import("./bootstrap/dynamic-tools.js");
+  if (!await ensureDbOpen(basePath)) {
+    ctx.ui.notify("gsd skip: GSD database is not available.", "error");
     return;
   }
 
-  const { existsSync: fileExists, writeFileSync: writeFile, mkdirSync: mkDir, readFileSync: readFile } = await import("node:fs");
-  const { join: pathJoin } = await import("node:path");
-
-  const completedKeysFile = pathJoin(basePath, ".gsd", "completed-units.json");
-  let keys: string[] = [];
-  try {
-    if (fileExists(completedKeysFile)) {
-      keys = JSON.parse(readFile(completedKeysFile, "utf-8"));
-    }
-  } catch (e) { logWarning("command", `completed-units.json parse failed: ${(e as Error).message}`); }
-
-  // Normalize: accept "execute-task/M001/S01/T03", "M001/S01/T03", or just "T03"
-  let skipKey = unitArg;
-
-  if (!skipKey.includes("execute-task") && !skipKey.includes("plan-") && !skipKey.includes("research-") && !skipKey.includes("complete-")) {
+  // Accept "M001/S01/T03", "M001/S01", "T03", "S01" or "execute-task/M001/S01/T03".
+  let parts = unitArg.trim().split("/");
+  if (parts.length === 4 && parts[0] === "execute-task") parts = parts.slice(1);
+  if (parts.length === 1 && /^[TS]\d+$/i.test(parts[0])) {
     const state = await deriveState(basePath);
     const mid = state.activeMilestone?.id;
     const sid = state.activeSlice?.id;
-
-    if (unitArg.match(/^T\d+$/i) && mid && sid) {
-      skipKey = `execute-task/${mid}/${sid}/${unitArg.toUpperCase()}`;
-    } else if (unitArg.match(/^S\d+$/i) && mid) {
-      skipKey = `plan-slice/${mid}/${unitArg.toUpperCase()}`;
-    } else if (unitArg.includes("/")) {
-      skipKey = `execute-task/${unitArg}`;
-    }
+    if (/^T/i.test(parts[0]) && mid && sid) parts = [mid, sid, parts[0]];
+    else if (/^S/i.test(parts[0]) && mid) parts = [mid, parts[0]];
   }
-
-  if (keys.includes(skipKey)) {
-    ctx.ui.notify(`Already skipped: ${skipKey}`, "info");
+  parts = parts.map((part, index) => index === 0 ? part : part.toUpperCase());
+  const [milestoneId, sliceId, taskId] = parts;
+  if (
+    parts.length < 2 || parts.length > 3
+    || !MILESTONE_ID_RE.test(milestoneId)
+    || !/^S\d+$/.test(sliceId)
+    || (taskId !== undefined && !/^T\d+$/.test(taskId))
+  ) {
+    ctx.ui.notify(`gsd skip: "${unitArg.trim()}" is not a slice or task path. ${usage}`, "warning");
     return;
   }
 
-  keys.push(skipKey);
-  mkDir(pathJoin(basePath, ".gsd"), { recursive: true });
-  writeFile(completedKeysFile, JSON.stringify(keys), "utf-8");
-
-  ctx.ui.notify(`Skipped: ${skipKey}. Will not be dispatched in auto-mode.`, "success");
+  const id = randomUUID();
+  const invocation = {
+    idempotencyKey: `cli:gsd_skip:${id}`,
+    sourceTransport: "internal" as const,
+    actorType: "user",
+    actorId: "gsd-cli-operator",
+    traceId: id,
+  };
+  const reason = "Skipped by /gsd skip";
+  const unit = parts.join("/");
+  try {
+    if (parts.length === 2) {
+      const { handleSkipSlice } = await import("./tools/skip-slice.js");
+      const result = handleSkipSlice({ milestoneId: parts[0], sliceId: parts[1], reason }, invocation);
+      if (result.error) {
+        ctx.ui.notify(`gsd skip: ${result.error}`, "error");
+        return;
+      }
+    } else {
+      const { cancelTask } = await import("./task-lifecycle-domain-operation.js");
+      cancelTask({
+        invocation,
+        task: { milestoneId: parts[0], sliceId: parts[1], taskId: parts[2] },
+        reason,
+      });
+    }
+  } catch (error) {
+    ctx.ui.notify(`gsd skip: ${error instanceof Error ? error.message : String(error)}`, "error");
+    return;
+  }
+  const { invalidateAllCaches } = await import("./cache.js");
+  invalidateAllCaches();
+  try {
+    const { rebuildState } = await import("./doctor.js");
+    await rebuildState(basePath);
+    const { flushWorkflowProjections } = await import("./projection-flush.js");
+    await flushWorkflowProjections(basePath, { milestoneId: parts[0] });
+  } catch (error) {
+    logWarning("command", `gsd skip projection refresh failed: ${(error as Error).message}`);
+  }
+  ctx.ui.notify(`Skipped: ${unit}. Cancelled with a Waiver; it will not be dispatched.`, "success");
 }
 
 export async function handleDryRun(ctx: ExtensionCommandContext, basePath: string): Promise<void> {

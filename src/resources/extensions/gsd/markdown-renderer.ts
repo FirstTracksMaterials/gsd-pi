@@ -12,7 +12,7 @@
 import { readFileSync, existsSync, mkdirSync, statSync } from "node:fs";
 import { createProjectionDirectorySync, removeProjectionFileSync } from "./atomic-write.js";
 import { logWarning } from "./workflow-logger.js";
-import { isClosedStatus, isHiddenFromRoadmap, toStatus } from "./status-guards.js";
+import { isClosedStatus, isDiscardedMilestoneStatus, isHiddenFromRoadmap, toStatus } from "./status-guards.js";
 import { isCanonicalStagedTaskSummaryState } from "./task-summary-projection-policy.js";
 import { dirname, join } from "node:path";
 import {
@@ -55,6 +55,7 @@ import {
 import { saveFile, clearParseCache, registerCacheClearCallback } from "./files.js";
 import { parseProjectionRoadmap } from "./schemas/parsers.js";
 import { stripIdPrefix } from "./strip-id-prefix.js";
+import { renderMilestoneParkedMarker } from "./milestone-park-projection.js";
 import { invalidateStateCache } from "./state.js";
 import { clearPathCache, milestonesDir, legacyMilestonesDir, isLegacyMilestonesLayout, resolveMilestonePath, relSliceFile, canonicalPhaseDirName } from "./paths.js";
 import { readCompatMarker, writeCompatMarker, computeProjectionSha, deriveCompatProjectionKey } from "./compat/compat-marker.js";
@@ -1128,6 +1129,12 @@ export async function renderAllFromDb(basePath: string): Promise<RenderAllResult
   const tasksBySlice = getTasksBySliceIds(slicePairs);
 
   for (const milestone of milestones) {
+    // A cancelled (discarded) milestone keeps its rows as a tombstone but has
+    // no projection tree; rendering one would bring removed files back.
+    if (isDiscardedMilestoneStatus(milestone.status)) {
+      result.skipped++;
+      continue;
+    }
     // Render roadmap checkboxes
     try {
       const ok = await renderRoadmapCheckboxes(basePath, milestone.id);
@@ -1151,6 +1158,13 @@ export async function renderAllFromDb(basePath: string): Promise<RenderAllResult
       else result.skipped++;
     } catch (err) {
       result.errors.push(`milestone summary ${milestone.id}: ${(err as Error).message}`);
+    }
+
+    try {
+      if (renderMilestoneParkedMarker(basePath, milestone.id)) result.rendered++;
+      else result.skipped++;
+    } catch (err) {
+      result.errors.push(`parked marker ${milestone.id}: ${(err as Error).message}`);
     }
 
     // Iterate slices (pre-fetched above)
@@ -1500,7 +1514,7 @@ function detectStaleRendersImpl(basePath: string): StaleEntry[] {
   // both packaged (.js) and source (.ts via the strip-types loader) contexts —
   // the same form a dozen other modules already use.
   const stale: StaleEntry[] = [];
-  const milestones = getAllMilestones();
+  const milestones = getAllMilestones().filter((milestone) => !isDiscardedMilestoneStatus(milestone.status));
 
   for (const milestone of milestones) {
     const slices = getMilestoneSlices(milestone.id);
