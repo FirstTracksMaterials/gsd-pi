@@ -23,6 +23,7 @@ import { saveDecisionToDb, saveRequirementToDb } from "../db-writer.ts";
 import { computeProjectionSha, readCompatMarker } from "../compat/compat-marker.ts";
 import {
   closeDatabase,
+  getArtifact,
   getTask,
   insertArtifact,
   insertMilestone,
@@ -31,7 +32,11 @@ import {
   openDatabase,
   setSliceSummaryMd,
 } from "../gsd-db.ts";
-import { invalidateStateCache } from "../state.ts";
+import { deriveState, invalidateStateCache } from "../state.ts";
+import {
+  describeArtifactDbDriftBlocker,
+  detectArtifactDbDrift,
+} from "../state-reconciliation/drift/artifact-db.ts";
 
 type Note = { message: string; kind: string };
 
@@ -132,6 +137,76 @@ test("handleRebuild quarantines stale completion projections without mutating DB
   } finally {
     cleanup(base);
   }
+});
+
+test("handleRebuild keeps the SUMMARY artifact row when it quarantines the file on disk", async (t) => {
+  const base = makeBase();
+  t.after(() => cleanup(base));
+  openDatabase(join(base, ".gsd", "gsd.db"));
+  seedOpenTask();
+  const artifactPath = "milestones/M001/slices/S01/tasks/T01-SUMMARY.md";
+  insertArtifact({
+    path: artifactPath,
+    artifact_type: "SUMMARY",
+    milestone_id: "M001",
+    slice_id: "S01",
+    task_id: "T01",
+    full_content: "# T01 Summary\n\nStored in the DB.\n",
+  });
+  const summaryPath = join(base, ".gsd", artifactPath);
+  writeFileSync(summaryPath, "# T01 Summary\n\nHand-edited on disk.\n", "utf-8");
+
+  const { ctx } = makeCtx();
+  await handleRebuild(ctx, base, "markdown");
+
+  const quarantined = listFiles(join(base, ".gsd", "quarantine", "projections"));
+  assert.equal(quarantined.length, 1, "the disk file is moved to quarantine");
+  assert.equal(
+    getArtifact(artifactPath)?.full_content,
+    "# T01 Summary\n\nStored in the DB.\n",
+    "a file on disk must not make rebuild delete DB content",
+  );
+
+  // The kept row is still an unproven completion claim on an open task, so
+  // the drift stays fail-closed. The blocker must not send the user back to
+  // the rebuild that cannot clear it.
+  invalidateStateCache();
+  const state = await deriveState(base);
+  const drifts = detectArtifactDbDrift(state, { basePath: base, state });
+  assert.deepEqual(
+    drifts.map((drift) => drift.kind === "artifact-db-status-divergence" ? drift.reason : drift.kind),
+    ["task S01/T01 has SUMMARY artifact while DB status is pending"],
+  );
+  const blocker = describeArtifactDbDriftBlocker(drifts[0]!, { basePath: base, state }) ?? "";
+  assert.match(blocker, /keeps that row, so this blocker can remain after a rebuild/);
+  assert.match(blocker, /`\/gsd recover` with exact Preview approval/);
+  assert.doesNotMatch(blocker, /Run `\/gsd rebuild markdown`/);
+});
+
+test("a SUMMARY file on disk with no artifact row still points at /gsd rebuild markdown", async (t) => {
+  const base = makeBase();
+  t.after(() => cleanup(base));
+  openDatabase(join(base, ".gsd", "gsd.db"));
+  seedOpenTask();
+  writeFileSync(
+    join(base, ".gsd", "milestones", "M001", "slices", "S01", "tasks", "T01-SUMMARY.md"),
+    "# T01 Summary\n\nDisk-only completion.\n",
+    "utf-8",
+  );
+
+  const state = await deriveState(base);
+  const drifts = detectArtifactDbDrift(state, { basePath: base, state });
+  assert.equal(drifts.length, 1);
+  assert.match(
+    describeArtifactDbDriftBlocker(drifts[0]!, { basePath: base, state }) ?? "",
+    /Run `\/gsd rebuild markdown` after review to quarantine stale projections/,
+  );
+
+  const { ctx } = makeCtx();
+  await handleRebuild(ctx, base, "markdown");
+  invalidateStateCache();
+  const after = await deriveState(base);
+  assert.deepEqual(detectArtifactDbDrift(after, { basePath: base, state: after }), [], "the rebuild clears a file-only drift");
 });
 
 test("handleRebuild re-renders missing task summary projections from DB", async () => {
