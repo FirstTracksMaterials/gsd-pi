@@ -74,6 +74,7 @@ async function importBridgeModule(): Promise<GsdMcpBridge> {
 
 type WorkflowToolExecutors = {
   SUPPORTED_SUMMARY_ARTIFACT_TYPES: readonly string[];
+  runInToolSession: <T>(sessionKey: string, run: () => T) => T;
   MILESTONE_STATUS_OBSERVATION_TOKEN_ENV?: string;
   resolveMilestoneStatusObservationTokenState?: (
     basePath: string,
@@ -218,7 +219,8 @@ type WorkflowToolExecutors = {
         verificationCommands: string[];
       }>;
     },
-    basePath?: string,
+    basePath: string,
+    invocation: PlanningInvocation,
   ) => Promise<unknown>;
   executeSliceComplete: (
     params: {
@@ -371,7 +373,8 @@ type WorkflowToolExecutors = {
       rationale: string;
       findings?: string;
     },
-    basePath?: string,
+    basePath: string,
+    invocation: ExecutionInvocation,
   ) => Promise<unknown>;
   executeUatResultSave: (
     params: {
@@ -774,6 +777,7 @@ function isWorkflowToolExecutors(value: unknown): value is WorkflowToolExecutors
   if (!value || typeof value !== "object") return false;
   const record = value as Record<string, unknown>;
   const functionExports = [
+    "runInToolSession",
     "executeMilestoneStatus",
     "executePlanMilestone",
     "executePlanSlice",
@@ -1637,12 +1641,13 @@ async function handleReplanTask(
 async function handleReworkBriefSave(
   projectDir: string,
   args: z.infer<typeof reworkBriefSaveSchema>,
+  invocation: PlanningInvocation,
 ): Promise<unknown> {
   await enforceWorkflowWriteGate("gsd_rework_brief_save", projectDir, args.milestoneId);
   const { executeReworkBriefSave } = await getWorkflowToolExecutors();
   const { projectDir: _projectDir, ...params } = args;
   return adaptExecutorResult(
-    await runSerializedWorkflowOperation(() => executeReworkBriefSave(params, projectDir)),
+    await runSerializedWorkflowOperation(() => executeReworkBriefSave(params, projectDir, invocation)),
   );
 }
 
@@ -1804,12 +1809,13 @@ async function inferSaveGateResultScope(
 async function handleSaveGateResult(
   projectDir: string,
   args: z.infer<typeof saveGateResultSchema>,
+  invocation: ExecutionInvocation,
 ): Promise<unknown> {
   await enforceWorkflowWriteGate("gsd_save_gate_result", projectDir, args.milestoneId);
   const { executeSaveGateResult } = await getWorkflowToolExecutors();
   const { projectDir: _projectDir, ...params } = args;
   return adaptExecutorResult(
-    await runSerializedWorkflowOperation(() => executeSaveGateResult(params, projectDir)),
+    await runSerializedWorkflowOperation(() => executeSaveGateResult(params, projectDir, invocation)),
   );
 }
 
@@ -2778,7 +2784,9 @@ function wrapServerWithErrorHandler(realServer: McpToolServer): McpToolServer {
     tool(name, description, params, handler) {
       return realServer.tool(name, description, params, async (args, extra) => {
         try {
-          return await handler(args, extra);
+          // A mutation is checked against the revision that this MCP session last read.
+          const { runInToolSession } = await getWorkflowToolExecutors();
+          return await runInToolSession(`mcp:${extra?.sessionId ?? "default"}`, () => handler(args, extra));
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           return {
@@ -2954,13 +2962,18 @@ export function registerWorkflowTools(
     "gsd_requirement_update",
     "Update an existing requirement in the GSD database and regenerate REQUIREMENTS.md.",
     requirementUpdateParams,
-    async (args: Record<string, unknown>) => {
+    async (args: Record<string, unknown>, extra?: WorkflowMcpRequestExtra) => {
       const parsed = parseWorkflowArgs(requirementUpdateSchema, args);
       const { projectDir, id, ...updates } = parsed;
       await enforceWorkflowWriteGate("gsd_requirement_update", projectDir);
       await runSerializedWorkflowDbOperation(projectDir, async () => {
         const bridge = await importBridgeModule();
-        return bridge.updateRequirementInDb(id, updates, projectDir);
+        return bridge.updateRequirementInDb(
+          id,
+          updates,
+          projectDir,
+          mcpPlanningInvocation("gsd_requirement_update", extra),
+        );
       });
       return { content: [{ type: "text" as const, text: `Updated requirement ${id}` }] };
     },
@@ -2970,14 +2983,19 @@ export function registerWorkflowTools(
     "gsd_update_requirement",
     "Alias for gsd_requirement_update. Update an existing requirement in the GSD database and regenerate REQUIREMENTS.md.",
     requirementUpdateParams,
-    async (args: Record<string, unknown>) => {
+    async (args: Record<string, unknown>, extra?: WorkflowMcpRequestExtra) => {
       logAliasUsage("gsd_update_requirement", "gsd_requirement_update");
       const parsed = parseWorkflowArgs(requirementUpdateSchema, args);
       const { projectDir, id, ...updates } = parsed;
       await enforceWorkflowWriteGate("gsd_requirement_update", projectDir);
       await runSerializedWorkflowDbOperation(projectDir, async () => {
         const bridge = await importBridgeModule();
-        return bridge.updateRequirementInDb(id, updates, projectDir);
+        return bridge.updateRequirementInDb(
+          id,
+          updates,
+          projectDir,
+          mcpPlanningInvocation("gsd_requirement_update", extra),
+        );
       });
       return { content: [{ type: "text" as const, text: `Updated requirement ${id}` }] };
     },
@@ -2987,13 +3005,13 @@ export function registerWorkflowTools(
     "gsd_requirement_save",
     "Record a new requirement to the GSD database and regenerate REQUIREMENTS.md.",
     requirementSaveParams,
-    async (args: Record<string, unknown>) => {
+    async (args: Record<string, unknown>, extra?: WorkflowMcpRequestExtra) => {
       const parsed = parseWorkflowArgs(requirementSaveSchema, args);
       const { projectDir, ...params } = parsed;
       await enforceWorkflowWriteGate("gsd_requirement_save", projectDir);
       const result = await runSerializedWorkflowDbOperation(projectDir, async () => {
         const bridge = await importBridgeModule();
-        return bridge.saveRequirementToDb(params, projectDir);
+        return bridge.saveRequirementToDb(params, projectDir, mcpPlanningInvocation("gsd_requirement_save", extra));
       });
       return { content: [{ type: "text" as const, text: `Saved requirement ${result.id}` }] };
     },
@@ -3003,14 +3021,14 @@ export function registerWorkflowTools(
     "gsd_save_requirement",
     "Alias for gsd_requirement_save. Record a new requirement to the GSD database and regenerate REQUIREMENTS.md.",
     requirementSaveParams,
-    async (args: Record<string, unknown>) => {
+    async (args: Record<string, unknown>, extra?: WorkflowMcpRequestExtra) => {
       logAliasUsage("gsd_save_requirement", "gsd_requirement_save");
       const parsed = parseWorkflowArgs(requirementSaveSchema, args);
       const { projectDir, ...params } = parsed;
       await enforceWorkflowWriteGate("gsd_requirement_save", projectDir);
       const result = await runSerializedWorkflowDbOperation(projectDir, async () => {
         const bridge = await importBridgeModule();
-        return bridge.saveRequirementToDb(params, projectDir);
+        return bridge.saveRequirementToDb(params, projectDir, mcpPlanningInvocation("gsd_requirement_save", extra));
       });
       return { content: [{ type: "text" as const, text: `Saved requirement ${result.id}` }] };
     },
@@ -3346,9 +3364,13 @@ export function registerWorkflowTools(
     "gsd_rework_brief_save",
     "Persist a structured task rework brief whose blocking findings gate gsd_task_complete.",
     reworkBriefSaveParams,
-    async (args: Record<string, unknown>) => {
+    async (args: Record<string, unknown>, extra?: WorkflowMcpRequestExtra) => {
       const parsed = parseWorkflowArgs(reworkBriefSaveSchema, args);
-      return handleReworkBriefSave(parsed.projectDir, parsed);
+      return handleReworkBriefSave(
+        parsed.projectDir,
+        parsed,
+        mcpPlanningInvocation("gsd_rework_brief_save", extra),
+      );
     },
   );
 
@@ -3514,7 +3536,7 @@ export function registerWorkflowTools(
     "gsd_save_gate_result",
     "Save a quality gate result to the GSD database.",
     saveGateResultIncomingParams,
-    async (args: Record<string, unknown>) => {
+    async (args: Record<string, unknown>, extra?: WorkflowMcpRequestExtra) => {
       const incoming = parseWorkflowArgs(saveGateResultIncomingSchema, args);
       const { prepareSaveGateResultArguments } = await importLocalModule<{
         prepareSaveGateResultArguments: (raw: unknown) => unknown;
@@ -3528,7 +3550,11 @@ export function registerWorkflowTools(
           ? (prepared as Record<string, unknown>)
           : {};
       const parsed = parseWorkflowArgs(saveGateResultSchema, record);
-      return handleSaveGateResult(parsed.projectDir, parsed);
+      return handleSaveGateResult(
+        parsed.projectDir,
+        parsed,
+        mcpWorkflowExecutionInvocation("gsd_save_gate_result", extra),
+      );
     },
   );
 
@@ -3948,14 +3974,15 @@ export function registerWorkflowTools(
     "gsd_capture_thought",
     "Record a durable project insight into the GSD memory store. Categories: architecture, convention, gotcha, preference, environment, pattern, rule. Rule, pattern and gotcha captures get a K/P/L id and appear in KNOWLEDGE.md at once. Mirrors the in-process capture_thought tool for external MCP clients.",
     captureThoughtParams,
-    async (args: Record<string, unknown>) => {
+    async (args: Record<string, unknown>, extra?: WorkflowMcpRequestExtra) => {
       const { projectDir, ...params } = parseWorkflowArgs(captureThoughtSchema, args);
+      const invocation = mcpPlanningInvocation("gsd_capture_thought", extra);
       await enforceWorkflowWriteGate("gsd_capture_thought", projectDir);
       return runSerializedWorkflowDbOperation(projectDir, async () => {
         const { executeMemoryCapture } = await importWorkflowRuntimeModule<any>(
           "../../../src/resources/extensions/gsd/tools/memory-tools.js",
         );
-        return executeMemoryCapture(params, projectDir);
+        return executeMemoryCapture(params, projectDir, invocation);
       });
     },
   );

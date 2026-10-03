@@ -26,10 +26,13 @@ import { fileURLToPath } from "node:url";
 import {
   closeDatabase,
   getTask,
+  insertGateRow,
   openDatabase,
   _getAdapter,
 } from "../../../src/resources/extensions/gsd/gsd-db.ts";
 import { registerDbTools } from "../../../src/resources/extensions/gsd/bootstrap/db-tools.ts";
+import { registerMemoryTools } from "../../../src/resources/extensions/gsd/bootstrap/memory-tools.ts";
+import { registerQueryTools } from "../../../src/resources/extensions/gsd/bootstrap/query-tools.ts";
 import {
   claimTaskAttempt,
   settleTaskAttempt,
@@ -41,6 +44,7 @@ import {
 import {
   expectedFail,
   fenceWorkflowWrites,
+  seedLifecycle,
   snapshotProjections,
 } from "../../../src/resources/extensions/gsd/tests/db-authority-gate.ts";
 import { seedSliceCompletionAuthority } from "../../../src/resources/extensions/gsd/tests/slice-completion-fixture.ts";
@@ -169,7 +173,7 @@ function cleanup(base: string): void {
 }
 
 function makeMockServer() {
-  type TestRequestExtra = { _meta?: Record<string, unknown> };
+  type TestRequestExtra = { _meta?: Record<string, unknown>; sessionId?: string };
   const tools: Array<{
     name: string;
     handler: (args: Record<string, unknown>, extra?: TestRequestExtra) => Promise<unknown>;
@@ -205,6 +209,8 @@ async function runNativeDbTool(
   base: string,
   toolName: string,
   args: Record<string, unknown>,
+  toolCallId = "parity-call",
+  sessionId?: string,
 ): Promise<unknown> {
   const registrations: Array<{
     name: string;
@@ -216,14 +222,20 @@ async function runNativeDbTool(
       ctx: unknown,
     ) => Promise<unknown>;
   }> = [];
-  registerDbTools({
+  const pi = {
     registerTool(tool: (typeof registrations)[number]) {
       registrations.push(tool);
     },
-  } as Parameters<typeof registerDbTools>[0]);
+  } as Parameters<typeof registerDbTools>[0];
+  registerDbTools(pi);
+  registerMemoryTools(pi);
+  registerQueryTools(pi);
   const tool = registrations.find((entry) => entry.name === toolName);
   if (!tool) throw new Error(`native db tool ${toolName} not registered`);
-  return tool.execute("parity-call", args, undefined, undefined, { cwd: base });
+  return tool.execute(toolCallId, args, undefined, undefined, {
+    cwd: base,
+    ...(sessionId ? { sessionManager: { getSessionId: () => sessionId } } : {}),
+  });
 }
 
 async function runNativeAndMcpParity(input: {
@@ -682,6 +694,7 @@ async function callMcpLifecycleTool(
   name: string,
   args: Record<string, unknown>,
   stableKey: string,
+  sessionId?: string,
 ): Promise<unknown> {
   const server = makeMockServer();
   registerWorkflowTools(server as Parameters<typeof registerWorkflowTools>[0]);
@@ -689,6 +702,7 @@ async function callMcpLifecycleTool(
   assert.ok(tool, `${name} must be registered on a fresh MCP server`);
   return tool.handler({ projectDir: base, ...args }, {
     _meta: { "io.opengsd/idempotency-key": stableKey },
+    ...(sessionId ? { sessionId } : {}),
   });
 }
 
@@ -915,7 +929,17 @@ describe("Slice lifecycle persistent retry parity", () => {
 // the cutover package that routes the tool through one Domain Operation. The
 // headless transport registers the same native tools in an RPC child and has
 // no leg here.
-const OPERATION_ONLY_CASES = [
+// `piTool` is the native name when it differs from the MCP name. `seed` runs
+// before the write fence is set. `renderPassesWith` names the package that
+// stops the tool's inline render from writing a workflow table.
+const OPERATION_ONLY_CASES: ReadonlyArray<{
+  tool: string;
+  piTool?: string;
+  args: Record<string, unknown>;
+  passesWith: string | null;
+  renderPassesWith?: string;
+  seed?: () => void;
+}> = [
   { tool: "gsd_slice_complete", args: SLICE_LIFECYCLE_CASES[0].args, passesWith: "P35" },
   {
     tool: "gsd_decision_save",
@@ -923,7 +947,58 @@ const OPERATION_ONLY_CASES = [
     passesWith: null,
   },
   { tool: "gsd_summary_save", args: SUMMARY_SAVE_ARGS, passesWith: "P15" },
-] as const;
+  {
+    tool: "gsd_requirement_save",
+    args: {
+      class: "core-capability",
+      description: "Operation-only requirement",
+      why: "Lock one Domain Operation per requirement save",
+      source: "M001",
+    },
+    passesWith: null,
+  },
+  {
+    tool: "gsd_requirement_update",
+    args: { id: "R001", status: "validated", validation: "G4 gate" },
+    passesWith: null,
+  },
+  {
+    tool: "gsd_save_gate_result",
+    args: { milestoneId: "M001", sliceId: "S02", gateId: "Q3", verdict: "pass", rationale: "No auth surface." },
+    passesWith: null,
+    // The inline plan render stores an artifacts row after the operation commits.
+    renderPassesWith: "P12",
+    seed: () => insertGateRow({ milestoneId: "M001", sliceId: "S02", gateId: "Q3", scope: "slice" }),
+  },
+  {
+    tool: "gsd_rework_brief_save",
+    args: {
+      milestoneId: "M001",
+      sliceId: "S02",
+      taskId: "T01",
+      findings: [{
+        findingId: "F1",
+        severity: "advisory",
+        description: "Name is unclear",
+        requiredFix: "Rename the helper",
+        verificationCommands: ["npm test"],
+      }],
+    },
+    passesWith: null,
+  },
+  {
+    tool: "gsd_capture_thought",
+    piTool: "capture_thought",
+    args: { category: "pattern", content: "Route every record write through one Domain Operation." },
+    passesWith: null,
+  },
+  {
+    tool: "gsd_capture_thought",
+    piTool: "capture_thought",
+    args: { category: "environment", content: "The gate fixture runs on a temporary project root." },
+    passesWith: null,
+  },
+];
 
 function operationCount(): number {
   return Number(_getAdapter()!.prepare("SELECT COUNT(*) AS count FROM workflow_operations").get()?.count);
@@ -941,10 +1016,12 @@ async function withOperationOnlyFixture(
       completedTaskIds: ["T01"],
       runId: `${transport}-operation-only`,
     });
-    await run((gateCase) => transport === "pi"
-      ? runNativeDbTool(fixture.root, gateCase.tool, gateCase.args)
-      : callMcpLifecycleTool(fixture.root, gateCase.tool, gateCase.args, `operation-only-${gateCase.tool}`),
-    fixture.root);
+    await run((gateCase) => {
+      const key = `operation-only-${OPERATION_ONLY_CASES.indexOf(gateCase)}`;
+      return transport === "pi"
+        ? runNativeDbTool(fixture.root, gateCase.piTool ?? gateCase.tool, gateCase.args, key)
+        : callMcpLifecycleTool(fixture.root, gateCase.tool, gateCase.args, key);
+    }, fixture.root);
   } finally {
     fixture.cleanup();
   }
@@ -953,19 +1030,30 @@ async function withOperationOnlyFixture(
 describe("G4: workflow tables are written only inside a Domain Operation", () => {
   for (const transport of ["pi", "mcp"] as const) {
     for (const gateCase of OPERATION_ONLY_CASES) {
-      it(`${transport} ${gateCase.tool}: one operation per call, none on replay, no write outside it`, async () => {
+      const label = `${gateCase.tool}${gateCase.args.category ? ` (${gateCase.args.category})` : ""}`;
+      it(`${transport} ${label}: one operation per call, none on replay, no write outside it`, async () => {
         await withOperationOnlyFixture(transport, async (call) => {
+          gateCase.seed?.();
           const before = operationCount();
           const fence = fenceWorkflowWrites();
-          await call(gateCase);
+          const first = await call(gateCase);
           const afterFirstCall = operationCount();
-          await call(gateCase);
+          const replay = await call(gateCase);
           fence.restore();
 
-          const gate = () => {
+          const fenceGate = () =>
             assert.deepEqual(fence.violations, [], "no workflow-table write outside a Domain Operation");
+          const gate = () => {
+            if (gateCase.renderPassesWith) expectedFail(gateCase.renderPassesWith, fenceGate);
+            else fenceGate();
             assert.equal(afterFirstCall - before, 1, "one call commits one operation");
             assert.equal(operationCount() - afterFirstCall, 0, "a replay commits no operation");
+            assert.ok(!(first as { isError?: boolean }).isError, "the call succeeds");
+            assert.deepEqual(
+              (replay as { content: unknown }).content,
+              (first as { content: unknown }).content,
+              "a replay returns the result of the first call",
+            );
           };
           if (gateCase.passesWith) expectedFail(gateCase.passesWith, gate);
           else gate();
@@ -977,6 +1065,7 @@ describe("G4: workflow tables are written only inside a Domain Operation", () =>
       await withOperationOnlyFixture(transport, async (call, base) => {
         const wroteProjections: string[] = [];
         for (const gateCase of OPERATION_ONLY_CASES) {
+          gateCase.seed?.();
           const before = snapshotProjections(base);
           const result = await call(gateCase);
           assert.ok(!(result as { isError?: boolean }).isError, `${gateCase.tool} must succeed`);
@@ -990,6 +1079,86 @@ describe("G4: workflow tables are written only inside a Domain Operation", () =>
         // Only the Projection Worker drain may write a projection file.
         expectedFail("P12", () => assert.deepEqual(wroteProjections, []));
       });
+    });
+  }
+});
+
+describe("revision fencing: a mutation is checked against the session's last read", () => {
+  const requirementArgs = (description: string) => ({
+    class: "core-capability",
+    description,
+    why: "Lock the stale view rejection",
+    source: "M001",
+  });
+  const text = (result: unknown) => (result as { content: Array<{ text: string }> }).content[0]?.text ?? "";
+  const requirementCount = () =>
+    Number(_getAdapter()!.prepare("SELECT COUNT(*) AS count FROM requirements").get()?.count);
+  /** Another session commits one Domain Operation. */
+  const moveRevision = (key: string) => seedLifecycle(
+    { itemKind: "slice", milestoneId: "M001", sliceId: "S02", lifecycleStatus: "in_progress" },
+    key,
+    "slice-lifecycle",
+  );
+
+  for (const transport of ["pi", "mcp"] as const) {
+    for (const readTool of ["gsd_milestone_status", "gsd_project_snapshot"]) {
+      it(`${transport}: a write after a stale ${readTool} read is rejected until the session reads again`, async () => {
+        const fixture = await createWorkflowAuthorityFixture();
+        try {
+          let calls = 0;
+          const call = (tool: string, args: Record<string, unknown>) => {
+            const key = `revision-fence-${calls++}`;
+            return transport === "pi"
+              ? runNativeDbTool(fixture.root, tool, args, key)
+              : callMcpLifecycleTool(fixture.root, tool, args, key);
+          };
+          const read = () => call(readTool, readTool === "gsd_milestone_status" ? { milestoneId: "M001" } : {});
+          const before = requirementCount();
+
+          await read();
+          moveRevision(`${transport}-${readTool}-first`);
+          const stale = await call("gsd_requirement_save", requirementArgs("Written on a stale view"));
+          assert.match(text(stale), /stale view: the project changed after this session last read it/);
+          const stillStale = await call("gsd_requirement_save", requirementArgs("Retried without a read"));
+          assert.match(text(stillStale), /stale view/, "a retry without a new read is rejected too");
+          assert.equal(requirementCount(), before, "a rejected write saves nothing");
+
+          await read();
+          const fresh = await call("gsd_requirement_save", requirementArgs("Written on a fresh view"));
+          assert.match(text(fresh), /^Saved requirement R\d+$/);
+
+          moveRevision(`${transport}-${readTool}-second`);
+          const unread = await call("gsd_requirement_save", requirementArgs("Written with no read since the last write"));
+          assert.match(text(unread), /^Saved requirement R\d+$/, "a write with no read uses the current revision");
+          assert.equal(requirementCount(), before + 2);
+        } finally {
+          fixture.cleanup();
+        }
+      });
+    }
+
+    it(`${transport}: a stale read in one session does not block another session`, async () => {
+      const fixture = await createWorkflowAuthorityFixture();
+      try {
+        let calls = 0;
+        const call = (sessionId: string, tool: string, args: Record<string, unknown>) => {
+          const key = `revision-fence-session-${calls++}`;
+          return transport === "pi"
+            ? runNativeDbTool(fixture.root, tool, args, key, sessionId)
+            : callMcpLifecycleTool(fixture.root, tool, args, key, sessionId);
+        };
+        const before = requirementCount();
+
+        await call("session-a", "gsd_milestone_status", { milestoneId: "M001" });
+        moveRevision(`${transport}-two-sessions`);
+        const other = await call("session-b", "gsd_requirement_save", requirementArgs("Written by a session with no read"));
+        assert.match(text(other), /^Saved requirement R\d+$/, "the read of session A does not fence session B");
+        const stale = await call("session-a", "gsd_requirement_save", requirementArgs("Written on the stale view of session A"));
+        assert.match(text(stale), /stale view/, "session A is still held to its own read");
+        assert.equal(requirementCount(), before + 1);
+      } finally {
+        fixture.cleanup();
+      }
     });
   }
 });

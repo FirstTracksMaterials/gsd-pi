@@ -24,6 +24,7 @@ import {
 	resolveCtxCwd,
 	resolveTaskRecoveryResumeBasePath,
 	resolveWorkflowToolBasePath,
+	runInPiToolSession,
 } from "./dynamic-tools.js";
 import {
 	loadWriteGateSnapshot,
@@ -82,7 +83,12 @@ function registerAlias(
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- toolDef shape matches ToolDefinition but varies by schema
-function registerWorkflowTool(pi: ExtensionAPI, toolDef: any): void {
+function registerWorkflowTool(pi: ExtensionAPI, definition: any): void {
+	const toolDef = {
+		...definition,
+		execute: (...args: any[]) =>
+			runInPiToolSession(args[4], () => definition.execute(...args)),
+	};
 	pi.registerTool(toolDef);
 	if (process.env.GSD_ADVERTISE_TOOL_ALIASES !== "1") return; // canonical-only model surface (see plan 035)
 	for (const alias of aliasesForWorkflowTool(toolDef.name)) {
@@ -367,7 +373,7 @@ export function registerDbTools(pi: ExtensionAPI): void {
 	// ─── gsd_requirement_update (formerly gsd_update_requirement) ───────────
 
 	const requirementUpdateExecute = async (
-		_toolCallId: string,
+		toolCallId: string,
 		params: any,
 		_signal: AbortSignal | undefined,
 		_onUpdate: unknown,
@@ -405,7 +411,12 @@ export function registerDbTools(pi: ExtensionAPI): void {
 				updates.primary_owner = params.primary_owner;
 			if (params.supporting_slices !== undefined)
 				updates.supporting_slices = params.supporting_slices;
-			await updateRequirementInDb(params.id, updates, basePath);
+			await updateRequirementInDb(
+				params.id,
+				updates,
+				basePath,
+				piPlanningInvocation("gsd_requirement_update", toolCallId),
+			);
 			return {
 				content: [
 					{ type: "text" as const, text: `Updated requirement ${params.id}` },
@@ -496,7 +507,7 @@ export function registerDbTools(pi: ExtensionAPI): void {
 	// ─── gsd_requirement_save ─────────────────────────────────────────────
 
 	const requirementSaveExecute = async (
-		_toolCallId: string,
+		toolCallId: string,
 		params: any,
 		_signal: AbortSignal | undefined,
 		_onUpdate: unknown,
@@ -535,6 +546,7 @@ export function registerDbTools(pi: ExtensionAPI): void {
 					notes: params.notes,
 				},
 				basePath,
+				piPlanningInvocation("gsd_requirement_save", toolCallId),
 			);
 			return {
 				content: [
@@ -2395,7 +2407,7 @@ export function registerDbTools(pi: ExtensionAPI): void {
 	// ─── gsd_rework_brief_save ─────────────────────────────────────────────
 
 	const reworkBriefSaveExecute = async (
-		_toolCallId: string,
+		toolCallId: string,
 		params: any,
 		_signal: AbortSignal | undefined,
 		_onUpdate: unknown,
@@ -2405,6 +2417,7 @@ export function registerDbTools(pi: ExtensionAPI): void {
 		return executeReworkBriefSave(
 			params,
 			resolveWorkflowToolBasePath(_ctx, params),
+			piPlanningInvocation("gsd_rework_brief_save", toolCallId),
 		);
 	};
 
@@ -2892,7 +2905,7 @@ export function registerDbTools(pi: ExtensionAPI): void {
 	// ─── gsd_save_gate_result ──────────────────────────────────────────────
 
 	const saveGateResultExecute = async (
-		_toolCallId: string,
+		toolCallId: string,
 		params: any,
 		_signal: AbortSignal | undefined,
 		_onUpdate: unknown,
@@ -2902,6 +2915,7 @@ export function registerDbTools(pi: ExtensionAPI): void {
 		return executeSaveGateResult(
 			params,
 			resolveWorkflowToolBasePath(_ctx, params),
+			piExecutionInvocation("gsd_save_gate_result", toolCallId),
 		);
 	};
 
