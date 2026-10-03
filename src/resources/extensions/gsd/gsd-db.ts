@@ -1757,6 +1757,11 @@ export function getArtifactsByPathPrefix(prefix: string): ArtifactRow[] {
   return rows.map(rowToArtifact);
 }
 
+/** Bind the open database to one checkout root (db-workspace enforces the binding). */
+export function setProjectRootBinding(root: string): void {
+  getDb().prepare("UPDATE project_authority SET project_root_realpath = :root WHERE singleton = 1").run({ ":root": root });
+}
+
 /**
  * Stamp the `replan_triggered_at` column on a slice. Used by triage-resolution
  * when a user capture requests a replan so the dispatcher can detect the

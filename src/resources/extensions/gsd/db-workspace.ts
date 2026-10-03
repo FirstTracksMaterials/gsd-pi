@@ -26,6 +26,7 @@ import {
   openDatabaseByWorkspace,
   openIsolatedDatabase,
   refreshOpenDatabaseFromDisk,
+  setProjectRootBinding,
   vacuumDatabase,
   wasDbOpenAttempted,
 } from "./gsd-db.js";
@@ -78,7 +79,7 @@ export {
   type LegacyImportLiveRestoreInput,
   type LegacyImportLiveRestoreResult,
 } from "./legacy-import-live-restore.js";
-import { resolveGsdPathContract, gsdRoot } from "./paths.js";
+import { resolveGsdPathContract, gsdRoot, normalizeRealPath } from "./paths.js";
 import { logWarning, setLogBasePath } from "./workflow-logger.js";
 import { parseDecisionsTable } from "./decision-markdown-parser.js";
 import { isSqliteBusyError } from "./sqlite-errors.js";
@@ -95,6 +96,7 @@ export type WorkflowDatabaseOpenReason =
   | "missing-database"
   | "missing-gsd-dir"
   | "authority-missing"
+  | "checkout-unbound"
   | "locked"
   | "open-failed"
   | "schema-too-new";
@@ -116,8 +118,9 @@ export type WorkflowDatabaseOpenResult =
       // message) is ALWAYS attached so read seams can surface it loudly.
       // "authority-missing": the project has workflow history on disk but no
       // database; the error names the operator path.
+      // "checkout-unbound": the database is bound to another checkout root.
       ok: false;
-      reason: "schema-too-new" | "authority-missing";
+      reason: "schema-too-new" | "authority-missing" | "checkout-unbound";
       location: WorkflowDatabaseLocation;
       error: Error;
     };
@@ -128,6 +131,11 @@ export interface OpenWorkflowDatabaseOptions {
    * empty database although the project already holds workflow history.
    */
   createEmptyAuthority?: boolean;
+  /**
+   * Explicit /gsd db bind only: make this checkout the one the database belongs
+   * to. The empty-database check does not run, so the caller must close the handle.
+   */
+  bindCheckout?: boolean;
 }
 
 export type WorkflowDatabaseStatus = ReturnType<typeof getDbStatus>;
@@ -178,18 +186,35 @@ function hasWorkflowHistoryWithoutDatabase(location: Pick<WorkflowDatabaseLocati
   } catch {
     // Absent database: fall through to the history check.
   }
-  const entries = (dir: string): string[] => {
-    try {
-      return readdirSync(dir);
-    } catch {
-      return [];
-    }
-  };
-  return ["phases", "milestones"].some((layout) => {
-    const container = join(location.projectGsd, layout);
-    return entries(container).some((milestone) => entries(join(container, milestone)).length > 0);
-  })
-    || entries(dirname(location.projectDb)).some((entry) => entry.startsWith("gsd.db.backup-v"));
+  return milestoneProjectionEntries(location.projectGsd).length > 0
+    || dirEntries(dirname(location.projectDb)).some((entry) => entry.startsWith("gsd.db.backup-v"));
+}
+
+function dirEntries(dir: string): string[] {
+  try {
+    return readdirSync(dir);
+  } catch {
+    return [];
+  }
+}
+
+/** Entry names inside every milestone directory, in the `phases/` and legacy `milestones/` layouts. */
+function milestoneProjectionEntries(projectGsd: string): string[] {
+  return ["phases", "milestones"].flatMap((layout) => {
+    const container = join(projectGsd, layout);
+    return dirEntries(container).flatMap((milestone) => dirEntries(join(container, milestone)));
+  });
+}
+
+/**
+ * True when the open database has no milestone rows but `.gsd` holds a planned
+ * milestone (a ROADMAP projection), such as a re-clone of tracked `.gsd` beside
+ * a schema-only gsd.db. Only Import Application may fill it. Discussion scratch
+ * (CONTEXT or CONTEXT-DRAFT without a ROADMAP) is not planned work.
+ */
+function isEmptyDatabaseBesidePlannedProjections(projectGsd: string): boolean {
+  if (_getAdapter()?.prepare("SELECT 1 FROM milestones LIMIT 1").get() !== undefined) return false;
+  return milestoneProjectionEntries(projectGsd).some((entry) => entry.endsWith("ROADMAP.md"));
 }
 
 function authorityMissingError(location: Pick<WorkflowDatabaseLocation, "projectGsd" | "projectDb">): GSDError {
@@ -203,6 +228,59 @@ function authorityMissingError(location: Pick<WorkflowDatabaseLocation, "project
 
 export function isAuthorityMissingError(err: unknown): boolean {
   return err instanceof GSDError && err.message.startsWith("authority-missing:");
+}
+
+export function isCheckoutUnboundError(err: unknown): boolean {
+  return err instanceof GSDError && err.message.startsWith("checkout-unbound:");
+}
+
+/**
+ * One database belongs to one checkout. project_authority records the bound
+ * checkout root: the first open binds an unbound database, and an open from
+ * another root (a second clone that resolves to the same state directory, or a
+ * copied gsd.db) is refused until `/gsd db bind` moves the binding. Worktree
+ * opens are not checked: a worktree belongs to the checkout that created it.
+ * Returns the refusal, or null when the open may proceed.
+ */
+function enforceCheckoutBinding(basePath: string, projectDb: string, rebind: boolean): GSDError | null {
+  const contract = resolveGsdPathContract(basePath);
+  if (contract.isWorktree) return null;
+  const root = normalizeRealPath(contract.projectRoot);
+  const db = _getAdapter();
+  let bound: unknown;
+  try {
+    bound = db?.prepare("SELECT project_root_realpath FROM project_authority WHERE singleton = 1").get()?.["project_root_realpath"];
+  } catch (err) {
+    // Schema init always creates project_authority; an unreadable row is a
+    // query failure the caller's own reads report, not a binding verdict.
+    logWarning("engine", `could not read the checkout binding of ${projectDb}: ${(err as Error).message}`);
+    return null;
+  }
+  if (!db || typeof bound !== "string" || bound === root) return null;
+  if (bound !== "" && !rebind) {
+    return new GSDError(
+      GSD_STALE_STATE,
+      `checkout-unbound: ${projectDb} belongs to the checkout at ${bound}, not ${root}. ` +
+      "GSD refused to open it so two checkouts never share one workflow database. " +
+      `If ${root} now owns this project (the old checkout was moved or deleted), run /gsd db bind here. ` +
+      "For a separate checkout, give it its own state directory with GSD_PROJECT_ID.",
+    );
+  }
+  try {
+    setProjectRootBinding(root);
+  } catch (err) {
+    if (rebind) throw err;
+    // A replacement-observation handle is read-only; a later normal open binds.
+    logWarning("engine", `could not bind ${projectDb} to ${root}: ${(err as Error).message}`);
+    return null;
+  }
+  try {
+    // Put the binding in the main file so a copy of gsd.db alone still carries it.
+    checkpointDatabase();
+  } catch {
+    // Best-effort: the binding is committed; the WAL holds it until the next checkpoint.
+  }
+  return null;
 }
 
 function openWorkflowDatabaseWithMode(
@@ -222,12 +300,25 @@ function openWorkflowDatabaseWithMode(
   if (!options.createEmptyAuthority && hasWorkflowHistoryWithoutDatabase(location)) {
     return { ok: false, reason: "authority-missing", location, error: authorityMissingError(location) };
   }
+  // A handle this process already admitted (an earlier open, or the explicit
+  // createEmptyAuthority import path) is not judged again.
+  const openPath = isDbAvailable() ? getDbPath() : null;
+  const alreadyOpen = openPath !== null && normalizeRealPath(openPath) === normalizeRealPath(location.projectDb);
   try {
     const opened = createIfMissing
       ? openDatabase(location.projectDb)
       : openExistingDatabase(location.projectDb);
     if (!opened) {
       return { ok: false, reason: "open-failed", location };
+    }
+    if (!options.createEmptyAuthority && !options.bindCheckout && !alreadyOpen && isEmptyDatabaseBesidePlannedProjections(location.projectGsd)) {
+      closeDatabase();
+      return { ok: false, reason: "authority-missing", location, error: authorityMissingError(location) };
+    }
+    const unbound = enforceCheckoutBinding(basePath, location.projectDb, options.bindCheckout === true);
+    if (unbound) {
+      closeDatabase();
+      return { ok: false, reason: "checkout-unbound", location, error: unbound };
     }
     setLogBasePath(location.projectRoot);
     return {
@@ -343,10 +434,6 @@ export function refreshWorkflowDatabaseFromDisk(): boolean {
   return refreshOpenDatabaseFromDisk();
 }
 
-export function expectedWorkflowDbPathForBase(basePath: string): string {
-  return join(gsdRoot(basePath), "gsd.db");
-}
-
 export interface EnsureWorkflowDbOptions {
   /** When true, refresh from disk before reopening if already open on the correct path. */
   refresh?: boolean;
@@ -369,21 +456,28 @@ export function ensureWorkflowDbForBase(
   basePath: string,
   options: EnsureWorkflowDbOptions = {},
 ): boolean {
-  const dbPath = expectedWorkflowDbPathForBase(basePath);
+  const dbPath = resolveProjectRootDbPath(basePath);
   if (!existsSync(dbPath)) return false;
+  const openForBase = (): boolean => {
+    if (!openWorkflowDatabasePath(dbPath)) return false;
+    const unbound = enforceCheckoutBinding(basePath, dbPath, false);
+    if (!unbound) return true;
+    closeDatabase();
+    throw unbound;
+  };
 
   try {
     if (options.refresh) {
       if (isDbAvailable() && getWorkflowDatabasePath() === dbPath && refreshWorkflowDatabaseFromDisk()) {
         return true;
       }
-      return openWorkflowDatabasePath(dbPath);
+      return openForBase();
     }
 
     if (isDbAvailable() && getWorkflowDatabasePath() === dbPath) return true;
-    return openWorkflowDatabasePath(dbPath);
+    return openForBase();
   } catch (err) {
-    if (isSchemaTooNewError(err) || isAuthorityMissingError(err)) throw err;
+    if (isSchemaTooNewError(err) || isAuthorityMissingError(err) || isCheckoutUnboundError(err)) throw err;
     logWarning("reconcile", `ensureWorkflowDbForBase could not reopen DB: ${(err as Error).message}`);
     return false;
   }

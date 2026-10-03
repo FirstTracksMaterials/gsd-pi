@@ -118,6 +118,34 @@ resolved ambiguity, required consent, and one transaction. Import is never an
 implicit startup, database-open, derive-state, dispatch, or reconciliation
 behavior.
 
+### One database per bound checkout
+
+The state-directory hash (remote URL or path) only locates a database; it is
+not the Project identity. `project_authority` holds a stable `project_id` and
+the realpath of the one checkout root the database belongs to. The first open
+binds an unbound database. Every later open from another root, such as a second
+clone that resolves to the same state directory or a copied `gsd.db`, is
+refused with `checkout-unbound` until `/gsd db bind` explicitly moves the
+binding. Worktrees belong to the checkout that created them. One resolver
+(`resolveGsdPathContract`) finds the database, anchored on `gsd.db` and
+preferences, never on projection files. The binding is not identity: Import
+Application restore and Forward Repair match a backup by `project_id`, so a
+backup taken before binding (root `''`) or under an earlier binding stays
+usable. A restore installs the backup's own binding; when that names another
+root, the next open refuses until `/gsd db bind`.
+
+Committed `.gsd/` markdown (tracked mode, team repositories) is an export, not
+shared authority. A clone with milestone projections and no database, or a
+database with no milestone rows beside a planned (ROADMAP) projection, fails
+closed with `authority-missing` in every entry point until Import Application
+(`/gsd recover`) or a restore. Guided entry holds a changed tracked projection
+the same way before its markdown self-heal. A tracked projection changed by pull, merge,
+rebase, or branch switch raises one "changed outside GSD" state before
+dispatch: the user imports it through Import Preview or discards it with a
+projection rebuild; GSD never quarantines and re-renders it silently. The
+render baseline (`.gsd/.compat.json`) and `.gsd/quarantine/` are runtime files
+and are never committed.
+
 ### One natural conversation contract
 
 Open Questions, answers, recommendations, Decisions, corrections, and Work
