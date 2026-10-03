@@ -2,7 +2,7 @@
 
 **Status:** Accepted (partially landed — Phase 1 sketch planning and Phase 2 escalation verified at HEAD; #5754 e2e test and UOK refine audit events outstanding)
 
-> Implementation note (2026-08-01 audit): the trace confirms `is_sketch` / `sketch_scope` in `db-base-schema.ts:174-175`, `phases.progressive_planning` in `types.ts:425`, `escalation.ts`, `uok/gate-runner.ts`, `prompts/refine-slice.md`, `buildRefineSlicePrompt` (`auto-prompts.ts:2690`, dispatched from `auto-dispatch.ts:1450`), `state-reconciliation/drift/sketch-flag.ts`, and `tests/progressive-planning.test.ts`; the Outstanding (#5754) rows below remain unlanded.
+> Implementation note (2026-08-01 audit): the trace confirms `is_sketch` / `sketch_scope` in `db-base-schema.ts:174-175`, `phases.progressive_planning` in `types.ts:425`, `escalation.ts`, `uok/gate-runner.ts`, `prompts/refine-slice.md`, `buildRefineSlicePrompt` (`auto-prompts.ts:2690`, dispatched from `auto-dispatch.ts:1450`), and `tests/progressive-planning.test.ts`; the Outstanding (#5754) rows below remain unlanded.
 **Date:** 2026-04-17
 **Implemented:** 2026-04 to 2026-05 (Phase 1 + Phase 2 shipped; outstanding work tracked on #5754)
 **Author:** Alan Alwakeel (@OfficialDelta)
@@ -38,7 +38,7 @@
 | Gate-plane `manual-attention` wiring | ✅ | `src/resources/extensions/gsd/uok/gate-runner.ts:16-24`, fallback outcome in `src/resources/extensions/gsd/uok/gate-runner.ts:195-204` |
 | `refine-slice` prompt + builder | ✅ | `src/resources/extensions/gsd/prompts/refine-slice.md`; `auto-prompts.ts:2192-2225` (`buildRefineSlicePrompt`) |
 | Dispatch: `refining` → `refine-slice` (or fallback to `plan-slice`) | ✅ | `src/resources/extensions/gsd/auto-dispatch.ts:880-928` |
-| `is_sketch` auto-clear after PLAN written | ✅ | `src/resources/extensions/gsd/state-reconciliation/drift/sketch-flag.ts` — `sketchFlagHandler` registered in DRIFT_REGISTRY |
+| `is_sketch` cleared when the slice is planned | ✅ | `tools/plan-slice.ts` and `tools/plan-task.ts` clear the flag inside their Domain Operation. The file-based `sketchFlagHandler` drift repair was removed (ADR-046): a PLAN file never changes the flag |
 | Test coverage of pieces in isolation | ✅ | `src/resources/extensions/gsd/tests/progressive-planning.test.ts` — 12 tests |
 
 ### Outstanding (#5754)
