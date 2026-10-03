@@ -78,6 +78,9 @@ import {
 } from "../gsd/workflow-mcp-readiness-cache.js";
 import { getGuidedUnitContext } from "../gsd/guided-unit-context.js";
 import { autoSession, getActiveAutoUnitType, isAutoActive } from "../gsd/auto-runtime-state.js";
+// Surface host-native background tasks (Claude Code `Agent`/`Bash` fan-out) in
+// the worker registry so the GSD dashboard shows them (#2533, #2396).
+import { registerHostTaskWorker, releaseHostTaskBatch, updateWorker } from "../subagent/worker-registry.js";
 import {
 	beginMilestoneStatusObservationTurn,
 	classifyMilestoneStatusRuntimeMode,
@@ -2790,6 +2793,12 @@ async function pumpSdkMessages(
 				// interrupted mid-follow-up and must not be reported as a clean
 				// completion.
 				let followUpTurnStarted = false;
+				// task_id → registry worker id for host-native background tasks, so
+				// the dashboard's Parallel Workers section shows native `Agent`/`Bash`
+				// fan-out children (#2533). One batch per SDK attempt: tasks never
+				// survive a readiness restart.
+				const nativeTaskWorkerIds = new Map<string, string>();
+				const nativeTaskBatchId = `cc-${Date.now().toString(36)}-${readinessAttempt}`;
 				const clearBackgroundWaitStatus = (): void => {
 					if (!backgroundWaitStatusShown) return;
 					backgroundWaitStatusShown = false;
@@ -2891,17 +2900,58 @@ async function pumpSdkMessages(
 								tools?: string[];
 								mcp_servers?: { name: string; status: string }[];
 								task_id?: string;
+								task_type?: string;
+								description?: string;
+								status?: string;
 							};
 							if (init.subtype === "task_started" && typeof init.task_id === "string") {
-								pendingBackgroundTasks.add(init.task_id);
-							} else if (init.subtype === "task_notification" && typeof init.task_id === "string") {
-								pendingBackgroundTasks.delete(init.task_id);
-								if (deferredResult && backgroundWaitStatusShown) {
-									uiContext?.setStatus?.("gsd-step", pendingBackgroundTasks.size > 0
-										? `Waiting for ${pendingBackgroundTasks.size} background task(s) to finish (Esc stops them)`
-										: "Background tasks finished; continuing the turn");
+									pendingBackgroundTasks.add(init.task_id);
+									// Best-effort dashboard visibility for native fan-out
+									// children (#2533): a registry failure must never break
+									// the stream, and a duplicate start must not orphan the
+									// first row.
+									if (!nativeTaskWorkerIds.has(init.task_id)) {
+										try {
+											const description = typeof init.description === "string" && init.description.trim()
+												? init.description
+												: init.task_id;
+											const agentLabel = typeof init.task_type === "string" && init.task_type.trim()
+												? init.task_type
+												: "task";
+											nativeTaskWorkerIds.set(
+												init.task_id,
+												registerHostTaskWorker({
+													batchId: nativeTaskBatchId,
+													agent: agentLabel,
+													task: description,
+												}),
+											);
+										} catch (error) {
+											console.warn("[claude-code] worker registration for background task failed:", error);
+										}
+									}
+								} else if (init.subtype === "task_notification" && typeof init.task_id === "string") {
+									pendingBackgroundTasks.delete(init.task_id);
+									const nativeWorkerId = nativeTaskWorkerIds.get(init.task_id);
+									if (nativeWorkerId) {
+										try {
+											// The registry has no "stopped" state; a stopped task
+											// did not complete and is shown as failed (its row
+											// clears after the display window). Update before
+											// dropping the mapping so a failed update still leaves
+											// the row to the attempt-end cleanup.
+											updateWorker(nativeWorkerId, init.status === "completed" ? "completed" : "failed");
+											nativeTaskWorkerIds.delete(init.task_id);
+										} catch (error) {
+											console.warn("[claude-code] worker update for background task failed:", error);
+										}
+									}
+									if (deferredResult && backgroundWaitStatusShown) {
+										uiContext?.setStatus?.("gsd-step", pendingBackgroundTasks.size > 0
+											? `Waiting for ${pendingBackgroundTasks.size} background task(s) to finish (Esc stops them)`
+											: "Background tasks finished; continuing the turn");
+									}
 								}
-							}
 							if (init.subtype === "init") {
 								if (!sawInit) {
 									sawInit = true;
@@ -3213,6 +3263,18 @@ async function pumpSdkMessages(
 				} finally {
 					options?.signal?.removeEventListener("abort", forwardAbort);
 					clearBackgroundWaitStatus();
+					// Settle native-task dashboard rows that never received a
+					// notification (abort, stream end, error-result close, readiness
+					// restart) so no row is left running forever (#2533).
+					for (const [taskId, workerId] of nativeTaskWorkerIds) {
+						try {
+							updateWorker(workerId, "failed");
+						} catch (error) {
+							console.warn("[claude-code] worker cleanup for background task failed:", error);
+						}
+						nativeTaskWorkerIds.delete(taskId);
+					}
+					releaseHostTaskBatch(nativeTaskBatchId);
 				}
 
 				if (deferredResult && !followUpTurnStarted && !options?.signal?.aborted) {
