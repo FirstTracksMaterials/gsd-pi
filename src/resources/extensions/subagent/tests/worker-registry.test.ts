@@ -6,6 +6,7 @@ import { afterEach, describe, it } from "node:test";
 import {
 	formatWorkerElapsed,
 	getActiveWorkers,
+	getHostTaskBatchStats,
 	getWorkerBatches,
 	registerHostTaskWorker,
 	registerWorker,
@@ -82,6 +83,11 @@ describe("worker registry — host task workers (#2533)", () => {
 		const third = rows.find((worker) => worker.id === thirdId);
 		assert.equal(third?.index, 2, "the new row must continue the cumulative ordering");
 		assert.equal(third?.batchSize, 3);
+		assert.deepEqual(
+			getHostTaskBatchStats("cc-exp"),
+			{ total: 3, done: 1, failed: 0 },
+			"batch stats must survive row expiry for the dashboard header",
+		);
 	});
 
 	it("releaseHostTaskBatch resets accounting for the batch", () => {

@@ -31,6 +31,7 @@ import { handleValidateMilestone } from "../tools/validate-milestone.ts";
 import { captureVerificationSourceSnapshot } from "../verification-source-integrity.ts";
 import {
   getActiveWorkers,
+  registerHostTaskWorker,
   registerWorker,
   resetWorkerRegistry,
   updateWorker,
@@ -348,8 +349,28 @@ test("completed and failed worker rows keep attribution with deterministic elaps
   assert.match(again, /failed after 18s/, "failed elapsed does not drift after render");
 });
 
-test("parallel worker rows render legacy workers without identity fields (#2396)", (t) => {
+test("host task batch header counts expired terminal rows via batch stats (#2533)", (t) => {
   resetWorkerRegistry();
+  t.after(() => resetWorkerRegistry());
+  const clock = t.mock.timers;
+  clock.enable({ apis: ["setTimeout"] });
+  t.after(() => clock.reset());
+
+  const overlay = new GSDDashboardOverlay({ requestRender() {} }, fakeTheme as any, () => {});
+  t.after(() => overlay.dispose());
+
+  const early = registerHostTaskWorker({ batchId: "cc-stats", agent: "local_agent", task: "Done early" });
+  registerHostTaskWorker({ batchId: "cc-stats", agent: "local_agent", task: "Still running" });
+  updateWorker(early, "completed");
+  clock.tick(5001); // the completed row ages out of the registry
+
+  const lines = overlay.render(120);
+  const text = lines.join("\n");
+  assert.match(text, /1\/2 done/, "the expired completion must keep its count in the header");
+  assert.match(text, /Still running/, "the running row still renders");
+});
+
+test("parallel worker rows render legacy workers without identity fields (#2396)", (t) => {  resetWorkerRegistry();
   t.after(() => resetWorkerRegistry());
 
   const overlay = new GSDDashboardOverlay({ requestRender() {} }, fakeTheme as any, () => {});

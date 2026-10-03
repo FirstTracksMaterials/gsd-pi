@@ -29,6 +29,7 @@ import { getActiveWorktreeName } from "./worktree-session-state.js";
 import {
   formatWorkerElapsed,
   formatWorkerModelTokens,
+  getHostTaskBatchStats,
   getWorkerBatches,
   hasActiveWorkers,
   type WorkerEntry,
@@ -465,9 +466,13 @@ export class GSDDashboardOverlay {
       const batches = getWorkerBatches();
       for (const [batchId, workers] of batches) {
         const running = workers.filter(w => w.status === "running").length;
-        const done = workers.filter(w => w.status === "completed").length;
-        const failed = workers.filter(w => w.status === "failed").length;
-        const total = workers[0]?.batchSize ?? workers.length;
+        // Host-native task batches (#2533) carry expiry-independent counters —
+        // their completed/failed rows age out after the display window, and
+        // counting only retained rows would regress the header (e.g. 1/2 → 0/2).
+        const hostStats = getHostTaskBatchStats(batchId);
+        const done = hostStats ? hostStats.done : workers.filter(w => w.status === "completed").length;
+        const failed = hostStats ? hostStats.failed : workers.filter(w => w.status === "failed").length;
+        const total = hostStats ? hostStats.total : (workers[0]?.batchSize ?? workers.length);
 
         lines.push(row(joinColumns(
           `  ${th.fg("accent", "⟐")} ${th.fg("text", `Batch ${batchId.slice(0, 8)}`)}`,
