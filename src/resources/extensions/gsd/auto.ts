@@ -351,8 +351,11 @@ import { createWorkspace, scopeMilestone } from "./workspace.js";
 import {
   registerAutoWorker,
   markWorkerStopping,
+  getAutoWorker,
+  markWorkerStoppingByPid,
+  getAllAutoWorkers,
 } from "./db/auto-workers.js";
-import { releaseMilestoneLease } from "./db/milestone-leases.js";
+import { releaseMilestoneLease, forceReleaseLeasesForWorker } from "./db/milestone-leases.js";
 import { normalizeRealPath } from "./paths.js";
 import {
   formatStopNoticePrefix,
@@ -400,7 +403,31 @@ function registerAutoWorkerForSession(
   session: AutoSession,
   projectRootOverride?: string,
 ): void {
-  if (session.workerId) return; // already registered (e.g. resume re-runs)
+  // #2532 belt-and-braces: a cached workerId is only reusable while its row
+  // is still 'active'. A row that flipped to 'stopping'/'crashed' (or was
+  // removed) would silently no-op heartbeats for the whole session, so
+  // release its leftover lease and register a fresh worker instead of
+  // early-returning. The cached identity is only dropped on positive
+  // evidence — an unavailable DB or a failed lookup keeps it.
+  if (session.workerId) {
+    try {
+      if (getAutoWorker(session.workerId)?.status === "active") return;
+      if (!isDbAvailable()) return; // cannot verify — keep the cached identity
+    } catch {
+      return; // lookup failed — keep the cached identity rather than dropping it
+    }
+    const staleWorkerId = session.workerId;
+    try {
+      if (session.currentMilestoneId && session.milestoneLeaseToken) {
+        releaseMilestoneLease(staleWorkerId, session.currentMilestoneId, session.milestoneLeaseToken);
+      }
+    } catch (err) {
+      // Best-effort: the stale lease still expires via TTL.
+      debugLog("auto-register-stale-lease-release", { error: err instanceof Error ? err.message : String(err) });
+    }
+    session.milestoneLeaseToken = null;
+    session.workerId = null;
+  }
   try {
     const projectRootRealpath = normalizeRealPath(
       projectRootOverride
@@ -1163,6 +1190,24 @@ export function forceStopAutoRemote(projectRoot: string): {
     }
     if (isLockProcessAlive(lock)) {
       process.kill(lock.pid, "SIGKILL");
+      // #2532: clearLock now only retires verifiably-dead holders, and a
+      // SIGKILLed pid can stay observable through kernel teardown (or, in
+      // tests, via mocked liveness). The stop decision was made above, so
+      // retire the force-stopped worker's row and leases explicitly instead
+      // of leaning on teardown timing.
+      const stoppedRoot = normalizeRealPath(projectRoot);
+      markWorkerStoppingByPid(stoppedRoot, lock.pid);
+      // Release leases for EVERY row sharing this pid+root — repeated
+      // step-mode runs in one process leave older retired rows behind, and
+      // the current lease holder may not be the first match.
+      for (const w of getAllAutoWorkers()) {
+        if (
+          w.pid === lock.pid
+          && normalizeRealPath(w.project_root_realpath) === stoppedRoot
+        ) {
+          forceReleaseLeasesForWorker(w.worker_id);
+        }
+      }
     }
     clearLock(projectRoot);
     return { found: true, pid: lock.pid };
@@ -1561,6 +1606,37 @@ export async function cleanupAfterLoopExit(ctx: ExtensionContext): Promise<void>
     logWarning("session", `lock cleanup failed: ${err instanceof Error ? err.message : String(err)}`, { file: "auto.ts" });
   }
 
+  // ── Coordination cleanup (mirrors stopAuto Step 1b, #2532) ──
+  // The step-exit path ends this worker's lifecycle. Without releasing the
+  // lease and clearing s.workerId, the next /gsd auto (or /gsd next) in this
+  // process reuses a stale workerId whose row is no longer active — heartbeat
+  // no-ops and every status-gated path treats the live session as inactive.
+  // Skipped while a paused surface is preserved: pauseAuto keeps the worker
+  // row + lease alive on purpose there (in-flight Attempt settlement still
+  // needs the fencing token, #2429), and retiring it here would fence that
+  // resume out. When pause did not preserve coordination it already cleared
+  // s.workerId, so this block is a no-op in that case.
+  if (!preservePausedSurface) {
+    try {
+      if (s.workerId && s.currentMilestoneId && s.milestoneLeaseToken) {
+        releaseMilestoneLease(s.workerId, s.currentMilestoneId, s.milestoneLeaseToken);
+      }
+    } catch (err) {
+      debugLog("loop-exit-cleanup-lease-release", { error: err instanceof Error ? err.message : String(err) });
+    }
+    // Independent of the lease release: a thrown release must not skip the
+    // row retirement or the local identity reset.
+    try {
+      if (s.workerId) {
+        markWorkerStopping(s.workerId);
+      }
+    } catch (err) {
+      debugLog("loop-exit-cleanup-worker-stopping", { error: err instanceof Error ? err.message : String(err) });
+    }
+    s.workerId = null;
+    s.milestoneLeaseToken = null;
+  }
+
   // Symmetric teardown for the browser-UAT warm-up preflight (#1259): stop any
   // gsd-browser daemon this session started so the Chrome process does not
   // linger after the loop exits. Re-warms on the next browser-backed run-uat.
@@ -1628,6 +1704,13 @@ export async function cleanupAfterLoopExit(ctx: ExtensionContext): Promise<void>
 
 export function _cleanupAfterLoopExitForTest(ctx: ExtensionContext): Promise<void> {
   return cleanupAfterLoopExit(ctx);
+}
+
+export function _registerAutoWorkerForSessionForTest(
+  session: AutoSession,
+  projectRoot?: string,
+): void {
+  return registerAutoWorkerForSession(session, projectRoot);
 }
 
 export type AutoWorktreeExitAction = "skip" | "merge" | "preserve";

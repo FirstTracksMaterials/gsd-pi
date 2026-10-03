@@ -165,3 +165,38 @@ test("forceStopAutoRemote does not SIGKILL a PID that exits during the grace win
   assert.ok(!signals.includes("SIGKILL"), "force stop must not escalate when the PID exits during the grace window");
   assert.equal(readCrashLock(base), null, "force stop should remove the visible remote lock");
 });
+
+test("#2532: force stop releases leases for every worker row sharing the pid, not just the oldest", (t) => {
+  const base = makeBase();
+  t.after(() => cleanup(base));
+
+  openDatabase(join(base, ".gsd", "gsd.db"));
+  const db = _getAdapter()!;
+  // Two rows share the same pid + project root: an older retired row from a
+  // previous step-mode run and the current active lease holder.
+  const olderId = registerAutoWorker({ projectRootRealpath: normalizeRealPath(base) });
+  const holderId = registerAutoWorker({ projectRootRealpath: normalizeRealPath(base) });
+  for (const w of [olderId, holderId]) setWorkerPid(w, 434_343);
+  db.prepare(`UPDATE workers SET status = 'stopping' WHERE worker_id = :w`).run({ ":w": olderId });
+
+  insertMilestone("M002");
+  const lease = claimMilestoneLease(holderId, "M002");
+  assert.equal(lease.ok, true, "precondition: current holder owns the milestone lease");
+  writeLegacyLock(base, 434_343);
+
+  const originalKill = process.kill;
+  process.kill = (() => true) as typeof process.kill;
+  t.after(() => {
+    process.kill = originalKill;
+  });
+
+  const result = forceStopAutoRemote(base);
+
+  assert.deepEqual(result, { found: true, pid: 434_343 });
+  assert.equal(getAutoWorker(holderId)?.status, "stopping", "current holder retired");
+  assert.equal(
+    getMilestoneLease("M002")?.status,
+    "released",
+    "current holder's lease must be released, not the oldest row's",
+  );
+});
