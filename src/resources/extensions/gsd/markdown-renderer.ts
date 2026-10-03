@@ -58,7 +58,13 @@ import { stripIdPrefix } from "./strip-id-prefix.js";
 import { renderMilestoneParkedMarker } from "./milestone-park-projection.js";
 import { invalidateStateCache } from "./state.js";
 import { clearPathCache, milestonesDir, legacyMilestonesDir, isLegacyMilestonesLayout, resolveMilestonePath, relSliceFile, canonicalPhaseDirName } from "./paths.js";
-import { readCompatMarker, writeCompatMarker, computeProjectionSha, deriveCompatProjectionKey } from "./compat/compat-marker.js";
+import {
+  readCompatMarker,
+  writeCompatMarker,
+  computeProjectionSha,
+  deriveCompatProjectionKey,
+  noteRenderedProjectionFile,
+} from "./compat/compat-marker.js";
 import type { RiskLevel } from "./types.js";
 import {
   phaseDirName,
@@ -381,6 +387,7 @@ async function writeAndStore(
 ): Promise<string> {
   const stamped = stampProjectionContent(content);
   if (projectionWriteAlreadyApplied(absPath, artifactPath, stamped, basePath, opts)) {
+    noteRenderedProjectionFile(absPath, stamped);
     return stamped;
   }
   await saveFile(absPath, stamped);
@@ -414,6 +421,7 @@ async function writeAndStore(
   }
 
   invalidateCaches();
+  noteRenderedProjectionFile(absPath, stamped);
   return stamped;
 }
 
@@ -768,6 +776,18 @@ export async function renderTaskPlanFromDb(
   return { taskPlanPath: absPath, content: stamped };
 }
 
+function isUnplanned(milestone: MilestoneRow, roadmapSlices: SliceRow[]): boolean {
+  return roadmapSlices.length === 0 && !milestone.vision.trim();
+}
+
+/** True when the milestone was never planned (zero roadmap slices, empty vision); it has no ROADMAP by design. */
+export function isUnplannedMilestone(milestone: MilestoneRow): boolean {
+  return isUnplanned(
+    milestone,
+    getMilestoneSlices(milestone.id).filter((slice) => !isHiddenFromRoadmap(slice.status)),
+  );
+}
+
 export async function renderRoadmapFromDb(
   basePath: string,
   milestoneId: string,
@@ -793,7 +813,7 @@ export async function renderRoadmapFromDb(
   // least one slice, so zero-slice + empty-vision is a reliable "never planned"
   // signal. Skip the write so verification sees a genuinely missing file (a
   // clear "write the ROADMAP" failure) instead of a misleading stub.
-  if (slices.length === 0 && !milestone.vision.trim()) {
+  if (isUnplanned(milestone, slices)) {
     logWarning(
       "projection",
       `renderRoadmapFromDb skipped unplanned milestone ${milestoneId} (zero slices, empty vision) — refusing to write a stub ROADMAP`,
@@ -850,34 +870,89 @@ export async function renderMilestoneArtifactsFromDb(
   basePath: string,
   milestoneId: string,
 ): Promise<boolean> {
-  const artifacts = getMilestoneScopedArtifacts(milestoneId);
-  if (artifacts.length === 0) return false;
-
-  const milestone = getMilestone(milestoneId);
-  const milestoneComplete = toStatus(milestone?.status ?? "") === "complete";
-
-  let wrote = false;
-  for (const artifact of artifacts) {
-    if (artifact.artifact_type === "ROADMAP") continue;
-    if (artifact.artifact_type.toUpperCase() === "SUMMARY" && !milestoneComplete) continue;
-    if (!artifact.full_content.trim()) continue;
-
-    const absPath = targetMilestoneFile(
-      basePath,
-      milestoneId,
-      artifact.artifact_type,
-      milestone?.title,
-    );
+  const writes = milestoneArtifactWrites(basePath, milestoneId);
+  for (const { absPath, artifactPath, artifact } of writes) {
     mkdirSync(dirname(absPath), { recursive: true });
-    const artifactPath = toArtifactPath(absPath, basePath);
     await writeAndStore(absPath, artifactPath, artifact.full_content, {
       artifact_type: artifact.artifact_type,
       milestone_id: milestoneId,
     }, basePath);
-    wrote = true;
   }
+  return writes.length > 0;
+}
 
-  return wrote;
+interface ArtifactWrite {
+  absPath: string;
+  artifactPath: string;
+  artifact: ArtifactRow;
+}
+
+/** The milestone-scoped artifact rows that the render writes, each with its target file. */
+function milestoneArtifactWrites(basePath: string, milestoneId: string): ArtifactWrite[] {
+  const milestone = getMilestone(milestoneId);
+  const milestoneComplete = toStatus(milestone?.status ?? "") === "complete";
+  return getMilestoneScopedArtifacts(milestoneId)
+    .filter((artifact) =>
+      artifact.artifact_type !== "ROADMAP"
+      && !(artifact.artifact_type.toUpperCase() === "SUMMARY" && !milestoneComplete)
+      && artifact.full_content.trim() !== "")
+    .map((artifact) => {
+      const absPath = targetMilestoneFile(basePath, milestoneId, artifact.artifact_type, milestone?.title);
+      return { absPath, artifactPath: toArtifactPath(absPath, basePath), artifact };
+    });
+}
+
+/** The slice-scoped artifact rows that the render writes, each with its target file. */
+function sliceArtifactWrites(basePath: string, milestoneId: string, sliceId: string): ArtifactWrite[] {
+  const sliceComplete = toStatus(getSlice(milestoneId, sliceId)?.status ?? "") === "complete";
+  return getSliceScopedArtifacts(milestoneId, sliceId)
+    .filter((artifact) => {
+      const artifactType = artifact.artifact_type.toUpperCase();
+      if (!artifact.full_content.trim()) return false;
+      if ((artifactType === "SUMMARY" || artifactType === "UAT") && !sliceComplete) return false;
+      return !(artifactType === "PLAN" && isAutoRecoveryPlaceholderPlan(artifact.full_content));
+    })
+    .map((artifact) => {
+      const absPath = join(
+        basePath,
+        relSliceFile(basePath, milestoneId, sliceId, artifact.artifact_type.toUpperCase()),
+      );
+      return { absPath, artifactPath: toArtifactPath(absPath, basePath), artifact };
+    });
+}
+
+/**
+ * Artifact paths (relative to the projection root) of the files that the
+ * milestone render writes from the database: the ROADMAP of a planned
+ * milestone, each milestone and slice artifact row that is not skipped, the
+ * slice PLAN that lists the tasks, the slice SUMMARY and UAT, and each task
+ * SUMMARY.
+ */
+export function milestoneRenderArtifactPaths(basePath: string, milestoneId: string): Set<string> {
+  const paths = new Set<string>();
+  const milestone = getMilestone(milestoneId);
+  if (!milestone) return paths;
+  if (!isUnplannedMilestone(milestone)) {
+    paths.add(toArtifactPath(targetMilestoneFile(basePath, milestoneId, "ROADMAP", milestone.title), basePath));
+  }
+  for (const write of milestoneArtifactWrites(basePath, milestoneId)) paths.add(write.artifactPath);
+  for (const slice of getMilestoneSlices(milestoneId)) {
+    for (const write of sliceArtifactWrites(basePath, milestoneId, slice.id)) paths.add(write.artifactPath);
+    if (getActivePlanTasks(milestoneId, slice.id).length > 0) {
+      paths.add(toArtifactPath(planProjectionPath(basePath, milestoneId, slice.id), basePath));
+    }
+    for (const target of sliceSummaryTargets(basePath, milestoneId, slice.id)) {
+      paths.add(toArtifactPath(target.absPath, basePath));
+    }
+    for (const task of getSliceTasks(milestoneId, slice.id)) {
+      if (!taskSummaryIsProjected(milestoneId, slice.id, task)) continue;
+      paths.add(toArtifactPath(
+        targetTaskFile(basePath, milestoneId, slice.id, task.id, "SUMMARY", milestone.title),
+        basePath,
+      ));
+    }
+  }
+  return paths;
 }
 
 /** Render the canonical Milestone closeout from its immutable completion event. */
@@ -916,29 +991,16 @@ export async function renderSliceArtifactsFromDb(
   milestoneId: string,
   sliceId: string,
 ): Promise<boolean> {
-  const artifacts = getSliceScopedArtifacts(milestoneId, sliceId);
-  if (artifacts.length === 0) return false;
-  const sliceComplete = toStatus(getSlice(milestoneId, sliceId)?.status ?? "") === "complete";
-
-  let wrote = false;
-  for (const artifact of artifacts) {
-    const artifactType = artifact.artifact_type.toUpperCase();
-    if (!artifact.full_content.trim()) continue;
-    if ((artifactType === "SUMMARY" || artifactType === "UAT") && !sliceComplete) continue;
-    if (artifactType === "PLAN" && isAutoRecoveryPlaceholderPlan(artifact.full_content)) continue;
-
-    const absPath = join(basePath, relSliceFile(basePath, milestoneId, sliceId, artifactType));
+  const writes = sliceArtifactWrites(basePath, milestoneId, sliceId);
+  for (const { absPath, artifactPath, artifact } of writes) {
     createProjectionDirectorySync(dirname(absPath));
-    const artifactPath = toArtifactPath(absPath, basePath);
     await writeAndStore(absPath, artifactPath, artifact.full_content, {
-      artifact_type: artifactType,
+      artifact_type: artifact.artifact_type.toUpperCase(),
       milestone_id: milestoneId,
       slice_id: sliceId,
     }, basePath);
-    wrote = true;
   }
-
-  return wrote;
+  return writes.length > 0;
 }
 
 function isAutoRecoveryPlaceholderPlan(content: string): boolean {
@@ -990,6 +1052,16 @@ export async function renderPlanCheckboxes(
 
 // ─── Task Summary Rendering ───────────────────────────────────────────────
 
+/** True when the task has a summary that the render writes: published, or a canonical staged one. */
+function taskSummaryIsProjected(milestoneId: string, sliceId: string, task: TaskRow): boolean {
+  if (!task.full_summary_md) return false;
+  const status = toStatus(task.status);
+  // Published completions keep projecting.
+  if (status === "complete") return true;
+  return status === "in_progress"
+    && isCanonicalStagedTaskSummaryState({ milestoneId, sliceId, taskId: task.id });
+}
+
 /**
  * Render a task summary from DB to disk.
  * Reads full_summary_md from the tasks table and writes it to the appropriate file.
@@ -1003,18 +1075,7 @@ export async function renderTaskSummary(
   taskId: string,
 ): Promise<boolean> {
   const task = getTask(milestoneId, sliceId, taskId);
-  const status = task ? toStatus(task.status) : null;
-  if (!task || !task.full_summary_md) {
-    return false;
-  }
-  if (status === "complete") {
-    // Published completions keep projecting.
-  } else if (
-    status !== "in_progress" ||
-    !isCanonicalStagedTaskSummaryState({ milestoneId, sliceId, taskId })
-  ) {
-    return false;
-  }
+  if (!task || !taskSummaryIsProjected(milestoneId, sliceId, task)) return false;
 
   await writeTaskSummaryProjection(
     basePath,
@@ -1064,41 +1125,34 @@ export async function renderSliceSummary(
   milestoneId: string,
   sliceId: string,
 ): Promise<boolean> {
+  const targets = sliceSummaryTargets(basePath, milestoneId, sliceId);
+  for (const { artifactType, absPath, content } of targets) {
+    mkdirSync(dirname(absPath), { recursive: true });
+    await writeAndStore(absPath, toArtifactPath(absPath, basePath), content, {
+      artifact_type: artifactType,
+      milestone_id: milestoneId,
+      slice_id: sliceId,
+    }, basePath);
+  }
+  return targets.length > 0;
+}
+
+/** The SUMMARY and UAT files that the render writes for a complete slice. */
+function sliceSummaryTargets(
+  basePath: string,
+  milestoneId: string,
+  sliceId: string,
+): Array<{ artifactType: "SUMMARY" | "UAT"; absPath: string; content: string }> {
   const slice = getSlice(milestoneId, sliceId);
-  if (!slice || toStatus(slice.status) !== "complete") {
-    return false; // No slice data — skip silently
-  }
-
+  if (!slice || toStatus(slice.status) !== "complete") return [];
   const milestoneTitle = getMilestone(milestoneId)?.title;
-  let wrote = false;
-
-  if (slice.full_summary_md) {
-    const summaryAbs = targetSliceFile(basePath, milestoneId, sliceId, "SUMMARY", milestoneTitle);
-    mkdirSync(dirname(summaryAbs), { recursive: true });
-    const summaryArtifact = toArtifactPath(summaryAbs, basePath);
-
-    await writeAndStore(summaryAbs, summaryArtifact, slice.full_summary_md, {
-      artifact_type: "SUMMARY",
-      milestone_id: milestoneId,
-      slice_id: sliceId,
-    }, basePath);
-    wrote = true;
-  }
-
-  if (slice.full_uat_md) {
-    const uatAbs = targetSliceFile(basePath, milestoneId, sliceId, "UAT", milestoneTitle);
-    mkdirSync(dirname(uatAbs), { recursive: true });
-    const uatArtifact = toArtifactPath(uatAbs, basePath);
-
-    await writeAndStore(uatAbs, uatArtifact, slice.full_uat_md, {
-      artifact_type: "UAT",
-      milestone_id: milestoneId,
-      slice_id: sliceId,
-    }, basePath);
-    wrote = true;
-  }
-
-  return wrote;
+  return ([["SUMMARY", slice.full_summary_md], ["UAT", slice.full_uat_md]] as const)
+    .filter(([, content]) => Boolean(content))
+    .map(([artifactType, content]) => ({
+      artifactType,
+      absPath: targetSliceFile(basePath, milestoneId, sliceId, artifactType, milestoneTitle),
+      content,
+    }));
 }
 
 // ─── Render All From DB ───────────────────────────────────────────────────
@@ -1135,93 +1189,19 @@ export async function renderAllFromDb(basePath: string): Promise<RenderAllResult
       result.skipped++;
       continue;
     }
-    // Render roadmap checkboxes
-    try {
-      const ok = await renderRoadmapCheckboxes(basePath, milestone.id);
-      if (ok) result.rendered++;
-      else result.skipped++;
-    } catch (err) {
-      result.errors.push(`roadmap ${milestone.id}: ${(err as Error).message}`);
-    }
-
-    try {
-      const ok = await renderMilestoneArtifactsFromDb(basePath, milestone.id);
-      if (ok) result.rendered++;
-      else result.skipped++;
-    } catch (err) {
-      result.errors.push(`milestone artifacts ${milestone.id}: ${(err as Error).message}`);
-    }
-
-    try {
-      const ok = await renderMilestoneSummary(basePath, milestone.id);
-      if (ok) result.rendered++;
-      else result.skipped++;
-    } catch (err) {
-      result.errors.push(`milestone summary ${milestone.id}: ${(err as Error).message}`);
-    }
+    await renderMilestoneRows(
+      basePath,
+      milestone.id,
+      slicesByMilestone.get(milestone.id) ?? [],
+      tasksBySlice,
+      result,
+    );
 
     try {
       if (renderMilestoneParkedMarker(basePath, milestone.id)) result.rendered++;
       else result.skipped++;
     } catch (err) {
       result.errors.push(`parked marker ${milestone.id}: ${(err as Error).message}`);
-    }
-
-    // Iterate slices (pre-fetched above)
-    const slices = slicesByMilestone.get(milestone.id) ?? [];
-    for (const slice of slices) {
-      // Preserve slice-scoped artifacts imported from disk, including real PLAN
-      // fallback content when task rows cannot regenerate it.
-      try {
-        const ok = await renderSliceArtifactsFromDb(basePath, milestone.id, slice.id);
-        if (ok) result.rendered++;
-        else result.skipped++;
-      } catch (err) {
-        result.errors.push(
-          `slice artifacts ${milestone.id}/${slice.id}: ${(err as Error).message}`,
-        );
-      }
-
-      // Render plan checkboxes
-      try {
-        const ok = await renderPlanCheckboxes(basePath, milestone.id, slice.id);
-        if (ok) result.rendered++;
-        else result.skipped++;
-      } catch (err) {
-        result.errors.push(
-          `plan ${milestone.id}/${slice.id}: ${(err as Error).message}`,
-        );
-      }
-
-      // Render slice summary
-      try {
-        const ok = await renderSliceSummary(basePath, milestone.id, slice.id);
-        if (ok) result.rendered++;
-        else result.skipped++;
-      } catch (err) {
-        result.errors.push(
-          `slice summary ${milestone.id}/${slice.id}: ${(err as Error).message}`,
-        );
-      }
-
-      // Iterate tasks (batched above)
-      const tasks = tasksBySlice.get(`${milestone.id}\0${slice.id}`) ?? [];
-      for (const task of tasks) {
-        try {
-          const ok = await renderTaskSummary(
-            basePath,
-            milestone.id,
-            slice.id,
-            task.id,
-          );
-          if (ok) result.rendered++;
-          else result.skipped++;
-        } catch (err) {
-          result.errors.push(
-            `task summary ${milestone.id}/${slice.id}/${task.id}: ${(err as Error).message}`,
-          );
-        }
-      }
     }
   }
 
@@ -1261,6 +1241,110 @@ export async function renderAllFromDb(basePath: string): Promise<RenderAllResult
   }
 
   return result;
+}
+
+/** Render one milestone's roadmap, artifacts, plans, and summaries from the DB. */
+export async function renderMilestoneFromDb(
+  basePath: string,
+  milestoneId: string,
+): Promise<RenderAllResult> {
+  const result: RenderAllResult = { rendered: 0, skipped: 0, errors: [] };
+  const slices = getMilestoneSlices(milestoneId);
+  const tasksBySlice = getTasksBySliceIds(slices.map((slice) => ({ milestoneId, sliceId: slice.id })));
+  await renderMilestoneRows(basePath, milestoneId, slices, tasksBySlice, result);
+  return result;
+}
+
+/** Render the files of the milestone row itself: roadmap, milestone artifacts, and milestone summary. */
+export async function renderMilestoneFilesFromDb(
+  basePath: string,
+  milestoneId: string,
+): Promise<RenderAllResult> {
+  const result: RenderAllResult = { rendered: 0, skipped: 0, errors: [] };
+  await renderMilestoneFiles(basePath, milestoneId, result);
+  return result;
+}
+
+/** Render the files of one slice: its roadmap line, slice artifacts, plan, and slice summary. */
+export async function renderSliceFilesFromDb(
+  basePath: string,
+  milestoneId: string,
+  sliceId: string,
+): Promise<RenderAllResult> {
+  const result: RenderAllResult = { rendered: 0, skipped: 0, errors: [] };
+  await renderStep(result, `roadmap ${milestoneId}`, () => renderRoadmapCheckboxes(basePath, milestoneId));
+  await renderSliceFiles(basePath, milestoneId, sliceId, result);
+  return result;
+}
+
+/** Render the files of one task: its line in the slice plan, and the task summary. */
+export async function renderTaskFilesFromDb(
+  basePath: string,
+  milestoneId: string,
+  sliceId: string,
+  taskId: string,
+): Promise<RenderAllResult> {
+  const result: RenderAllResult = { rendered: 0, skipped: 0, errors: [] };
+  await renderStep(result, `plan ${milestoneId}/${sliceId}`, () => renderPlanCheckboxes(basePath, milestoneId, sliceId));
+  await renderStep(result, `task summary ${milestoneId}/${sliceId}/${taskId}`, () =>
+    renderTaskSummary(basePath, milestoneId, sliceId, taskId));
+  return result;
+}
+
+async function renderStep(
+  result: RenderAllResult,
+  label: string,
+  render: () => Promise<boolean>,
+): Promise<void> {
+  try {
+    if (await render()) result.rendered++;
+    else result.skipped++;
+  } catch (err) {
+    result.errors.push(`${label}: ${(err as Error).message}`);
+  }
+}
+
+async function renderMilestoneFiles(
+  basePath: string,
+  milestoneId: string,
+  result: RenderAllResult,
+): Promise<void> {
+  await renderStep(result, `roadmap ${milestoneId}`, () => renderRoadmapCheckboxes(basePath, milestoneId));
+  await renderStep(result, `milestone artifacts ${milestoneId}`, () => renderMilestoneArtifactsFromDb(basePath, milestoneId));
+  await renderStep(result, `milestone summary ${milestoneId}`, () => renderMilestoneSummary(basePath, milestoneId));
+}
+
+async function renderSliceFiles(
+  basePath: string,
+  milestoneId: string,
+  sliceId: string,
+  result: RenderAllResult,
+): Promise<void> {
+  // Preserve slice-scoped artifacts imported from disk, including real PLAN
+  // fallback content when task rows cannot regenerate it.
+  await renderStep(result, `slice artifacts ${milestoneId}/${sliceId}`, () =>
+    renderSliceArtifactsFromDb(basePath, milestoneId, sliceId));
+  await renderStep(result, `plan ${milestoneId}/${sliceId}`, () => renderPlanCheckboxes(basePath, milestoneId, sliceId));
+  await renderStep(result, `slice summary ${milestoneId}/${sliceId}`, () => renderSliceSummary(basePath, milestoneId, sliceId));
+}
+
+async function renderMilestoneRows(
+  basePath: string,
+  milestoneId: string,
+  slices: SliceRow[],
+  tasksBySlice: ReturnType<typeof getTasksBySliceIds>,
+  result: RenderAllResult,
+): Promise<void> {
+  await renderMilestoneFiles(basePath, milestoneId, result);
+  for (const slice of slices) {
+    await renderSliceFiles(basePath, milestoneId, slice.id, result);
+    // Iterate tasks (batched by the caller)
+    const tasks = tasksBySlice.get(`${milestoneId}\0${slice.id}`) ?? [];
+    for (const task of tasks) {
+      await renderStep(result, `task summary ${milestoneId}/${slice.id}/${task.id}`, () =>
+        renderTaskSummary(basePath, milestoneId, slice.id, task.id));
+    }
+  }
 }
 
 // ─── Stale Detection ──────────────────────────────────────────────────────
