@@ -21,7 +21,7 @@ The migration tool:
 - Treats an explicit path as the target project root, so `/gsd migrate ~/projects/my-old-project` writes to `~/projects/my-old-project/.gsd`
 - Blocks zero-slice migrations and refuses to run while active, paused, or worktree session state exists
 - Creates and verifies a retained `.gsd-backups/migrate-YYYYMMDD-HHMMSS/` snapshot before applying the migration; failures do not replace database authority, and any committed Import Application is retained for an exact retry
-- Keeps `.gsd-backups/` as local runtime data: GSD adds it to baseline `.gitignore` and runtime exclusions, and stale `.gsd-backups/migrate-*` snapshots are pruned after 30 days once the project has completed the flat-phase `.gsd/phases/` migration
+- Keeps `.gsd-backups/` as local runtime data: GSD adds it to baseline `.gitignore` and runtime exclusions, and GSD does not delete `.gsd-backups/migrate-*` snapshots; remove them yourself when you no longer need the pre-migration copy
 - Writes the imported hierarchy into the GSD database, then renders markdown projections from that database
 - Preserves completion state (`[x]` phases stay done, summaries carry over)
 - Consolidates research files into the new structure and archives the full legacy `.planning` source under `.gsd/migration/legacy/`
@@ -66,6 +66,10 @@ If an existing project has legacy markdown artifacts that you explicitly want to
 ```
 
 `/gsd recover` fingerprints the legacy source and current database and prints an exact Preview hash. Re-run it with `--preview=<sha256>` to create and independently verify a retained backup, apply that unchanged preview through one atomic Import Application, and assess the safe next action. It updates only modeled preview targets; database rows absent from markdown are not cleared. The command prints the Application ID and retained backup path.
+
+When the Preview has an item that needs a decision, `/gsd recover` applies nothing and lists each item. An item that you can decide shows a `--choice=<diagnosis-id>.preserved` option, which keeps that source preserved and not imported; other items need a fix in the source markdown. Re-run with the shown `--choice` options to seal a new Preview, then approve the new Preview hash. A `--choice` value that is not valid is rejected before the import is applied.
+
+A plain `/gsd recover` continues the last Import Application only while that Application is the canonical operation head and has no restore or Forward Repair. After a later canonical write, a plain `/gsd recover` makes a new Preview, and the earlier Application is available only through `--application`.
 
 If assessment recommends restoring the pre-import database, rerun the command with the exact `--application`, `--restore`, and evidence-bound `--consent` values it printed. Restore is available only while that Import Application remains the canonical operation head. Any later canonical write or Authority Epoch cutover closes the restore window permanently; use the printed `--forward-repair` route instead. Forward Repair preserves later accepted work and asks for explicit `--choice` evidence only when imported and later canonical changes genuinely overlap.
 

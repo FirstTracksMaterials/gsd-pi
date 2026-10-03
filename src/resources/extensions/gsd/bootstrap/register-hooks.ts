@@ -1238,18 +1238,28 @@ export function registerHooks(
         const { needsFlatPhaseMigration } = await import("../flat-phase-migration.js");
         if (needsFlatPhaseMigration(basePath)) {
           const { ensureDbOpen } = await import("./dynamic-tools.js");
-          const opened = await ensureDbOpen(basePath);
-          if (opened) {
-            const { migrateToFlatPhase } = await import("../flat-phase-migration.js");
+          const { migrateToFlatPhase, FlatPhaseRecoveryRequiredError } = await import("../flat-phase-migration.js");
+          const { isAuthorityMissingError } = await import("../db-workspace.js");
+          try {
+            if (!(await ensureDbOpen(basePath))) {
+              safetyLogWarning(
+                "bootstrap",
+                "flat-phase migration required: legacy .gsd/milestones/ layout detected but the workflow database could not be opened — fix database access before starting GSD",
+              );
+              throw new Error(
+                "flat-phase migration required but the workflow database could not be opened; fix database access before starting GSD",
+              );
+            }
             await migrateToFlatPhase(basePath);
-          } else {
-            safetyLogWarning(
-              "bootstrap",
-              "flat-phase migration required: legacy .gsd/milestones/ layout detected but the workflow database could not be opened — fix database access before starting GSD",
-            );
-            throw new Error(
-              "flat-phase migration required but the workflow database could not be opened; fix database access before starting GSD",
-            );
+          } catch (err) {
+            // Legacy markdown holds state the DB lacks, or the DB is missing or
+            // empty beside it. That is not a broken migration: the session must
+            // start so the operator can run the explicit import. No database
+            // was created and nothing was touched on disk.
+            if (!(err instanceof FlatPhaseRecoveryRequiredError) && !isAuthorityMissingError(err)) throw err;
+            const message = (err as Error).message;
+            safetyLogWarning("bootstrap", message);
+            ctx.ui.notify(message, "warning");
           }
         }
       }
@@ -1257,20 +1267,6 @@ export function registerHooks(
       const message = err instanceof Error ? err.message : String(err);
       safetyLogWarning("bootstrap", `flat-phase migration failed: ${message}`);
       throw new Error(`flat-phase migration failed: ${message}`);
-    }
-
-    try {
-      const projectRoot = resolveWorktreeProjectRoot(basePath);
-      const { pruneStaleFlatPhaseBackups } = await import("../flat-phase-migration.js");
-      const pruned = pruneStaleFlatPhaseBackups(projectRoot);
-      if (pruned > 0) {
-        safetyLogWarning(
-          "bootstrap",
-          `pruned ${pruned} stale flat-phase migration backup(s) from .gsd-backups/ (retention exceeded)`,
-        );
-      }
-    } catch (err) {
-      safetyLogWarning("bootstrap", `flat-phase backup pruning: ${err instanceof Error ? err.message : String(err)}`);
     }
 
     // Apply show_token_cost preference (#1515)
