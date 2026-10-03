@@ -26,7 +26,7 @@ import {
   insertMilestone,
   _getAdapter,
 } from "../gsd-db.ts";
-import { registerAutoWorker } from "../db/auto-workers.ts";
+import { registerAutoWorker, getAutoWorker } from "../db/auto-workers.ts";
 import { claimMilestoneLease } from "../db/milestone-leases.ts";
 import { recordDispatchClaim } from "../db/unit-dispatches.ts";
 import { insertSlice, insertTask } from "../gsd-db.ts";
@@ -651,6 +651,31 @@ test("clearLock is safe when no lock exists", (t) => {
   t.after(() => cleanup(base));
 
   assert.doesNotThrow(() => clearLock(base));
+});
+
+test("#2532: clearLock does not mark the live process's own worker stopping via a legacy lock", (t) => {
+  // Step-mode exit path (#2532): writeLock leaves a legacy lock file whose
+  // pid is THIS process, and cleanupAfterLoopExit then calls clearLock. The
+  // legacy-lock branch must only mark DEAD holders stopping — marking our
+  // own live row 'stopping' kills the heartbeat and every status-gated path
+  // for the rest of the process. Mirrors the !isPidAlive guards on the
+  // markWorkerStoppingByPid call sites in session-lock.ts.
+  const base = makeTmpBase();
+  t.after(() => cleanup(base));
+
+  const projectRoot = normalizeRealPath(base);
+  const workerId = registerAutoWorker({ projectRootRealpath: projectRoot });
+
+  // writeLock writes the legacy lock file with pid = process.pid.
+  writeLock(base, "plan-slice", "M001/S01");
+
+  clearLock(base);
+
+  assert.equal(
+    getAutoWorker(workerId)?.status,
+    "active",
+    "own live worker must stay active after its own clearLock",
+  );
 });
 
 // ─── isLockProcessAlive ──────────────────────────────────────────────────

@@ -237,7 +237,13 @@ export function clearLock(basePath: string): void {
       deleteRuntimeKv("worker", staleWorker.worker_id, SESSION_FILE_KV_KEY);
       return;
     }
-    if (legacyLock?.pid) {
+    // #2532: only a dead holder may be marked stopping here. The legacy lock
+    // is frequently this process's own unit lock (step-mode exit path), and
+    // marking our own live worker row 'stopping' kills the heartbeat and
+    // status-gated paths for the rest of the process. isLockProcessAlive
+    // treats our own pid as alive (#2470), matching the !isPidAlive guards
+    // on the markWorkerStoppingByPid call sites in session-lock.ts.
+    if (legacyLock?.pid && !isLockProcessAlive(legacyLock)) {
       markWorkerStoppingByPid(projectRoot, legacyLock.pid);
       const workerByLegacyPid = getAllAutoWorkers().find(
         (w) =>
