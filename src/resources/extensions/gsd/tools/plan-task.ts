@@ -1,7 +1,7 @@
 import { clearParseCache } from "../files.js";
 import { assertVerifyIsShellCheckable, validateVerificationCommand } from "../verification-gate.js";
 import { normalizeVerifyCommandForVenv } from "../python-resolver.js";
-import { isClosedStatus } from "../status-guards.js";
+import { UnknownLegacyStatusError, adoptionLifecycleStatus, isClosedStatus } from "../status-guards.js";
 import { isNonEmptyString, validateStringArray } from "../validation.js";
 import { getGateIdsForTurn } from "../gate-registry.js";
 import {
@@ -11,7 +11,6 @@ import {
   getTask,
   insertGateRow,
   insertTask,
-  normalizeLegacyLifecycleStatus,
   setSliceSketchFlag,
   upsertTaskPlanning,
 } from "../gsd-db.js";
@@ -270,16 +269,11 @@ export async function handlePlanTask(
         if (isClosedStatus(parentSlice.status)) {
           throw new PlanningGuardError(`cannot plan task in a closed slice: ${params.sliceId} (status: ${parentSlice.status})`);
         }
-        const legacyParentLifecycle = normalizeLegacyLifecycleStatus(parentSlice.status);
-        let parentLifecycleStatus: "ready" | "completed" | "cancelled" = "ready";
-        if (legacyParentLifecycle === "completed" || legacyParentLifecycle === "cancelled") {
-          parentLifecycleStatus = legacyParentLifecycle;
-        }
         const parentLifecycle = adoptLifecycleIfMissing(context, {
           itemKind: "slice",
           milestoneId: params.milestoneId,
           sliceId: params.sliceId,
-          lifecycleStatus: parentLifecycleStatus,
+          lifecycleStatus: adoptionLifecycleStatus(`slice ${params.milestoneId}/${params.sliceId}`, parentSlice.status, "ready"),
         });
         if (parentLifecycle.lifecycleStatus === "completed" || parentLifecycle.lifecycleStatus === "cancelled") {
           throw new PlanningGuardError(
@@ -293,17 +287,12 @@ export async function handlePlanTask(
         }
         let existingLifecycle: ReturnType<typeof adoptLifecycleIfMissing> | null = null;
         if (existingTask) {
-          const legacyTaskLifecycle = normalizeLegacyLifecycleStatus(existingTask.status);
-          let taskLifecycleStatus: "ready" | "completed" | "cancelled" = "ready";
-          if (legacyTaskLifecycle === "completed" || legacyTaskLifecycle === "cancelled") {
-            taskLifecycleStatus = legacyTaskLifecycle;
-          }
           existingLifecycle = adoptLifecycleIfMissing(context, {
             itemKind: "task",
             milestoneId: params.milestoneId,
             sliceId: params.sliceId,
             taskId: params.taskId,
-            lifecycleStatus: taskLifecycleStatus,
+            lifecycleStatus: adoptionLifecycleStatus(`task ${params.milestoneId}/${params.sliceId}/${params.taskId}`, existingTask.status, "ready"),
           });
         }
         if (existingLifecycle?.lifecycleStatus === "completed" || existingLifecycle?.lifecycleStatus === "cancelled") {
@@ -412,7 +401,7 @@ export async function handlePlanTask(
     });
     operationStatus = receipt.status;
   } catch (err) {
-    if (err instanceof PlanningGuardError) return { error: err.message };
+    if (err instanceof PlanningGuardError || err instanceof UnknownLegacyStatusError) return { error: err.message };
     return { error: `db write failed: ${(err as Error).message}` };
   }
 

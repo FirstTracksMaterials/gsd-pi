@@ -6,7 +6,7 @@ import { getMilestone, getMilestoneSlices, getPlanMilestoneRecoveryBlock, getSli
 import { resolveMilestoneFile, resolveMilestonePath, resolveSliceFile, resolveSlicePath, resolveTaskFile, resolveTasksDir, legacyMilestonesDir, relMilestoneFile, relSliceFile, relTaskFile, relSlicePath, relGsdRootFile, resolveGsdRootFile, relMilestonePath } from "./paths.js";
 import { findMilestoneIds } from "./milestone-ids.js";
 import { deriveState } from "./state.js";
-import { isClosedStatus, isSkippedForDispatch } from "./status-guards.js";
+import { isClosedStatus, isInactiveStatus, isSkippedForDispatch } from "./status-guards.js";
 
 import type { DoctorIssue, DoctorIssueCode } from "./doctor-types.js";
 import type { RoadmapSliceEntry } from "./types.js";
@@ -256,7 +256,7 @@ export async function checkGsdStateHealth(
     const slices: NormSlice[] = getMilestoneSlices(milestoneId).map(s => ({
       id: s.id,
       title: s.title,
-      done: isClosedStatus(s.status),
+      done: isInactiveStatus(s.status),
       pending: s.status === "pending",
       skipped: s.status === "skipped",
       risk: (s.risk || "medium") as RoadmapSliceEntry["risk"],
@@ -403,7 +403,7 @@ export async function checkGsdStateHealth(
       let plan: { tasks: Array<{ id: string; done: boolean; title: string; estimate?: string }> } | null = null;
       const dbTasks = getSliceTasks(milestoneId, slice.id);
       if (dbTasks.length > 0) {
-        plan = { tasks: dbTasks.map(t => ({ id: t.id, done: t.status === "complete" || t.status === "done", title: t.title, estimate: t.estimate || undefined })) };
+        plan = { tasks: dbTasks.map(t => ({ id: t.id, done: isClosedStatus(t.status), title: t.title, estimate: t.estimate || undefined })) };
       }
       if (!plan) {
         if (!slice.done) {
