@@ -48,7 +48,10 @@ import {
   snapshotProjections,
 } from "../../../src/resources/extensions/gsd/tests/db-authority-gate.ts";
 import { seedSliceCompletionAuthority } from "../../../src/resources/extensions/gsd/tests/slice-completion-fixture.ts";
-import { createWorkflowAuthorityFixture } from "../../../src/resources/extensions/gsd/tests/workflow-authority-fixture.ts";
+import {
+  createWorkflowAuthorityFixture,
+  seedPrerequisiteCompletionEvidence,
+} from "../../../src/resources/extensions/gsd/tests/workflow-authority-fixture.ts";
 import {
   executeSummarySave,
   executeMilestoneStatus,
@@ -836,6 +839,7 @@ async function runPersistentSliceLifecycleMatrix(
   const fixture = await createWorkflowAuthorityFixture();
   const responses: Record<string, Record<string, unknown>> = {};
   try {
+    seedPrerequisiteCompletionEvidence();
     seedSliceCompletionAuthority({
       milestoneId: "M001",
       sliceId: "S02",
@@ -1010,6 +1014,7 @@ async function withOperationOnlyFixture(
 ): Promise<void> {
   const fixture = await createWorkflowAuthorityFixture();
   try {
+    seedPrerequisiteCompletionEvidence();
     seedSliceCompletionAuthority({
       milestoneId: "M001",
       sliceId: "S02",
