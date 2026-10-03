@@ -108,6 +108,13 @@ What shipped:
   stamp. STATE.md, DECISIONS.md, and `.planning/` carry no stamp. KNOWLEDGE.md
   is rendered from `memories` rows, but is not a pure projection yet: file rows
   with no database row are kept in the render until the KNOWLEDGE import exists.
+- Steer overrides (`/gsd steer`) are `override.*` events of Domain Operations.
+  OVERRIDES.md is a one-way render of them: dispatch, prompts and artifact
+  verification read only the database. A file block that no database override
+  holds (written by an older release, by hand, or committed by a teammate) is
+  not active. The render keeps it, doctor reports it as a warning, and
+  `/gsd doctor --fix` imports it with an `override.import` Domain Operation. A
+  block with an unknown scope is reported and is not imported.
 
 The frozen projection format, stamp, and reader contract live in
 [`docs/dev/state-db-cutover-projection-contract.md`](docs/dev/state-db-cutover-projection-contract.md).
