@@ -38,6 +38,8 @@ import {
   verifyMigrationProjection,
 } from "../migrate/audit.ts";
 import { assertMigrationDbReadiness, executeMigrationWrite, importWrittenMigrationToDb, migrationFailureMessage, sweepStaleMigrationStaging } from "../migrate/execution.ts";
+import { renderStateContent } from "../workflow-projections.ts";
+import { deriveState } from "../state.ts";
 import { formatPlan, formatRoadmap, writeGSDDirectory } from "../migrate/writer.ts";
 import {
   _setManagedMutationBoundaryForTest,
@@ -473,7 +475,6 @@ test("executeMigrationWrite records audit artifacts and verifies DB-backed proje
       result.written.artifactPaths.map((path) => path.slice(gsdRoot(base).length + 1)).sort(),
       [
         "PROJECT.md",
-        "STATE.md",
         "milestones/M001/M001-CONTEXT.md",
         "milestones/M001/M001-RESEARCH.md",
       ],
@@ -529,6 +530,11 @@ test("executeMigrationWrite records audit artifacts and verifies DB-backed proje
       formatPlan(project.milestones[0]!.slices[0]!),
     );
     assert.equal(result.verification.dbReadiness.registry, 2, "imported and preserved authority are readable by deriveState");
+    assert.equal(
+      readFileSync(join(base, ".gsd", "STATE.md"), "utf8"),
+      renderStateContent(await deriveState(base, { syncQueueOrder: false })),
+      "migration leaves a STATE.md rendered from the imported database",
+    );
     assert.notEqual(result.verification.dbReadiness.phase, "not-checked", "readiness gate ran before audit");
   } finally {
     cleanup(base);
@@ -3872,7 +3878,7 @@ test("projection mutation gate flags .gsd-headed template literal paths", () => 
   }
 });
 
-test("milestone projection mutations honor the publication claim", () => {
+test("milestone projection mutations honor the publication claim", async () => {
   const base = makeBase("gsd-migrate-milestone-actions-fence-");
   try {
     mkdirSync(join(base, ".gsd", "milestones", "M001"), { recursive: true });
@@ -3883,7 +3889,7 @@ test("milestone projection mutations honor the publication claim", () => {
     const release = claimProjectionMaintenance(databasePath);
     try {
       // The park commits in the DB; only the marker render is fenced.
-      assert.equal(parkMilestone(base, "M001", "hold"), true);
+      assert.equal(await parkMilestone(base, "M001", "hold"), true);
     } finally {
       release();
     }

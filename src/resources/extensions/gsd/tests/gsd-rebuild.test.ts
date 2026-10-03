@@ -396,6 +396,29 @@ test("trusted marker baselines do not misclassify pending DB renders", async (t)
   assert.equal(existsSync(join(base, ".gsd", "quarantine", "projections")), false);
 });
 
+test("the external-edit observer never moves an edited STATE.md", async (t) => {
+  const base = makeBase();
+  t.after(() => cleanup(base));
+  openDatabase(join(base, ".gsd", "gsd.db"));
+  seedOpenTask();
+  const { ctx } = makeCtx();
+  await handleRebuild(ctx, base, "markdown");
+  const statePath = join(base, ".gsd", "STATE.md");
+  const rendered = readFileSync(statePath, "utf-8");
+  const markerPath = join(base, ".gsd", ".compat.json");
+  const marker = JSON.parse(readFileSync(markerPath, "utf-8"));
+  marker.projections["STATE.md"] = { sha: computeProjectionSha(rendered), entities: [] };
+  writeFileSync(markerPath, JSON.stringify(marker, null, 2));
+  const edited = "# GSD State\n\nExternal edit\n";
+  writeFileSync(statePath, edited);
+
+  const observation = await preserveProjectionChanges(base);
+
+  assert.deepEqual(observation.preserved.map((entry) => entry.sourcePath), []);
+  assert.equal(readFileSync(statePath, "utf-8"), edited);
+  assert.equal(existsSync(join(base, ".gsd", "quarantine", "projections")), false);
+});
+
 test("projection writer preserves edited bytes at the mutation boundary", async (t) => {
   const base = makeBase();
   t.after(() => cleanup(base));
