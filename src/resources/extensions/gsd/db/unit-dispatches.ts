@@ -616,6 +616,48 @@ export function setDispatchRetry(
   });
 }
 
+/**
+ * The stage of a unit run (ADR-048). A dispatch row with no stage row is in
+ * execute: the agent session of the unit may still have work to do.
+ */
+export type DispatchStage = "execute" | "verify" | "route" | "closeout";
+
+/** Store the stage the dispatch row's unit entered when it left execution. */
+export function setDispatchStage(dispatchId: number, stage: Exclude<DispatchStage, "execute">): void {
+  transaction(() => {
+    _getAdapter()!.prepare(
+      `INSERT INTO unit_dispatch_stages (dispatch_id, stage, updated_at)
+       VALUES (:dispatch_id, :stage, :updated_at)
+       ON CONFLICT (dispatch_id) DO UPDATE SET
+         stage = excluded.stage,
+         updated_at = excluded.updated_at`,
+    ).run({
+      ":dispatch_id": dispatchId,
+      ":stage": stage,
+      ":updated_at": new Date().toISOString(),
+    });
+  });
+}
+
+/** The stage of the dispatch row's unit. */
+export function getDispatchStage(dispatchId: number): DispatchStage {
+  if (!isDbAvailable()) return "execute";
+  const row = _getAdapter()!.prepare(
+    `SELECT stage FROM unit_dispatch_stages WHERE dispatch_id = :dispatch_id`,
+  ).get({ ":dispatch_id": dispatchId }) as { stage: DispatchStage } | undefined;
+  return row?.stage ?? "execute";
+}
+
+/**
+ * Whether the unit of the dispatch row may still have execution to continue:
+ * the unit did not leave the execute stage. The row status does not decide
+ * this: the loop settles the row of a unit that paused in pre-verification
+ * with unfinished work, and that unit is still in the execute stage.
+ */
+export function isDispatchExecutionOpen(dispatchId: number): boolean {
+  return getDispatchById(dispatchId) !== null && getDispatchStage(dispatchId) === "execute";
+}
+
 /** Delete the stored retry decisions of every dispatch row of the unit. */
 export function deleteUnitDispatchRetries(unitType: string, unitId: string): void {
   transaction(() => {

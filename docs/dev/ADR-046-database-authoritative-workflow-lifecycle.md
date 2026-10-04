@@ -129,7 +129,7 @@ verification retry count of a step is on its step row, written by a
 authority: a run directory with no run row (an older release) is imported with
 a `custom_workflow.run.import` Domain Operation before the engine reads it,
 and an import that is refused (an unknown step status) fails loud and writes
-nothing. This import is not an Import Preview. The paused-session record in `runtime_kv` is session state,
+nothing. This import is not an Import Preview. The pause row (`auto_pauses`) is session state,
 not run identity: a command that names a run starts that run and drops the
 record. A markdown-phase template run still keeps its phase state in
 an agent-edited `STATE.json`.
@@ -237,8 +237,9 @@ Attempts are the kernel record of Task execution. For every other unit type the
 kernel record is the claimed `unit_dispatches` row. The target is that retry and
 recovery budgets, pause state and stage checkpoints are stored on that row.
 Today three retry budgets (zero-tool, tool-unavailable and pre-execution
-repair), the sidecar queue and the planner retry after a failed pre-execution
-check are stored there. See the amendments in
+repair), the sidecar queue, the planner retry after a failed pre-execution
+check and the stage checkpoint are stored there. The pause is a row of its own
+(`auto_pauses`) with a link to the dispatch row. See the amendments in
 [ADR-048](ADR-048-unitrun-dispatch-row.md) for the parts that are done.
 
 The refactor remains provider-neutral and extension-first. Provider-specific

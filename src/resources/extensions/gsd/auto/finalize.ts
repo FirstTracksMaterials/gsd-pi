@@ -86,7 +86,7 @@ export async function failClosedOnFinalizeTimeout(
     "warning",
   );
 
-  await deps.pauseAuto(ctx, pi);
+  await deps.pauseAuto(ctx, pi, "machine_fixable");
   s.clearCurrentUnit();
   clearCurrentPhase();
   setBeforeAgentStartContext(undefined);
@@ -104,6 +104,7 @@ export async function runFinalize(
   loopState: LoopState,
   sidecarItem?: SidecarItem,
   publishVerifiedTask?: () => Promise<void>,
+  onExecuteWorkComplete?: () => void,
 ): Promise<PhaseResult> {
   const { ctx, pi, s, deps } = ic;
   const { pauseAfterUatDispatch } = iterData;
@@ -267,6 +268,11 @@ export async function runFinalize(
     }
   }
 
+  // Keep this call after every pre-verification exit above. Those exits are
+  // for a unit with unfinished work, and its stage must stay `execute` so a
+  // resume replays the tool calls (ADR-048, stage checkpoint).
+  onExecuteWorkComplete?.();
+
   if (pauseAfterUatDispatch) {
     const pauseMid = iterData.mid;
     const pauseSliceId = pauseMid && iterData.unitId.startsWith(`${pauseMid}/`)
@@ -283,7 +289,7 @@ export async function runFinalize(
       ? `UAT requires human execution. Auto-mode will pause after this unit writes the result file.\n\n${guidance}`
       : "UAT requires human execution. Auto-mode will pause after this unit writes the result file.";
     ctx.ui.notify(pauseMessage, "info");
-    await deps.pauseAuto(ctx, pi);
+    await deps.pauseAuto(ctx, pi, "subjective_uat");
     debugLog("autoLoop", { phase: "exit", reason: "uat-pause" });
     clearFinalizingUnit();
     return { action: "break", reason: "uat-pause" };
@@ -317,7 +323,7 @@ export async function runFinalize(
       const abortMessage = abortId
         ? `Verification auto-fix retries are exhausted — durable recovery aborted this task. Resume with /gsd recover ${abortId} after fixing the failure.`
         : "Verification was aborted by durable task recovery.";
-      await deps.pauseAuto(ctx, pi, { message: abortMessage, category: "unknown" });
+      await deps.pauseAuto(ctx, pi, "machine_fixable", { message: abortMessage, category: "unknown" });
       debugLog("autoLoop", { phase: "exit", reason: abortReason });
       clearFinalizingUnit();
       return { action: "break", reason: abortReason };
