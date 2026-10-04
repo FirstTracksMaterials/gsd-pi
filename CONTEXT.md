@@ -193,6 +193,21 @@ What shipped:
   item holds is not listed and cannot be promoted; doctor reports it and
   `/gsd doctor --fix` imports it with a `backlog.import` Domain Operation.
 
+- A custom workflow run (`/gsd workflow run`) is `custom_workflow_runs` and
+  `custom_workflow_steps` rows written by `custom_workflow.*` Domain
+  Operations. `GRAPH.yaml`, `DEFINITION.yaml` and `PARAMS.json` in the run
+  directory are one-way renders: the engine writes them again after each step
+  and never reads them for a run that has rows. Each verification of a step is
+  an evidence row, and a step completes only from a row that passed or carries
+  a waiver rationale. A `human-review` or `prompt-verify` step pauses the run
+  until `/gsd workflow approve <name>/<timestamp> <step>` records the decision
+  of the operator as such a row. The verification retry count of a step is on
+  its step row, written by a `custom_workflow.step.retry` Domain Operation. A
+  run directory from an older release has no rows: the engine imports it to
+  rows before its first read, and an import that is refused (an unknown step
+  status) fails loud and writes nothing. `/gsd workflow list` shows such a
+  directory as not imported.
+
 The frozen projection format, stamp, and reader contract live in
 [`docs/dev/state-db-cutover-projection-contract.md`](docs/dev/state-db-cutover-projection-contract.md).
 External readers should treat that document as the reference, not on-disk

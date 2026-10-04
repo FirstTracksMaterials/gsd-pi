@@ -247,7 +247,7 @@ one of four execution modes:
 | Mode              | What it does                                                                              |
 |-------------------|-------------------------------------------------------------------------------------------|
 | `oneshot`         | Prompt-only, no state, no branch. For reviews, triage, changelog generation.              |
-| `yaml-step`       | Full engine with GRAPH.yaml, iterate, and shell-verify. For fan-out batch work.           |
+| `yaml-step`       | Full engine with step rows in the database, iterate, and shell-verify. For fan-out batch work. |
 | `markdown-phase`  | Multi-phase with STATE.json + phase-approval gates. For release, performance audit.       |
 | `auto-milestone`  | Hooks into the full `/gsd auto` pipeline. Reserved for `full-project`.                    |
 
@@ -275,6 +275,20 @@ backwards compatibility.
 | `/gsd workflow validate <name>` | Validate a YAML definition |
 | `/gsd workflow pause` | Pause custom workflow auto-mode |
 | `/gsd workflow resume` | Resume paused custom workflow auto-mode |
+| `/gsd workflow resume <name>/<timestamp>` | Resume a YAML run by the name and timestamp that `/gsd workflow list` shows, also after a crash |
+| `/gsd workflow approve <name>/<timestamp> <step>` | Approve a step that paused for your review (a `human-review` or `prompt-verify` step), then resume the run |
+
+A YAML run is stored in the project database. `DEFINITION.yaml`, `GRAPH.yaml`
+and `PARAMS.json` in `.gsd/workflow-runs/<name>/<timestamp>/` are renders of
+it: GSD writes them again after each step and does not read your edits. A run
+directory from an older release has no database rows: `/gsd workflow list`
+shows it as not imported, and GSD imports it before it runs the next step.
+
+A step with a `human-review` or `prompt-verify` policy pauses the run after it
+runs. Review its output, approve it with
+`/gsd workflow approve <name>/<timestamp> <step>`, and resume the run. The
+approval is stored with the run; the step does not run again. A step that
+failed a check cannot be approved: resume the run and the step runs again.
 
 ### Bundled plugins
 

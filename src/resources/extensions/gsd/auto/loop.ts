@@ -81,8 +81,9 @@ import {
   shouldUseCustomEnginePath,
 } from "./workflow-kernel.js";
 import {
+  hydrateCustomStepVerifyRetryCount,
   hydrateCustomVerifyRetryCounts,
-  saveCustomVerifyRetryCounts,
+  saveCustomStepVerifyRetryCount,
 } from "./custom-verify-retry-store.js";
 import {
   settleDispatchFailed,
@@ -117,6 +118,7 @@ import {
   handleCustomEngineVerifyRetryOutcome,
   type VerificationRead,
 } from "./workflow-custom-engine-verify-outcome.js";
+import { customStepApprovalNotice } from "../custom-workflow-engine.js";
 import { handleCustomEngineReconcile } from "./workflow-custom-engine-reconcile.js";
 import { handleCustomEngineReconcileOutcome } from "./workflow-custom-engine-reconcile-outcome.js";
 import { formatLeaseConflictNotice } from "./lease-conflict-notice.js";
@@ -332,13 +334,6 @@ function leaseConflictNotice(
     unitType: iterData.unitType,
     unitId: iterData.unitId,
     reason,
-  });
-}
-
-function logCustomVerifyRetrySaveFailure(err: unknown): void {
-  debugLog("autoLoop", {
-    phase: "save-custom-verify-retries-failed",
-    error: err instanceof Error ? err.message : String(err),
   });
 }
 
@@ -875,7 +870,7 @@ export async function autoLoop(
 
       // ── Custom engine path ──────────────────────────────────────────────
       // When activeEngineId is a non-dev value, the custom engine drives its own
-      // state via GRAPH.yaml. It shares guards and Unit execution with the dev
+      // state from the step rows of the run. It shares guards and Unit execution with the dev
       // path, then verifies and reconciles via the engine layer.
       //
       // GSD_ENGINE_BYPASS=1 skips the engine layer entirely — falls through
@@ -966,6 +961,9 @@ export async function autoLoop(
 
         let customDispatchId: number | null = null;
         let customDispatchSettled = false;
+        // A custom workflow step keeps its retry count on the step row.
+        const saveCustomEngineRetryCounts = (): void =>
+          saveCustomStepVerifyRetryCount(s, customIterData.unitType, customIterData.unitId);
 
         // ── Progress widget (mirrors the dev path) ──
         deps.updateProgressWidget(ctx, iterData.unitType, iterData.unitId, iterData.state);
@@ -1277,6 +1275,8 @@ export async function autoLoop(
               finishTurn,
             },
           });
+          const approvalNotice = customStepApprovalNotice(s.activeRunDir, iterData.unitId);
+          if (approvalNotice) ctx.ui.notify(approvalNotice, "info");
           if (verifyFlow.action === "break") {
             finishIncompleteIteration({
               status: "paused",
@@ -1297,12 +1297,9 @@ export async function autoLoop(
             iteration,
             maxRetries: MAX_CUSTOM_ENGINE_VERIFY_RETRIES,
             deps: {
-              hydrateRetryCounts: () => hydrateCustomVerifyRetryCounts(s, {
-                logFailure: logCustomVerifyRetryLoadFailure,
-              }),
-              saveRetryCounts: () => saveCustomVerifyRetryCounts(s, {
-                logFailure: logCustomVerifyRetrySaveFailure,
-              }),
+              hydrateRetryCounts: () =>
+                hydrateCustomStepVerifyRetryCount(s, customIterData.unitType, customIterData.unitId),
+              saveRetryCounts: saveCustomEngineRetryCounts,
               recover: (unitType, unitId, options) => policy.recover(unitType, unitId, options),
               logRetry: details => debugLog("autoLoop", {
                 phase: "custom-engine-verify-retry",
@@ -1376,9 +1373,7 @@ export async function autoLoop(
           iterData,
           iteration,
           deps: {
-            saveRetryCounts: () => saveCustomVerifyRetryCounts(s, {
-              logFailure: logCustomVerifyRetrySaveFailure,
-            }),
+            saveRetryCounts: saveCustomEngineRetryCounts,
             logReconcile: details => debugLog("autoLoop", {
               phase: "custom-engine-reconcile",
               ...details,

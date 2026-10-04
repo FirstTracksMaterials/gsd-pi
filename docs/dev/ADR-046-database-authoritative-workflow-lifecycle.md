@@ -103,6 +103,36 @@ Narrative content may be canonical database content, but every machine-relevant
 fact has a normalized database representation. Runtime never reconstructs
 workflow truth from narrative prose.
 
+Work outside the Milestone hierarchy is in scope when it keeps state. A custom
+workflow run (`yaml-step`) and a markdown-phase template run are workflow
+state: the run, its frozen definition and its step or phase lifecycle are
+database rows, and the files in the run directory are projections. A oneshot
+workflow run keeps no state (no run directory, no phase tracking) and is out
+of scope of this ADR.
+
+Current effect: a `yaml-step` run is `custom_workflow_runs` and
+`custom_workflow_steps` rows written by `custom_workflow.*` Domain Operations,
+with one `custom_workflow_step_verifications` evidence row for each
+verification. A step with no check records `inconclusive` with a waiver
+rationale on that row; it is not a `workflow_waivers` row, because a step has
+no lifecycle row. A step with a `human-review` or `prompt-verify` policy
+records `inconclusive` with no waiver and pauses the run;
+`/gsd workflow approve <name>/<timestamp> <step>` records the decision of the
+operator as a `pass` row written by a `user` actor and completes the step. A
+step has no claim yet: the dispatch claim for custom steps (ADR-048) is a
+follow-up. Until then the run revision fence of the Domain Operation is the
+write safety: each call has its own idempotency key, so a second session that
+read the same revision gets a revision conflict and never a silent replay. The
+verification retry count of a step is on its step row, written by a
+`custom_workflow.step.retry` Domain Operation. The rows are the only
+authority: a run directory with no run row (an older release) is imported with
+a `custom_workflow.run.import` Domain Operation before the engine reads it,
+and an import that is refused (an unknown step status) fails loud and writes
+nothing. This import is not an Import Preview. The paused-session record in `runtime_kv` is session state,
+not run identity: a command that names a run starts that run and drops the
+record. A markdown-phase template run still keeps its phase state in
+an agent-edited `STATE.json`.
+
 ### Markdown and other files are one-way projections
 
 PROJECT, ROADMAP, QUEUE, CONTEXT, PLAN, SUMMARY, ASSESSMENT, UAT,

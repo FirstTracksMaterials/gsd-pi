@@ -19,7 +19,13 @@ import { WorktreeStateProjection } from "../worktree-state-projection.js";
 import type { SessionLockStatus } from "../session-lock.js";
 import { writeGraph, readGraph, type WorkflowGraph, type GraphStep } from "../graph.ts";
 import { SourceObservationStore } from "../source-observations.js";
-import { closeDatabase, openDatabase } from "../gsd-db.js";
+import { _getAdapter, closeDatabase, openDatabase } from "../gsd-db.js";
+import { markWorkerStopping, registerAutoWorker } from "../db/auto-workers.ts";
+import {
+  customWorkflowRunId,
+  getLatestCustomWorkflowStepVerification,
+} from "../db/custom-workflow-runs.ts";
+import { createRun, listRuns } from "../run-manager.ts";
 import { recordNonAdvancingOutcome } from "../auto-liveness-backstop.js";
 import { stringify } from "yaml";
 
@@ -30,6 +36,17 @@ const tmpDirs: string[] = [];
 function makeTmpDir(): string {
   const dir = mkdtempSync(join(tmpdir(), "loop-integ-"));
   tmpDirs.push(dir);
+  return dir;
+}
+
+/**
+ * A run directory from a release that kept runs in files, with an open
+ * database: the engine imports the directory to rows on its first use.
+ */
+function makeRunDir(): string {
+  const dir = makeTmpDir();
+  mkdirSync(join(dir, ".gsd"), { recursive: true });
+  assert.equal(openDatabase(join(dir, ".gsd", "gsd.db")), true);
   return dir;
 }
 
@@ -360,7 +377,7 @@ async function runVerificationScenario(input: {
 describe("Custom engine loop integration", { concurrency: 1 }, () => {
   it("threads custom-engine runGuards ids and budget inputs through adjudication", async () => {
     _resetPendingResolve();
-    const runDir = makeTmpDir();
+    const runDir = makeRunDir();
     const graph = makeGraph([makeStep({ id: "guarded-step" })], "guarded-workflow");
     writeGraph(runDir, graph);
     writeDefinition(runDir, graph.steps, "guarded-workflow");
@@ -407,7 +424,7 @@ describe("Custom engine loop integration", { concurrency: 1 }, () => {
     _resetPendingResolve();
 
     // Create a real run directory with 3 steps: a → b → c
-    const runDir = makeTmpDir();
+    const runDir = makeRunDir();
     const graph = makeGraph([
       makeStep({ id: "step-a" }),
       makeStep({ id: "step-b", dependsOn: ["step-a"] }),
@@ -490,10 +507,211 @@ describe("Custom engine loop integration", { concurrency: 1 }, () => {
     );
   });
 
+  it("runs a database-backed run through autoLoop and ignores a hand-edited GRAPH.yaml", async () => {
+    _resetPendingResolve();
+
+    const base = realpathSync(makeTmpDir());
+    mkdirSync(join(base, ".gsd", "workflow-defs"), { recursive: true });
+    writeFileSync(join(base, ".gsd", "workflow-defs", "db-run.yaml"), [
+      "version: 1",
+      "name: db-run",
+      "steps:",
+      "  - id: step-a",
+      "    name: A",
+      "    prompt: Do step-a",
+      "    requires: []",
+      "    produces: []",
+      "  - id: step-b",
+      "    name: B",
+      "    prompt: Do step-b",
+      "    requires: [step-a]",
+      "    produces: []",
+    ].join("\n"), "utf-8");
+    openDatabase(join(base, ".gsd", "gsd.db"));
+    const runDir = createRun(base, "db-run");
+    // The step rows are the state: a hand edit that marks every step complete is not read.
+    const edited = readGraph(runDir);
+    writeGraph(runDir, { ...edited, steps: edited.steps.map((step) => ({ ...step, status: "complete" as const })) });
+
+    const ctx = makeMockCtx();
+    const pi = makeMockPi();
+    const s = makeLoopSession({
+      activeEngineId: "custom",
+      activeRunDir: runDir,
+      basePath: base,
+      workerId: registerAutoWorker({ projectRootRealpath: base }),
+    });
+    const deps = makeMockDeps({
+      stopAuto: async (_ctx, _pi, reason) => {
+        deps.callLog.push(`stopAuto:${reason ?? "no-reason"}`);
+        s.active = false;
+      },
+    });
+
+    const loopPromise = autoLoop(ctx, pi, s, deps);
+    await resolveNextAgentEnd();
+    await resolveNextAgentEnd();
+    await loopPromise;
+
+    assert.equal(pi.calls.length, 2, "each step is dispatched once");
+    assert.ok(deps.callLog.includes("stopAuto:Workflow complete"), deps.callLog.join("\n"));
+    assert.deepEqual(listRuns(base)[0]?.steps, { total: 2, completed: 2, pending: 0, active: 0 });
+    assert.deepEqual(readGraph(runDir).steps.map((step) => step.status), ["complete", "complete"]);
+    // Each step advanced on a stored verification result, here a waiver: no verify policy.
+    for (const stepId of ["step-a", "step-b"]) {
+      const verification = getLatestCustomWorkflowStepVerification(customWorkflowRunId(runDir), stepId);
+      assert.equal(verification?.verdict, "inconclusive", stepId);
+      assert.equal(verification?.waiverRationale, "The step has no verify policy.", stepId);
+    }
+  });
+
+  it("a human-review step pauses once, the operator approves it, and the next step runs", async () => {
+    _resetPendingResolve();
+
+    const base = realpathSync(makeTmpDir());
+    mkdirSync(join(base, ".gsd", "workflow-defs"), { recursive: true });
+    writeFileSync(join(base, ".gsd", "workflow-defs", "release.yaml"), [
+      "version: 1",
+      "name: release",
+      "steps:",
+      "  - id: publish",
+      "    name: Publish",
+      "    prompt: Do publish",
+      "    requires: []",
+      "    produces: []",
+      "    verify:",
+      "      policy: human-review",
+      "  - id: announce",
+      "    name: Announce",
+      "    prompt: Do announce",
+      "    requires: [publish]",
+      "    produces: []",
+    ].join("\n"), "utf-8");
+    openDatabase(join(base, ".gsd", "gsd.db"));
+    const runDir = createRun(base, "release");
+    const runId = customWorkflowRunId(runDir);
+
+    const notices: string[] = [];
+    const ctx = makeMockCtx();
+    ctx.ui.notify = (message: string) => { notices.push(message); };
+    const pi = makeMockPi();
+    /** One auto session on the run: it ends at a pause or a stop. */
+    const runSession = async (): Promise<string[]> => {
+      const s = makeLoopSession({
+        activeEngineId: "custom",
+        activeRunDir: runDir,
+        basePath: base,
+        workerId: registerAutoWorker({ projectRootRealpath: base }),
+      });
+      const deps = makeMockDeps({
+        // pauseAuto releases the worker of the session, as auto.ts does.
+        pauseAuto: async () => {
+          deps.callLog.push("pauseAuto");
+          markWorkerStopping(s.workerId);
+          s.active = false;
+        },
+        stopAuto: async (_ctx, _pi, reason) => {
+          deps.callLog.push(`stopAuto:${reason ?? "no-reason"}`);
+          s.active = false;
+        },
+      });
+      const loopPromise = autoLoop(ctx, pi, s, deps);
+      await resolveNextAgentEnd();
+      await loopPromise;
+      return deps.callLog;
+    };
+
+    // The publish step runs, and its human-review policy pauses the run.
+    assert.ok((await runSession()).includes("pauseAuto"));
+    assert.equal(pi.calls.length, 1, "publish is dispatched once");
+    assert.equal(getLatestCustomWorkflowStepVerification(runId, "publish")?.verdict, "inconclusive");
+    assert.ok(
+      notices.some((message) =>
+        message.includes(`/gsd workflow approve ${runId} publish`)
+        && message.includes(`/gsd workflow resume ${runId}`)),
+      `the pause notice names the approve and resume commands, got: ${notices.join(" | ")}`,
+    );
+
+    const { handleWorkflowCommand } = await import("../commands/handlers/workflow.ts");
+    const { withCommandCwd } = await import("../commands/context.ts");
+    const replies: string[] = [];
+    const commandCtx = { ui: { notify: (message: string) => { replies.push(message); } } };
+    await withCommandCwd(base, () => handleWorkflowCommand(`workflow approve ${runId} publish`, commandCtx as any, pi));
+
+    // The approval is a stored verification result of the operator.
+    const approval = _getAdapter()!.prepare(
+      `SELECT verification.verdict AS verdict, operation.actor_type AS actor
+       FROM custom_workflow_step_verifications verification
+       JOIN workflow_operations operation ON operation.operation_id = verification.operation_id
+       WHERE verification.run_id = :run_id AND verification.step_id = 'publish'
+       ORDER BY verification.id DESC LIMIT 1`,
+    ).get({ ":run_id": runId });
+    assert.deepEqual({ ...approval }, { verdict: "pass", actor: "user" }, replies.join(" | "));
+    assert.deepEqual(readGraph(runDir).steps.map((step) => step.status), ["complete", "pending"]);
+
+    // The resumed run dispatches announce. publish does not run again.
+    const resumed = await runSession();
+    assert.ok(resumed.includes("stopAuto:Workflow complete"), resumed.join("\n"));
+    assert.equal(pi.calls.length, 2, "only announce is dispatched after the approval");
+    assert.ok(String((pi.calls[1] as [{ content?: string }])[0]?.content).includes("Do announce"));
+    assert.deepEqual(readGraph(runDir).steps.map((step) => step.status), ["complete", "complete"]);
+  });
+
+  it("a verification retry of a database-backed run writes no retry file", async () => {
+    _resetPendingResolve();
+
+    const base = realpathSync(makeTmpDir());
+    mkdirSync(join(base, ".gsd", "workflow-defs"), { recursive: true });
+    // The check fails on its first run and passes on its second.
+    writeFileSync(join(base, ".gsd", "workflow-defs", "retry-run.yaml"), [
+      "version: 1",
+      "name: retry-run",
+      "steps:",
+      "  - id: step-a",
+      "    name: A",
+      "    prompt: Do step-a",
+      "    requires: []",
+      "    produces: []",
+      "    verify:",
+      "      policy: shell-command",
+      "      command: test -f marker || (touch marker && false)",
+    ].join("\n"), "utf-8");
+    openDatabase(join(base, ".gsd", "gsd.db"));
+    const runDir = createRun(base, "retry-run");
+
+    const ctx = makeMockCtx();
+    const pi = makeMockPi();
+    const s = makeLoopSession({
+      activeEngineId: "custom",
+      activeRunDir: runDir,
+      basePath: base,
+      workerId: registerAutoWorker({ projectRootRealpath: base }),
+    });
+    const deps = makeMockDeps({
+      stopAuto: async (_ctx, _pi, reason) => {
+        deps.callLog.push(`stopAuto:${reason ?? "no-reason"}`);
+        s.active = false;
+      },
+    });
+
+    const loopPromise = autoLoop(ctx, pi, s, deps);
+    await resolveNextAgentEnd();
+    await resolveNextAgentEnd();
+    await loopPromise;
+
+    const verdicts = _getAdapter()!.prepare(
+      "SELECT verdict FROM custom_workflow_step_verifications ORDER BY id",
+    ).all().map((row) => row["verdict"]);
+    assert.deepEqual(verdicts, ["fail", "pass"]);
+    assert.equal(pi.calls.length, 2, "the step is dispatched again after the failed check");
+    assert.deepEqual(listRuns(base)[0]?.steps, { total: 1, completed: 1, pending: 0, active: 0 });
+    assert.equal(existsSync(join(runDir, "runtime")), false, "the retry count is on the step row");
+  });
+
   it("step mode stops after one custom workflow step", async () => {
     _resetPendingResolve();
 
-    const runDir = makeTmpDir();
+    const runDir = makeRunDir();
     const graph = makeGraph([
       makeStep({ id: "step-a" }),
       makeStep({ id: "step-b", dependsOn: ["step-a"] }),
@@ -558,7 +776,7 @@ describe("Custom engine loop integration", { concurrency: 1 }, () => {
     _resetPendingResolve();
 
     // Create a run directory where all steps are already complete
-    const runDir = makeTmpDir();
+    const runDir = makeRunDir();
     const graph = makeGraph([
       makeStep({ id: "step-a", status: "complete" }),
     ], "already-done");
@@ -594,7 +812,7 @@ describe("Custom engine loop integration", { concurrency: 1 }, () => {
   it("finalizes custom-engine complete turns and clears current turn state", async () => {
     _resetPendingResolve();
 
-    const runDir = makeTmpDir();
+    const runDir = makeRunDir();
     const graph = makeGraph([
       makeStep({ id: "step-a", status: "complete" }),
     ], "already-done");
@@ -647,7 +865,7 @@ describe("Custom engine loop integration", { concurrency: 1 }, () => {
   it("stops blocked custom workflows and clears current turn state", async () => {
     _resetPendingResolve();
 
-    const runDir = makeTmpDir();
+    const runDir = makeRunDir();
     const graph = makeGraph([
       makeStep({ id: "step-a", dependsOn: ["step-b"] }),
       makeStep({ id: "step-b", dependsOn: ["step-a"] }),
@@ -747,7 +965,7 @@ describe("Custom engine loop integration", { concurrency: 1 }, () => {
     _resetPendingResolve();
 
     // Single-step workflow
-    const runDir = makeTmpDir();
+    const runDir = makeRunDir();
     const graph = makeGraph([makeStep({ id: "only" })], "single");
     writeGraph(runDir, graph);
     writeDefinition(runDir, graph.steps, "single");
@@ -802,7 +1020,7 @@ describe("Custom engine loop integration", { concurrency: 1 }, () => {
   it("respects dependency ordering — step-b waits for step-a", async () => {
     _resetPendingResolve();
 
-    const runDir = makeTmpDir();
+    const runDir = makeRunDir();
     // step-b depends on step-a, both pending
     const graph = makeGraph([
       makeStep({ id: "step-a" }),
@@ -861,7 +1079,7 @@ describe("Custom engine loop integration", { concurrency: 1 }, () => {
   it("stops custom workflow after repeated verification retries", async () => {
     _resetPendingResolve();
 
-    const runDir = makeTmpDir();
+    const runDir = makeRunDir();
     const graph = makeGraph([makeStep({ id: "retry-step" })], "retry-exhaustion");
     writeGraph(runDir, graph);
     writeFileSync(join(runDir, "DEFINITION.yaml"), stringify({
@@ -944,7 +1162,7 @@ describe("Custom engine loop integration", { concurrency: 1 }, () => {
   it("persists custom verification retry budget across a session restart", async () => {
     _resetPendingResolve();
 
-    const runDir = makeTmpDir();
+    const runDir = makeRunDir();
     const graph = makeGraph([makeStep({ id: "retry-step" })], "retry-restart");
     writeGraph(runDir, graph);
     writeFileSync(join(runDir, "DEFINITION.yaml"), stringify({
@@ -1447,7 +1665,7 @@ describe("Custom engine loop integration", { concurrency: 1 }, () => {
 
     // Two-step workflow: a → b. We will complete step-a, then force a break
     // during step-b's runUnitPhase (by returning cancelled status + deactivating).
-    const runDir = makeTmpDir();
+    const runDir = makeRunDir();
     const graph = makeGraph([
       makeStep({ id: "step-a" }),
       makeStep({ id: "step-b", dependsOn: ["step-a"] }),
