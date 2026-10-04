@@ -321,10 +321,16 @@ exit_code    INTEGER DEFAULT 0
 verdict      TEXT NOT NULL DEFAULT ''
 duration_ms  INTEGER DEFAULT 0
 created_at   TEXT NOT NULL DEFAULT ''
+attempt_ref  TEXT NOT NULL DEFAULT ''   ← Attempt that made the claim (non-versioned); '' when no Attempt made it
 FOREIGN KEY (milestone_id, slice_id, task_id) → tasks
 ```
 
-- Indexes: `idx_verification_evidence_task`, unique dedup index (V13)
+- Indexes: `idx_verification_evidence_task`, unique dedup index (V13) on
+  `(task_id, slice_id, milestone_id, attempt_ref, command, verdict)`
+- `attempt_ref` and the dedup index with it are the non-versioned required
+  schema feature `verification-evidence-attempt`. Host verification reads only
+  the claims of the Attempt under verification; the claims of an earlier
+  Attempt stay stored.
 
 ---
 
@@ -875,6 +881,48 @@ attempts     INTEGER NOT NULL
 updated_at   TEXT NOT NULL
 PRIMARY KEY (milestone_id, slice_id)
 ```
+
+- Deleted by `slice.reopen` and `milestone.reopen`, so a redone slice gets a new budget.
+
+##### `exec_runs`
+
+One row for each `gsd_exec` / `gsd_uat_exec` command the host ran. Evidence
+checks read this row. `.gsd/exec/<id>.*` holds the output text and a
+`.meta.json` copy of the run metadata for `gsd_exec_search` and the compaction
+snapshot; the `.meta.json` file is not evidence.
+
+```
+id           TEXT PRIMARY KEY   ← the run id the tool returns
+kind         TEXT NOT NULL      ← 'exec' | 'uat_exec'
+runtime      TEXT NOT NULL
+command      TEXT NOT NULL      ← the script, secrets redacted
+cwd          TEXT NOT NULL
+exit_code    INTEGER
+signal       TEXT
+timed_out    INTEGER NOT NULL
+aborted      INTEGER NOT NULL
+started_at   TEXT NOT NULL
+duration_ms  INTEGER NOT NULL
+output_hash  TEXT NOT NULL      ← sha256 of the stored stdout and stderr
+milestone_id TEXT               ← uat_exec only
+slice_id     TEXT               ← uat_exec only
+check_id     TEXT               ← uat_exec only
+attempt_ref  TEXT               ← the Attempt the run belongs to, or NULL
+```
+
+- Index: `idx_exec_runs_attempt` on `(attempt_ref)`
+- `attempt_ref` of an `exec` run is the id of the one Task Attempt of the
+  caller that was not settled when the command ended. The caller is known by
+  its worker scope: `GSD_MILESTONE_LOCK` (with `GSD_SLICE_LOCK` for a Slice
+  worker), or without a lock the name of the worktree the run is in. So
+  parallel workers each bind their own runs. It is NULL with no such Attempt,
+  or with more than one; a NULL run backs no claimed evidence.
+- `attempt_ref` of a `uat_exec` run is `uat:<M>:<S>:attempt-<N>`, the run-uat
+  attempt not saved yet. `gsd_uat_result_save` accepts a `gsd_uat_exec` ref only
+  from its own slice and its own attempt. Reopen sets it to NULL.
+- Host verification accepts the agent's claimed task evidence only when each
+  claimed command names a run of the Attempt under verification that ended with
+  exit 0.
 
 ---
 
@@ -2308,11 +2356,11 @@ error names the row and `/gsd db adopt`.
 | `gsd_plan_task` | project_authority, workflow_operations, workflow_item_lifecycles, milestones, slices, tasks | project_authority, workflow_operations, workflow_domain_events, workflow_outbox, workflow_projection_work, workflow_item_lifecycles, quality_gates, one task planning row including `required_workflow_tools` | re-renders NN-MM-PLAN.md; task PLAN paths resolve to the slice plan |
 | `gsd_task_complete` | project_authority, workflow operations/lifecycles, current Attempt/Result/verdict/evidence, tasks, slices, rework briefs/findings | project_authority, workflow operations/events/outbox/Projection Work, Attempt Result/checkpoints, Technical Verdict evidence/publication, tasks, verification evidence, rework findings | S##-T##-SUMMARY.md; toggles checkbox in NN-MM-PLAN.md after commit; reads legacy T##-SUMMARY.md |
 | `gsd_slice_complete` | project_authority, workflow operations/lifecycles, Tasks and their Attempts/Results/verdict evidence, milestones, slices, quality_gates | project_authority, workflow operations/events/outbox/Projection Work, Milestone/Slice lifecycles, milestones, slices, quality_gates, gate_runs | S##-SUMMARY.md, S##-UAT.md; toggles checkpoint in ROADMAP.md after commit |
-| `gsd_uat_result_save` | project_authority, workflow_operations, slices, artifacts, gate_runs (the highest UAT `attempt` of the Slice gives the next attempt number) | project_authority, workflow_operations, workflow_domain_events, workflow_outbox, workflow_projection_work, artifacts, assessments, quality_gates, gate_runs (one `uat-result.save` operation) | S##-ASSESSMENT.md; UAT attempt JSON, both written after commit. A replay writes the attempt JSON again from the stored result |
+| `gsd_uat_result_save` | project_authority, workflow_operations, slices, artifacts, gate_runs (the highest UAT `attempt` of the Slice gives the next attempt number), exec_runs (each cited `gsd_exec` / `gsd_uat_exec` evidence ref) | project_authority, workflow_operations, workflow_domain_events, workflow_outbox, workflow_projection_work, artifacts, assessments, quality_gates, gate_runs (one `uat-result.save` operation) | S##-ASSESSMENT.md; UAT attempt JSON, both written after commit. A replay writes the attempt JSON again from the stored result |
 | `gsd_complete_milestone` | project_authority, workflow operations/lifecycles, current validation Attempt/Result/verdict/evidence, Waivers, milestones, slices, tasks | project_authority, workflow operations/events/outbox/Projection Work, Milestone lifecycle, milestones. For a Milestone with a milestone branch and a succeeded validation Attempt, the tool writes workflow_closeout_plans and workflow_closeout_effects and leaves the Milestone open; the host writes workflow_settlement_receipts and completes the Milestone after the merge | M##-SUMMARY.md projection after commit |
 | `gsd_validate_milestone` | project_authority, Milestone lifecycle, planned verification classes, current criteria/verdict/evidence, milestones, slices, tasks | project_authority, workflow operations/events/outbox/Projection Work, validation Attempts/Results, acceptance criteria, Technical Verdicts/evidence, assessments, quality_gates, gate_runs | VALIDATION.md projection after commit |
 | `gsd_prepare_milestone_subjective_uat` | project_authority, Milestone lifecycle, current acceptance criteria, open questions, interactions, and validation events | project_authority, workflow operations/events/outbox/Projection Work, acceptance criteria, open questions, interactions, and interaction options | — |
-| `gsd_answer_milestone_subjective_uat` | project_authority, Milestone lifecycle, current subjective criterion, open question, interaction/options, validation events, and Human Acceptance | project_authority, workflow operations/events/outbox/Projection Work, Answers, Human Acceptance, and open-question/interactions status | — |
+| `/gsd uat-answer` (host command, no model tool; writes only from the terminal UI, not from an RPC or headless session) | project_authority, Milestone lifecycle, current subjective criterion, open question, interaction/options, validation events, and Human Acceptance | project_authority, workflow operations/events/outbox/Projection Work, Answers, Human Acceptance, and open-question/interactions status | — |
 | `gsd_reassess_roadmap` | project_authority, workflow_operations, workflow_item_lifecycles, milestones, slices | project_authority, workflow_operations, workflow_domain_events, workflow_outbox, workflow_projection_work, workflow_item_lifecycles, milestones, slices, assessments; removed pending slices become `skipped`/`cancelled`; optional `metadataCorrections` updates only approved milestone acceptance fields and completed-slice evidence fields | ROADMAP.md, ROADMAP-ASSESSMENT.md; milestone corrections also invalidate stale VALIDATION.md |
 | `gsd_replan_slice` | project_authority, workflow_operations, workflow_item_lifecycles, milestones, slices, tasks | project_authority, workflow_operations, workflow_domain_events, workflow_outbox, workflow_projection_work, workflow_item_lifecycles, slices, tasks (including `required_workflow_tools`), replan_history, quality_gates; removed pending tasks become `skipped`/`cancelled` | NN-MM-PLAN.md, NN-MM-REPLAN.md |
 | `gsd_replan_task` | project_authority, workflow_operations, workflow_item_lifecycles, slices, tasks | project_authority, workflow_operations, workflow_domain_events, workflow_outbox, workflow_projection_work, workflow_item_lifecycles, one pending task planning row including `required_workflow_tools`, replan_history | re-renders the task/slice PLAN projection |
@@ -2320,8 +2368,8 @@ error names the row and `/gsd db adopt`.
 | `gsd_skip_slice` | project_authority, workflow operations/lifecycles, slices, tasks, running Attempts and dispatches | project_authority, workflow operations/events/outbox/Projection Work, Slice/Task lifecycles, Slice-scoped Waiver, workflow execution Attempts, immutable Attempt Results, Kernel checkpoints, slices, tasks, dispatches | readable state projections after commit |
 | `gsd_task_reopen` | tasks, slices, milestones | tasks | deletes S##-T##-SUMMARY.md and legacy T##-SUMMARY.md |
 | `gsd_task_recovery_resume` | project_authority, workflow_operations, workflow_item_lifecycles, workflow_execution_attempts, workflow_failure_observations, workflow_recovery_actions, workflow_blockers, workflow_domain_events, workflow_work_checkpoints | project_authority, workflow_operations, workflow_domain_events, workflow_outbox, workflow_projection_work, workflow_work_checkpoints | — |
-| `gsd_slice_reopen` | project_authority, workflow operations/lifecycles, workflow_waivers, slices, tasks, immutable execution history | project_authority, workflow operations/events/outbox/Projection Work, Slice/Task lifecycles, workflow_waivers, slices, tasks, quality_gates | repairs/removes Slice, UAT, Task SUMMARY, PLAN, ROADMAP, and STATE projections after commit |
-| `gsd_milestone_reopen` | project_authority, workflow operations/lifecycles, Waivers and Requirement Dispositions, milestones, slices, tasks, active Attempts, dependent Milestones | project_authority, workflow operations/events/outbox/Projection Work, Milestone/Slice/Task lifecycles, Waiver dispositions, milestones, slices, tasks, quality_gates | fenced removal or repair of Milestone, Slice, UAT, Task, PLAN, ROADMAP, and STATE projections after commit |
+| `gsd_slice_reopen` | project_authority, workflow operations/lifecycles, workflow_waivers, slices, tasks, immutable execution history | project_authority, workflow operations/events/outbox/Projection Work, Slice/Task lifecycles, workflow_waivers, slices, tasks, quality_gates; removes the stale evidence of the Slice (verification_evidence, run-uat assessments and their artifacts, the UAT gate, uat_retry_counters), keeps the removed rows in the reopen event payload, and sets `attempt_ref` of its `uat_exec` exec_runs to NULL | repairs/removes Slice, UAT, Task SUMMARY, PLAN, ROADMAP, and STATE projections after commit |
+| `gsd_milestone_reopen` | project_authority, workflow operations/lifecycles, Waivers and Requirement Dispositions, milestones, slices, tasks, active Attempts, dependent Milestones | project_authority, workflow operations/events/outbox/Projection Work, Milestone/Slice/Task lifecycles, Waiver dispositions, milestones, slices, tasks, quality_gates; removes the milestone-validation assessment and, for each reopened Slice, the same stale evidence as `gsd_slice_reopen`, and keeps the removed rows in the reopen event payload | fenced removal or repair of Milestone, Slice, UAT, Task, PLAN, ROADMAP, and STATE projections after commit |
 | `gsd_milestone_park`, `gsd_milestone_unpark` | project_authority, workflow operations/lifecycles, milestones | project_authority, workflow operations/events/Projection Work, Milestone lifecycle, milestones.status | PARKED.md rendered or removed after commit; STATE.md |
 | `gsd_milestone_discard` | project_authority, workflow operations/lifecycles, milestones, slices, tasks | project_authority, workflow operations/events/Projection Work, Milestone/Slice/Task lifecycles, milestone-scoped Waiver, milestones, slices, tasks | milestone directory, worktree and branch removed after commit; QUEUE-ORDER.json; STATE.md |
 | `gsd_milestone_reorder` | project_authority, workflow operations, milestones | project_authority, workflow operations/events/Projection Work, milestones.sequence | QUEUE-ORDER.json; STATE.md |
