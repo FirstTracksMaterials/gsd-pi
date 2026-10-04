@@ -99,14 +99,14 @@ Replace the path with the exact global bin directory from your pnpm error messag
 
 ### Auto mode loops on the same unit
 
-**Symptoms:** The same unit (e.g., `research-slice` or `plan-slice`) dispatches repeatedly, then auto mode pauses with an "Artifact still missing..." error after 3 artifact verification retries.
+**Symptoms:** The same unit (e.g., `research-slice` or `plan-slice`) dispatches repeatedly, then auto mode pauses with an "Artifact verification failed..." error after 3 artifact verification retries.
 
 **Causes:**
 
-- Stale cache after a crash — the in-memory file listing doesn't reflect new artifacts
-- The LLM didn't produce the expected artifact file
+- Stale cache after a crash — the in-memory state doesn't reflect the recorded result
+- The LLM didn't record the unit's result in the database (for example, it wrote a file directly and did not call the save tool)
 
-**Fix:** Run `/gsd doctor` to repair state, then resume with `/gsd auto`. If the issue persists, check that the expected artifact file exists on disk.
+**Fix:** Run `/gsd doctor` to repair state, then resume with `/gsd auto`. If the issue persists, read the pause message: it names the result that is missing. A file on disk does not count as the result; see [Artifact Verification Retries](./auto-mode.md#artifact-verification-retries).
 
 ### Auto mode reports that `gsd.db` is locked
 
@@ -134,7 +134,7 @@ Stop the process through its terminal or service manager when possible. Use `kil
 
 **Symptoms:** A parallel `reactive-execute` batch finishes with a warning that GSD wrote a reactive blocker and advanced.
 
-**Cause:** The batch exhausted artifact verification retries while one or more dispatched tasks were still missing task summaries. Instead of re-dispatching the same parallel batch forever, GSD writes `S##-REACTIVE-BLOCKER.md` as a diagnostic that records summary-present and summary-missing tasks. The blocker is not lifecycle authority; follow-up task state comes from the canonical database Attempt/recovery records.
+**Cause:** The batch exhausted artifact verification retries while one or more dispatched tasks were still open in the database with no Attempt Result. Instead of re-dispatching the same parallel batch forever, GSD records a recovery block for the slice and writes `S##-REACTIVE-BLOCKER.md` as a diagnostic that records summary-present and summary-missing tasks. The blocker is not lifecycle authority; follow-up task state comes from the canonical database Attempt/recovery records.
 
 **Fix:** Inspect the blocker file and `/gsd status`. If work is still required, use the appropriate explicit recovery path such as retrying the failed Attempt, reopening a terminal task, or replanning the task before depending on later slice or milestone artifacts.
 

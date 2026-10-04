@@ -195,7 +195,7 @@ guided-resume-task  (if task was interrupted)
 | Prompt | Purpose | Key Tools Called |
 |--------|---------|-----------------|
 | `execute-task.md` | Execute a single task. Inlines full context stack. | `memory_query`, `gsd_task_complete` |
-| `reactive-execute.md` | Dispatch all ready tasks in parallel subagents. When batch summaries remain missing after retries, writes a diagnostic slice blocker; task lifecycle still follows DB Attempt/recovery authority, not summary-file presence. | `subagent` × N |
+| `reactive-execute.md` | Dispatch all ready tasks in parallel subagents. When batch tasks are still not closed and have no Attempt Result after retries, records a recovery block and writes a diagnostic slice blocker; task lifecycle still follows DB Attempt/recovery authority, not summary-file presence. | `subagent` × N |
 | `guided-resume-task.md` | Resume interrupted task. Reads `{{sliceId}}-CONTINUE.md` for continuation context. | `gsd_task_complete` |
 | `quick-task.md` | Lightweight task outside milestone structure. No DB tools. | writes `{{summaryPath}}` directly |
 
@@ -219,7 +219,7 @@ validate-milestone  (3 parallel reviewers after all slices close)
 | `validate-milestone.md` | 3 parallel reviewers: (A) requirements, (B) integration, (C) acceptance. | `subagent` × 3, `gsd_validate_milestone` |
 | `run-uat.md` | Execute UAT. Modes: artifact-driven, browser-executable, runtime-executable, live-runtime, mixed, human-experience. Runs under `verification` tools policy with UAT-owned execution plus safe read-only/browser inspection tools. | `gsd_uat_result_save`, read-only/browser tools |
 
-`run-uat` completion verification requires a canonical verdict in the written `S##-ASSESSMENT.md` (for example `verdict: PASS | FAIL | PARTIAL`). A pre-existing assessment file without `verdict` does not satisfy artifact verification.
+`run-uat` completion verification requires the run-uat assessment row that `gsd_uat_result_save` records with its verdict (`PASS | FAIL | PARTIAL`). An `S##-ASSESSMENT.md` file, with or without a `verdict` field, does not satisfy artifact verification.
 `src/resources/extensions/gsd/uat-policy.ts` is the shared policy source for UAT mode classification, browser-tool requirements, dispatch decisions, and result-save mode validation.
 
 ### 5f. Completion Flow
@@ -438,7 +438,7 @@ projection-delivery contracts are owned by the
 
 ## 10. Dispatch Rule Priority Order
 
-`auto-dispatch.ts` evaluates 29 rules top-to-bottom, first match wins. Source of
+`auto-dispatch.ts` evaluates 28 rules top-to-bottom, first match wins. Source of
 truth is the `DISPATCH_RULES` array in `auto-dispatch.ts`; the canary test
 `tests/dispatch-rule-coverage.test.ts` pins the count.
 
@@ -447,33 +447,32 @@ Priority  Rule                                          Fires When
 ────────  ────────────────────────────────────────────  ─────────────────────────
  1        escalating-task → pause-for-escalation        a task escalation is awaiting user review
  2        rewrite-docs (override gate)                  active override rows in the database
- 3        execution-entry phase (no context) → discuss  re-entry into a milestone with no CONTEXT
- 4        summarizing → complete-slice                  slice in 'summarizing' phase
- 5        run-uat (post-completion)                     tasks done, UAT pending
- 6        uat-verdict-gate (non-PASS continues)         UAT non-PASS — continue for remediation; final milestone closure still requires PASS sign-off
- 7        reassess-roadmap (post-completion)            slice closed, roadmap needs update
- 8        needs-discussion → discuss-milestone          milestone explicitly flagged for discussion
- 9        deep: workflow-preferences                    deep mode + workflow preferences fact not recorded (in-process, no unit)
-10        deep: discuss-project                         deep mode + no valid PROJECT artifact row
-11        deep: discuss-requirements                    deep mode + no valid REQUIREMENTS artifact row
-12        deep: research-project                        deep mode + recorded decision is `research`, files missing
-13        pre-planning (no context) → discuss-milestone active milestone, CONTEXT missing
-14        pre-planning (no research) → research-mile…   CONTEXT done, RESEARCH missing
-15        pre-planning (has research) → plan-milestone  CONTEXT + RESEARCH done, ROADMAP missing
-16        planning (require_slice_discussion) → pause   slice flagged for discussion (#3454)
-17        planning (multi slices need research) → par…  ROADMAP done, slice RESEARCH missing × ≥2
-18        planning (no research) → research-slice       single slice needs RESEARCH
-19        refining → refine-slice                       slice is sketch, needs expansion
-20        planning → plan-slice                         slice CONTEXT done, PLAN missing
-21        evaluating-gates → gate-evaluate              gates pending evaluation
-22        replanning-slice → replan-slice               slice in 'replanning' phase
-23        executing → replan-task recovery              pending Task recovery action for the active task
-24        executing → reactive-execute (parallel)       ≥3 tasks ready (parallel mode), no reactive blocker
-25        executing → execute-task (recover plan)       task plan missing — recover via plan-slice
-26        executing → execute-task                      1–2 tasks ready (sequential mode)
-27        validating-milestone → validate-milestone     all slices closed, not yet validated
-28        completing-milestone → complete-milestone     validated, not yet completed
-29        complete → stop                               nothing left to do
+ 3        summarizing → complete-slice                  slice in 'summarizing' phase
+ 4        run-uat (post-completion)                     slice complete, stored UAT spec, no run-uat verdict row
+ 5        uat-verdict-gate (non-PASS continues)         UAT non-PASS — continue for remediation; final milestone closure still requires PASS sign-off
+ 6        reassess-roadmap (post-completion)            slice closed, no roadmap assessment row
+ 7        needs-discussion → discuss-milestone          milestone explicitly flagged for discussion
+ 8        deep: workflow-preferences                    deep mode + workflow preferences fact not recorded (in-process, no unit)
+ 9        deep: discuss-project                         deep mode + no valid PROJECT artifact row
+10        deep: discuss-requirements                    deep mode + no valid REQUIREMENTS artifact row
+11        deep: research-project                        deep mode + recorded decision is `research`, files missing
+12        pre-planning (no context) → discuss-milestone active milestone, no saved CONTEXT row
+13        pre-planning (no research) → research-mile…   CONTEXT saved, no saved RESEARCH row
+14        pre-planning (has research) → plan-milestone  CONTEXT + RESEARCH saved, no slice rows
+15        planning (require_slice_discussion) → pause   slice has no saved CONTEXT row (#3454)
+16        planning (multi slices need research) → par…  slices planned, saved slice RESEARCH missing × ≥2
+17        planning (no research) → research-slice       single slice has no saved RESEARCH row
+18        refining → refine-slice                       slice is sketch, needs expansion
+19        planning → plan-slice                         slice has no task rows
+20        evaluating-gates → gate-evaluate              gates pending evaluation
+21        replanning-slice → replan-slice               slice in 'replanning' phase
+22        executing → replan-task recovery              pending Task recovery action for the active task
+23        executing → reactive-execute (parallel)       ≥3 tasks ready (parallel mode), no recorded reactive block
+24        executing → execute-task (render plan)        slice PLAN file missing — render it from the DB, then fall through
+25        executing → execute-task                      1–2 tasks ready (sequential mode)
+26        validating-milestone → validate-milestone     all slices closed, not yet validated
+27        completing-milestone → complete-milestone     validated, not yet completed
+28        complete → stop                               nothing left to do
 ```
 
 ---

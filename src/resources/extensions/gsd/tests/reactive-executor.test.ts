@@ -25,7 +25,10 @@ import {
  * (ADR-017) and reads only the per-task PLAN files for IO signatures, so the
  * graph fixtures below need real rows even though they are testing dispatch.
  */
-function seedSliceTasks(repo: string, tasks: Array<{ id: string; title: string; status?: string }>): void {
+function seedSliceTasks(
+  repo: string,
+  tasks: Array<{ id: string; title: string; status?: string; inputs?: string[]; outputs?: string[] }>,
+): void {
   mkdirSync(join(repo, ".gsd"), { recursive: true });
   openDatabase(join(repo, ".gsd", "gsd.db"));
   insertMilestone({ id: "M001", title: "Milestone", status: "active" });
@@ -38,6 +41,7 @@ function seedSliceTasks(repo: string, tasks: Array<{ id: string; title: string; 
       title: task.title,
       status: task.status ?? "pending",
       sequence: index,
+      planning: { inputs: task.inputs ?? [], expectedOutput: task.outputs ?? [] },
     });
   });
 }
@@ -239,12 +243,13 @@ test("reactive dispatch requires enabled config and multiple ready tasks", async
   }
 });
 
-test("reactive dispatch falls through when slice has REACTIVE-BLOCKER", async () => {
+test("reactive dispatch falls through when the slice has a recorded reactive recovery block", async () => {
   const repo = mkdtempSync(join(tmpdir(), "gsd-reactive-blocker-dispatch-"));
   try {
     const sliceDir = join(repo, ".gsd", "milestones", "M001", "slices", "S01");
     const tasksDir = join(sliceDir, "tasks");
     mkdirSync(tasksDir, { recursive: true });
+    seedSliceTasks(repo, ["T01", "T02", "T03"].map((tid) => ({ id: tid, title: tid })));
     writeFileSync(
       join(sliceDir, "S01-PLAN.md"),
       [
@@ -274,9 +279,7 @@ test("reactive dispatch falls through when slice has REACTIVE-BLOCKER", async ()
         ].join("\n"),
       );
     }
-    writeFileSync(join(sliceDir, "S01-REACTIVE-BLOCKER.md"), "# BLOCKER\n");
-
-    const action = await resolveDispatch({
+    const dispatch = () => resolveDispatch({
       basePath: repo,
       mid: "M001",
       midTitle: "Milestone",
@@ -291,12 +294,69 @@ test("reactive dispatch falls through when slice has REACTIVE-BLOCKER", async ()
       prefs: { reactive_execution: { enabled: true, max_parallel: 3 } } as any,
     });
 
-    assert.notEqual(
-      action.action === "dispatch" ? action.unitType : null,
+    const before = await dispatch();
+    assert.equal(
+      before.action === "dispatch" ? before.unitType : null,
       "reactive-execute",
-      "reactive blocker should prevent another reactive batch dispatch",
+      "three independent ready tasks dispatch as a reactive batch",
+    );
+
+    // A REACTIVE-BLOCKER file with no recorded row decides nothing.
+    writeFileSync(join(sliceDir, "S01-REACTIVE-BLOCKER.md"), "# BLOCKER\n");
+    const withFileOnly = await dispatch();
+    assert.equal(withFileOnly.action === "dispatch" ? withFileOnly.unitType : null, "reactive-execute");
+
+    const { writeReactiveExecuteBlocker } = await import("../auto-recovery.ts");
+    assert.ok(writeReactiveExecuteBlocker("M001/S01/reactive+T01,T02,T03", repo, "verification retries exhausted"));
+    const after = await dispatch();
+    assert.notEqual(
+      after.action === "dispatch" ? after.unitType : null,
+      "reactive-execute",
+      "the recorded recovery block should prevent another reactive batch dispatch",
     );
   } finally {
+    closeDatabase();
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test("a flat-phase slice with independent planned tasks keeps sequential dispatch", async () => {
+  // The flat-phase PLAN projection has no per-task PLAN files, so no reactive
+  // graph is derived there. Planned IO on the task rows must not start parallel
+  // batches: a batch subagent cannot complete a canonical Task (that needs the
+  // running Attempt of the host), and no live run has proven the batch path.
+  const repo = mkdtempSync(join(tmpdir(), "gsd-reactive-flat-phase-"));
+  try {
+    seedSliceTasks(repo, ["T01", "T02", "T03"].map((tid) => ({
+      id: tid,
+      title: tid,
+      inputs: [`src/${tid}.input`],
+      outputs: [`src/${tid}.output`],
+    })));
+    const { renderPlanFromDb } = await import("../markdown-renderer.ts");
+    const { planPath } = await renderPlanFromDb(repo, "M001", "S01");
+    assert.ok(planPath.includes(join(".gsd", "phases")), `fixture must use the flat-phase layout, got ${planPath}`);
+
+    for (const prefs of [undefined, { reactive_execution: { enabled: true, max_parallel: 3 } }]) {
+      const action = await resolveDispatch({
+        basePath: repo,
+        mid: "M001",
+        midTitle: "Milestone",
+        state: {
+          phase: "executing",
+          activeMilestone: { id: "M001", title: "Milestone", status: "active" },
+          activeSlice: { id: "S01", title: "Test Slice" },
+          activeTask: { id: "T01", title: "T01" },
+          registry: [],
+          blockers: [],
+        } as any,
+        prefs: prefs as any,
+      });
+
+      assert.equal(action.action === "dispatch" ? action.unitType : action.action, "execute-task");
+    }
+  } finally {
+    closeDatabase();
     rmSync(repo, { recursive: true, force: true });
   }
 });
@@ -459,72 +519,75 @@ test("completed tasks are not re-dispatched on next iteration", async () => {
 
 // ─── Batch Verification ───────────────────────────────────────────────────
 
-test("verifyExpectedArtifact: reactive-execute passes when all dispatched summaries exist", async () => {
+test("verifyExpectedArtifact: reactive-execute passes when every dispatched task is closed in the DB", async () => {
   const { verifyExpectedArtifact } = await import("../auto-recovery.ts");
   const repo = mkdtempSync(join(tmpdir(), "gsd-reactive-verify-pass-"));
   try {
-    const tasksDir = join(repo, ".gsd", "milestones", "M001", "slices", "S01", "tasks");
-    mkdirSync(tasksDir, { recursive: true });
-    openDatabase(join(repo, ".gsd", "gsd.db"));
-    writeFileSync(join(tasksDir, "T02-SUMMARY.md"), "---\nid: T02\n---\n# T02: Done\n");
-    writeFileSync(join(tasksDir, "T03-SUMMARY.md"), "---\nid: T03\n---\n# T03: Done\n");
+    seedSliceTasks(repo, [
+      { id: "T02", title: "Second", status: "complete" },
+      { id: "T03", title: "Third", status: "complete" },
+    ]);
 
     const result = verifyExpectedArtifact("reactive-execute", "M001/S01/reactive+T02,T03", repo);
-    assert.equal(result, true, "Should pass when all dispatched task summaries exist");
+    assert.equal(result, true, "Should pass when all dispatched tasks are closed, with no SUMMARY file");
   } finally {
     closeDatabase();
     rmSync(repo, { recursive: true, force: true });
   }
 });
 
-test("verifyExpectedArtifact: reactive-execute fails when a dispatched summary is missing", async () => {
+test("verifyExpectedArtifact: reactive-execute fails when a dispatched task is still open", async () => {
   const { verifyExpectedArtifact } = await import("../auto-recovery.ts");
   const repo = mkdtempSync(join(tmpdir(), "gsd-reactive-verify-fail-"));
   try {
     const tasksDir = join(repo, ".gsd", "milestones", "M001", "slices", "S01", "tasks");
     mkdirSync(tasksDir, { recursive: true });
-    openDatabase(join(repo, ".gsd", "gsd.db"));
-    // Only T02 has a summary, T03 does not
-    writeFileSync(join(tasksDir, "T02-SUMMARY.md"), "---\nid: T02\n---\n# T02: Done\n");
+    seedSliceTasks(repo, [
+      { id: "T02", title: "Second", status: "complete" },
+      { id: "T03", title: "Third" },
+    ]);
+    // A SUMMARY file for the open task does not close it.
+    writeFileSync(join(tasksDir, "T03-SUMMARY.md"), "---\nid: T03\n---\n# T03: Done\n");
 
     const result = verifyExpectedArtifact("reactive-execute", "M001/S01/reactive+T02,T03", repo);
-    assert.equal(result, false, "Should fail when dispatched task T03 summary is missing");
+    assert.equal(result, false, "Should fail when dispatched task T03 is open in the DB");
   } finally {
     closeDatabase();
     rmSync(repo, { recursive: true, force: true });
   }
 });
 
-test("verifyExpectedArtifact: reactive-execute fails even with pre-existing summaries from other tasks", async () => {
+test("verifyExpectedArtifact: reactive-execute fails even when other tasks of the slice are closed", async () => {
   const { verifyExpectedArtifact } = await import("../auto-recovery.ts");
   const repo = mkdtempSync(join(tmpdir(), "gsd-reactive-verify-preexisting-"));
   try {
-    const tasksDir = join(repo, ".gsd", "milestones", "M001", "slices", "S01", "tasks");
-    mkdirSync(tasksDir, { recursive: true });
-    openDatabase(join(repo, ".gsd", "gsd.db"));
-    // T01 summary exists from before, but T02 and T03 were dispatched
-    writeFileSync(join(tasksDir, "T01-SUMMARY.md"), "---\nid: T01\n---\n# T01: Prior\n");
+    // T01 was closed before; T02 and T03 were dispatched and are still open
+    seedSliceTasks(repo, [
+      { id: "T01", title: "Prior", status: "complete" },
+      { id: "T02", title: "Second" },
+      { id: "T03", title: "Third" },
+    ]);
 
     const result = verifyExpectedArtifact("reactive-execute", "M001/S01/reactive+T02,T03", repo);
-    assert.equal(result, false, "Pre-existing T01 summary should not satisfy T02,T03 batch");
+    assert.equal(result, false, "A closed T01 should not satisfy the T02,T03 batch");
   } finally {
     closeDatabase();
     rmSync(repo, { recursive: true, force: true });
   }
 });
 
-test("verifyExpectedArtifact: reactive-execute legacy format (no batch IDs) falls back", async () => {
+test("verifyExpectedArtifact: reactive-execute with no batch IDs fails closed", async () => {
   const { verifyExpectedArtifact } = await import("../auto-recovery.ts");
   const repo = mkdtempSync(join(tmpdir(), "gsd-reactive-verify-legacy-"));
   try {
     const tasksDir = join(repo, ".gsd", "milestones", "M001", "slices", "S01", "tasks");
     mkdirSync(tasksDir, { recursive: true });
-    openDatabase(join(repo, ".gsd", "gsd.db"));
+    seedSliceTasks(repo, [{ id: "T01", title: "First", status: "complete" }]);
     writeFileSync(join(tasksDir, "T01-SUMMARY.md"), "---\nid: T01\n---\n# T01\n");
 
-    // Legacy format without +batch suffix
+    // A unit id without the +batch suffix names no task to check.
     const result = verifyExpectedArtifact("reactive-execute", "M001/S01/reactive", repo);
-    assert.equal(result, true, "Legacy format should fall back to any-summary check");
+    assert.equal(result, false, "A batch with no task ids cannot be verified from any SUMMARY file");
   } finally {
     closeDatabase();
     rmSync(repo, { recursive: true, force: true });

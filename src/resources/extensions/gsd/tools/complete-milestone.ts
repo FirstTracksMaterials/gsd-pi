@@ -258,7 +258,6 @@ export async function handleCompleteMilestone(
       });
       if (authorization.authorized) {
         closeQualityGatesFromEvidence(params.milestoneId, {
-          artifactBasePath,
           milestoneValidationPassed: authorization.kind === "validated",
           milestoneValidationAuthorization: authorization,
         });
