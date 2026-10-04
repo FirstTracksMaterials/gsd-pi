@@ -54,6 +54,7 @@ import {
 import {
   createLegacyImportPreview,
   hashLegacyImportValue,
+  legacyImportBaseSnapshotForPreview,
   revalidateLegacyImportPreview,
   resolveLegacyImportPreview,
   type LegacyImportPreviewArtifact,
@@ -717,8 +718,9 @@ function prepareVerifiedRecoverEvidence(basePath: string): PreparedVerifiedRecov
         logical_path: ".gsd/milestones",
         presence: "optional" as const,
       },
-      // Root registries and narrative. DECISIONS.md and REQUIREMENTS.md map to
-      // rows; the Preview lists the others as preserved and not imported.
+      // Root registries and narrative. DECISIONS.md, REQUIREMENTS.md and the
+      // KNOWLEDGE.md Rule, Pattern and Lesson rows map to rows; the Preview
+      // lists the others as preserved and not imported.
       ...RECOVER_ROOT_FILES.map((stem) => ({
         id: `project-root-${stem.toLowerCase()}`,
         kind: "project" as const,
@@ -993,10 +995,13 @@ function verifiedRecoverResult(
   receipt: LegacyImportApplicationReceipt,
   preview: LegacyImportPreviewArtifact,
   backup: LegacyImportVerifiedBackup,
-  capturedBase = inspectSqliteReadOnlySnapshot(backup.backup_ref, (database) => captureLegacyImportBaseSnapshot({
-    readTransaction: (operation) => operation(),
-    source: createLegacyImportBaseSnapshotSource(database),
-  })),
+  capturedBase = legacyImportBaseSnapshotForPreview(
+    preview,
+    inspectSqliteReadOnlySnapshot(backup.backup_ref, (database) => captureLegacyImportBaseSnapshot({
+      readTransaction: (operation) => operation(),
+      source: createLegacyImportBaseSnapshotSource(database),
+    })),
+  ),
 ): VerifiedRecoverApplicationResult {
   verifyLegacyImportBackupArtifact({ backup, preview, base: capturedBase });
   const database = _getAdapter();
@@ -1057,10 +1062,13 @@ export function loadVerifiedRecoverApplication(operationId: string): VerifiedRec
       retained.backup,
     );
   }
-  const base = inspectSqliteReadOnlySnapshot(application.backupRef, (backupDatabase) => captureLegacyImportBaseSnapshot({
-    readTransaction: (operation) => operation(),
-    source: createLegacyImportBaseSnapshotSource(backupDatabase),
-  }));
+  const base = legacyImportBaseSnapshotForPreview(
+    application.preview,
+    inspectSqliteReadOnlySnapshot(application.backupRef, (backupDatabase) => captureLegacyImportBaseSnapshot({
+      readTransaction: (operation) => operation(),
+      source: createLegacyImportBaseSnapshotSource(backupDatabase),
+    })),
+  );
   const backup = sealLegacyImportVerifiedBackup({
     preview: application.preview,
     base,
