@@ -34,6 +34,7 @@ import { join } from "node:path";
 import { reconcileWorktreeDb } from "./gsd-db.js";
 import { dirIsContentBearingLegacyMilestone, resolveGsdPathContract } from "./paths.js";
 import { copyProjectionFileSync, mergeProjectionTreeSync } from "./atomic-write.js";
+import { renderKnowledgeProjection } from "./knowledge-projection.js";
 import type { MilestoneScope } from "./workspace.js";
 import { logError, logWarning } from "./workflow-logger.js";
 
@@ -200,7 +201,6 @@ const ROOT_FORWARD_PROJECTION_FILES = [
   "DECISIONS.md",
   "REQUIREMENTS.md",
   "PROJECT.md",
-  "KNOWLEDGE.md",
   "OVERRIDES.md",
   "QUEUE.md",
   "metrics.json",
@@ -216,6 +216,20 @@ function syncRootProjectionFilesToWorktree(prGsd: string, wtGsd: string): void {
     if (!existsSync(src) || existsSync(dst)) continue;
 
     copyProjectionFileSync(src, dst, false);
+  }
+}
+
+/**
+ * Render the worktree KNOWLEDGE.md from the database. The project-root file
+ * is never copied: it supplies only the import bridge (file-only rows) when
+ * the worktree has no KNOWLEDGE.md yet. A failed render is a warning.
+ */
+export function renderWorktreeKnowledge(projectRoot: string, worktreePath: string): boolean {
+  try {
+    return renderKnowledgeProjection(worktreePath, projectRoot).written;
+  } catch (e) {
+    logWarning("worktree", `KNOWLEDGE.md was not rendered in the worktree: ${(e as Error).message}`);
+    return false;
   }
 }
 
@@ -254,6 +268,7 @@ export function _projectRootToWorktreeImpl(
   // Root PROJECT/REQUIREMENTS/DECISIONS projections must be readable from a
   // worktree-bound unit; the project root remains authoritative.
   syncRootProjectionFilesToWorktree(prGsd, wtGsd);
+  renderWorktreeKnowledge(projectRoot, worktreePath_);
 
   // Flat-phase artifacts (phases/NN-slug/NN-CONTEXT.md, NN-DISCUSSION.md,
   // ROADMAP, etc.) must be available before the first worktree dispatch.

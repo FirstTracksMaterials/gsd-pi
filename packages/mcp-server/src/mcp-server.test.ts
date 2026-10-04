@@ -50,6 +50,7 @@ interface WorkflowBridgeFixtureModule {
     sequence: number;
   }): void;
   openDatabase(path: string): boolean;
+  _getAdapter(): { prepare(sql: string): { run(params?: Record<string, unknown>): unknown } };
 }
 
 async function importWorkflowBridgeFixture(): Promise<WorkflowBridgeFixtureModule> {
@@ -1000,6 +1001,88 @@ describe('createMcpServer tool registration', () => {
     assert.deepEqual(progress.activeMilestone, { id: 'M999', title: 'Projection Only' });
     assert.equal(progress.phase, 'planning');
     assert.deepEqual(progress.readMetadata, { source: 'projection', authority: 'projection-fallback' });
+  });
+
+  it('registered gsd_knowledge returns database rows when KNOWLEDGE.md is stale', async (t) => {
+    const projectDir = mkdtempSync(join(tmpdir(), 'gsd-knowledge-handler-'));
+    const bridge = await importWorkflowBridgeFixture();
+    t.after(() => {
+      bridge.closeDatabase();
+      rmSync(projectDir, { recursive: true, force: true });
+    });
+    mkdirSync(join(projectDir, '.gsd'));
+    writeFileSync(
+      join(projectDir, '.gsd', 'KNOWLEDGE.md'),
+      [
+        '# Project Knowledge',
+        '',
+        '## Rules',
+        '',
+        '| # | Scope | Rule | Why | Added |',
+        '|---|-------|------|-----|-------|',
+        '| K001 | project | Stale file rule | old | 2026-01-01 |',
+        '',
+      ].join('\n'),
+    );
+    assert.equal(bridge.openDatabase(join(projectDir, '.gsd', 'gsd.db')), true);
+    bridge._getAdapter().prepare(
+      `INSERT INTO memories (id, category, content, confidence, created_at, updated_at, hit_count, scope, tags, structured_fields)
+       VALUES ('MEM001', 'rule', 'Database rule', 0.85, '2026-02-01T00:00:00.000Z', '2026-02-01T00:00:00.000Z', 0, 'project', '[]', :sf)`,
+    ).run({
+      ':sf': JSON.stringify({ sourceKnowledgeId: 'K001', rule: 'Database rule', scopeText: 'project', why: 'new', added: '2026-02-01' }),
+    });
+    bridge.closeDatabase();
+
+    const { server } = await createMcpServer(sm, { includeWorkflowTools: false });
+    const knowledgeTool = (server as any)._registeredTools?.gsd_knowledge;
+    assert.ok(knowledgeTool, 'gsd_knowledge should be registered');
+
+    const result = await knowledgeTool.handler({ projectDir });
+    const knowledge = JSON.parse(result.content[0].text);
+    assert.deepEqual(knowledge.counts, { rules: 1, patterns: 0, lessons: 0 });
+    assert.deepEqual(knowledge.entries, [
+      { id: 'K001', type: 'rule', scope: 'project', content: 'Database rule', addedAt: '2026-02-01' },
+    ]);
+    assert.equal(knowledge.readMetadata, undefined, 'a database read is not labelled as a fallback');
+  });
+
+  it('registered gsd_knowledge labels the file read as a projection fallback when the database is unavailable', async (t) => {
+    const projectDir = mkdtempSync(join(tmpdir(), 'gsd-knowledge-fallback-'));
+    t.after(() => rmSync(projectDir, { recursive: true, force: true }));
+    mkdirSync(join(projectDir, '.gsd'));
+    writeFileSync(
+      join(projectDir, '.gsd', 'KNOWLEDGE.md'),
+      [
+        '# Project Knowledge',
+        '',
+        '## Rules',
+        '',
+        '| # | Scope | Rule | Why | Added |',
+        '|---|-------|------|-----|-------|',
+        '| K001 | project | File rule | why | 2026-01-01 |',
+        '',
+      ].join('\n'),
+    );
+
+    const previousExecutors = process.env.GSD_WORKFLOW_EXECUTORS_MODULE;
+    const previousWriteGate = process.env.GSD_WORKFLOW_WRITE_GATE_MODULE;
+    const previousBridgeDisable = process.env.GSD_WORKFLOW_BRIDGE_TEST_DISABLE;
+    delete process.env.GSD_WORKFLOW_EXECUTORS_MODULE;
+    delete process.env.GSD_WORKFLOW_WRITE_GATE_MODULE;
+    process.env.GSD_WORKFLOW_BRIDGE_TEST_DISABLE = '1';
+    t.after(() => {
+      restoreEnvironmentValue('GSD_WORKFLOW_EXECUTORS_MODULE', previousExecutors);
+      restoreEnvironmentValue('GSD_WORKFLOW_WRITE_GATE_MODULE', previousWriteGate);
+      restoreEnvironmentValue('GSD_WORKFLOW_BRIDGE_TEST_DISABLE', previousBridgeDisable);
+    });
+
+    const { server } = await createMcpServer(sm, { includeWorkflowTools: false });
+    const knowledgeTool = (server as any)._registeredTools?.gsd_knowledge;
+    const result = await knowledgeTool.handler({ projectDir });
+    const knowledge = JSON.parse(result.content[0].text);
+
+    assert.deepEqual(knowledge.entries.map((entry: { id: string }) => entry.id), ['K001']);
+    assert.deepEqual(knowledge.readMetadata, { source: 'projection', authority: 'projection-fallback' });
   });
 
   // Flat-phase fixture mirroring the extension renderer's output:
