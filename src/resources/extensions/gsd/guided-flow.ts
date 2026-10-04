@@ -428,13 +428,11 @@ const pendingDeepProjectSetupMap = new Map<string, PendingDeepProjectSetupEntry>
 const USER_DRIVEN_DEEP_SETUP_UNITS = new Set([
   "discuss-project",
   "discuss-requirements",
-  "research-decision",
 ]);
 export const FOREGROUND_DEEP_SETUP_RULE_NAMES = new Set([
   "deep: pre-planning (no workflow prefs) → workflow-preferences",
   "deep: pre-planning (no PROJECT) → discuss-project",
   "deep: pre-planning (no REQUIREMENTS) → discuss-requirements",
-  "deep: pre-planning (no research decision) → research-decision",
 ]);
 const LEGACY_DEEP_SETUP_PSEUDO_MILESTONE_DIRS = new Set([
   "PROJECT",
@@ -562,6 +560,10 @@ export async function checkDeepProjectSetupAfterTurn(
   const entry = _getPendingDeepProjectSetupForContext(ctx, basePath);
   if (!entry) return false;
 
+  // The setup stages are verified against database rows.
+  const { ensureDbOpen } = await import("./bootstrap/dynamic-tools.js");
+  await ensureDbOpen(entry.basePath);
+
   if (entry.currentUnitType && entry.currentUnitId) {
     // TODO(C-future): PendingDeepProjectSetupEntry does not carry a MilestoneScope
     // because deep-project-setup units span non-milestone unit types (discuss-project,
@@ -586,6 +588,9 @@ export async function checkDeepProjectSetupAfterTurn(
 }
 
 async function dispatchNextDeepProjectSetupStage(entry: PendingDeepProjectSetupEntry): Promise<boolean> {
+  // The setup gates read and record database rows.
+  const { ensureDbOpen } = await import("./bootstrap/dynamic-tools.js");
+  await ensureDbOpen(entry.basePath);
   invalidateAllCaches();
   const prefs = loadEffectiveGSDPreferences(entry.basePath)?.preferences;
   const { DISPATCH_RULES, hasPendingDeepStage } = await import("./auto-dispatch.js");
@@ -612,9 +617,7 @@ async function dispatchNextDeepProjectSetupStage(entry: PendingDeepProjectSetupE
   let result: Awaited<ReturnType<(typeof DISPATCH_RULES)[number]["match"]>> = null;
   for (const rule of DISPATCH_RULES) {
     // Only evaluate foreground setup gates here. Later deep rules such as
-    // research-project have dispatch-time side effects (e.g. claiming an
-    // inflight marker) and must be left to auto-mode once the interview is
-    // complete.
+    // research-project are left to auto-mode once the interview is complete.
     if (!FOREGROUND_DEEP_SETUP_RULE_NAMES.has(rule.name)) continue;
     result = await rule.match(dispatchCtx);
     if (result) break;

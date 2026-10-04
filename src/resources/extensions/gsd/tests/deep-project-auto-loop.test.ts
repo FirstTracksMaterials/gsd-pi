@@ -127,6 +127,23 @@ function writeValidProjectAndRequirements(base: string): void {
   );
   writeFileSync(join(base, ".gsd", "PROJECT.md"), validProject);
   writeFileSync(join(base, ".gsd", "REQUIREMENTS.md"), validRequirements);
+  // The setup stages are database rows; the files above are their projections.
+  openDatabase(join(base, ".gsd", "gsd.db"));
+  saveSetupArtifact("PROJECT.md", validProject);
+  saveSetupArtifact("REQUIREMENTS.md", validRequirements);
+  closeDatabase();
+}
+
+/** What gsd_summary_save leaves in the open database for a setup stage. */
+function saveSetupArtifact(path: "PROJECT.md" | "REQUIREMENTS.md", content: string): void {
+  insertArtifact({
+    path,
+    artifact_type: path.replace(".md", ""),
+    milestone_id: null,
+    slice_id: null,
+    task_id: null,
+    full_content: content,
+  });
 }
 
 function makeRepo(): string {
@@ -321,20 +338,10 @@ test("deep project setup: bootstrap continues queued M002 without milestone cont
   try {
     writeCapturedDeepPrefs(base);
     writeValidProjectAndRequirements(base);
-    mkdirSync(join(base, ".gsd", "runtime"), { recursive: true });
-    writeFileSync(join(base, ".gsd", "runtime", "research-decision.json"), '{"decision":"skip"}\n');
 
     openDatabase(join(base, ".gsd", "gsd.db"));
     insertMilestone({ id: "M001", title: "First milestone", status: "complete" });
     insertMilestone({ id: "M002", title: "Second milestone", status: "queued" });
-    insertArtifact({
-      path: "PROJECT.md",
-      artifact_type: "PROJECT",
-      milestone_id: null,
-      slice_id: null,
-      task_id: null,
-      full_content: readFileSync(join(base, ".gsd", "PROJECT.md"), "utf-8"),
-    });
     closeDatabase();
 
     const messages: unknown[] = [];
@@ -519,7 +526,7 @@ test("deep project setup: new-project --deep uses cwd when nested inside a paren
       new URL("../schemas/__fixtures__/valid-project.md", import.meta.url),
       "utf-8",
     );
-    writeFileSync(join(child, ".gsd", "PROJECT.md"), validProject);
+    saveSetupArtifact("PROJECT.md", validProject);
 
     const advanced = await checkDeepProjectSetupAfterTurn(
       { messages: [{ role: "assistant", content: "Project context written." }] },
@@ -596,7 +603,7 @@ test("deep project setup: new-project asks interview stages in foreground", asyn
       new URL("../schemas/__fixtures__/valid-project.md", import.meta.url),
       "utf-8",
     );
-    writeFileSync(join(base, ".gsd", "PROJECT.md"), validProject);
+    saveSetupArtifact("PROJECT.md", validProject);
 
     const advanced = await checkDeepProjectSetupAfterTurn(
       { messages: [{ role: "assistant", content: "Project captured." }] },
@@ -647,7 +654,7 @@ test("deep project setup: unrelated agent_end sessions do not advance pending se
       new URL("../schemas/__fixtures__/valid-project.md", import.meta.url),
       "utf-8",
     );
-    writeFileSync(join(base, ".gsd", "PROJECT.md"), validProject);
+    saveSetupArtifact("PROJECT.md", validProject);
 
     const ignored = await checkDeepProjectSetupAfterTurn(
       { messages: [{ role: "assistant", content: "Unrelated light workflow completed." }] },
@@ -696,7 +703,7 @@ test("deep project setup: same project advances when agent_end session id change
       new URL("../schemas/__fixtures__/valid-project.md", import.meta.url),
       "utf-8",
     );
-    writeFileSync(join(base, ".gsd", "PROJECT.md"), validProject);
+    saveSetupArtifact("PROJECT.md", validProject);
 
     const advanced = await checkDeepProjectSetupAfterTurn(
       { messages: [{ role: "assistant", content: "Project captured." }] },
@@ -719,42 +726,12 @@ test("deep project setup: same project advances when agent_end session id change
 
 test("deep project setup: foreground dispatcher does not probe research-project rule", () => {
   assert.equal(FOREGROUND_DEEP_SETUP_RULE_NAMES.has("deep: pre-planning (no PROJECT) → discuss-project"), true);
-  assert.equal(FOREGROUND_DEEP_SETUP_RULE_NAMES.has("deep: pre-planning (no research decision) → research-decision"), true);
   assert.equal(FOREGROUND_DEEP_SETUP_RULE_NAMES.has("deep: pre-planning (no PROJECT research) → research-project"), false);
 });
 
-test("deep project setup: project-level units verify their real artifacts", () => {
+test("deep project setup: research-project verifies its research files", () => {
   const base = makeBase();
   try {
-    assert.equal(verifyExpectedArtifact("workflow-preferences", "WORKFLOW-PREFS", base), false);
-    writeFileSync(
-      join(base, ".gsd", "PREFERENCES.md"),
-      "---\nplanning_depth: deep\nworkflow_prefs_captured: true\n---\n",
-    );
-    assert.equal(verifyExpectedArtifact("workflow-preferences", "WORKFLOW-PREFS", base), true);
-
-    const validProject = readFileSync(
-      new URL("../schemas/__fixtures__/valid-project.md", import.meta.url),
-      "utf-8",
-    );
-    writeFileSync(join(base, ".gsd", "PROJECT.md"), validProject);
-    assert.equal(verifyExpectedArtifact("discuss-project", "PROJECT", base), true);
-    writeFileSync(join(base, ".gsd", "PROJECT.md"), "# Project\n");
-    assert.equal(verifyExpectedArtifact("discuss-project", "PROJECT", base), false);
-
-    const validRequirements = readFileSync(
-      new URL("../schemas/__fixtures__/valid-requirements.md", import.meta.url),
-      "utf-8",
-    );
-    writeFileSync(join(base, ".gsd", "REQUIREMENTS.md"), validRequirements);
-    assert.equal(verifyExpectedArtifact("discuss-requirements", "REQUIREMENTS", base), true);
-
-    mkdirSync(join(base, ".gsd", "runtime"), { recursive: true });
-    writeFileSync(join(base, ".gsd", "runtime", "research-decision.json"), '{"decision":"maybe"}\n');
-    assert.equal(verifyExpectedArtifact("research-decision", "RESEARCH-DECISION", base), false);
-    writeFileSync(join(base, ".gsd", "runtime", "research-decision.json"), '{"decision":"skip"}\n');
-    assert.equal(verifyExpectedArtifact("research-decision", "RESEARCH-DECISION", base), true);
-
     const researchDir = join(base, ".gsd", "research");
     mkdirSync(researchDir, { recursive: true });
     writeFileSync(join(researchDir, "STACK.md"), "# Stack\n");
@@ -816,8 +793,6 @@ test("deep project setup: research-project partial output writes dimension block
     s.basePath = base;
     s.currentUnit = { type: "research-project", id: "RESEARCH-PROJECT", startedAt: Date.now() };
 
-    mkdirSync(join(base, ".gsd", "runtime"), { recursive: true });
-    writeFileSync(join(base, ".gsd", "runtime", "research-project-inflight"), "{}\n");
     mkdirSync(join(base, ".gsd", "research"), { recursive: true });
     writeFileSync(join(base, ".gsd", "research", "STACK.md"), "# Stack\n");
 
@@ -837,7 +812,6 @@ test("deep project setup: research-project partial output writes dimension block
     );
 
     assert.equal(result, "continue");
-    assert.equal(existsSync(join(base, ".gsd", "runtime", "research-project-inflight")), false);
     for (const name of ["FEATURES", "ARCHITECTURE", "PITFALLS"]) {
       assert.equal(existsSync(join(base, ".gsd", "research", `${name}-BLOCKER.md`)), true);
     }
@@ -862,9 +836,6 @@ test("deep project setup: research-project empty output writes global blocker wi
     s.basePath = base;
     s.currentUnit = { type: "research-project", id: "RESEARCH-PROJECT", startedAt: Date.now() };
 
-    mkdirSync(join(base, ".gsd", "runtime"), { recursive: true });
-    writeFileSync(join(base, ".gsd", "runtime", "research-project-inflight"), "{}\n");
-
     const notifications: string[] = [];
     const result = await postUnitPreVerification(
       {
@@ -881,7 +852,6 @@ test("deep project setup: research-project empty output writes global blocker wi
     );
 
     assert.equal(result, "continue");
-    assert.equal(existsSync(join(base, ".gsd", "runtime", "research-project-inflight")), false);
     assert.equal(existsSync(join(base, ".gsd", "research", "PROJECT-RESEARCH-BLOCKER.md")), true);
     assert.equal(verifyExpectedArtifact("research-project", "RESEARCH-PROJECT", base), false);
     assert.equal(s.pendingVerificationRetry, null);
@@ -896,16 +866,12 @@ test("deep project setup: research-project empty output writes global blocker wi
   }
 });
 
-test("deep project setup: project research timeout finalizer removes stale marker", () => {
+test("deep project setup: project research timeout finalizer writes the global blocker when no dimension completed", () => {
   const base = makeBase();
   try {
-    mkdirSync(join(base, ".gsd", "runtime"), { recursive: true });
-    writeFileSync(join(base, ".gsd", "runtime", "research-project-inflight"), "{}\n");
-
     const outcome = finalizeProjectResearchTimeout(base, "test hard timeout");
 
     assert.equal(outcome.kind, "global-blocker");
-    assert.equal(existsSync(join(base, ".gsd", "runtime", "research-project-inflight")), false);
     assert.equal(existsSync(join(base, ".gsd", "research", "PROJECT-RESEARCH-BLOCKER.md")), true);
   } finally {
     rmSync(base, { recursive: true, force: true });
@@ -973,8 +939,10 @@ test("deep project setup: empty legacy pseudo-milestone dirs do not block first 
     );
     writeFileSync(join(base, ".gsd", "PROJECT.md"), validProject);
     writeFileSync(join(base, ".gsd", "REQUIREMENTS.md"), validRequirements);
-    mkdirSync(join(base, ".gsd", "runtime"), { recursive: true });
-    writeFileSync(join(base, ".gsd", "runtime", "research-decision.json"), '{"decision":"skip"}\n');
+    openDatabase(join(base, ".gsd", "gsd.db"));
+    saveSetupArtifact("PROJECT.md", validProject);
+    saveSetupArtifact("REQUIREMENTS.md", validRequirements);
+    closeDatabase();
 
     for (const legacy of ["PROJECT", "RESEARCH-PROJECT", "WORKFLOW-PREFS"]) {
       mkdirSync(join(base, ".gsd", "milestones", legacy), { recursive: true });
@@ -1204,23 +1172,10 @@ test("deep project setup: requirements preview question from screenshot is treat
   assert.equal(shouldPauseForQuestion("discuss-requirements", messages), true);
 });
 
-test("deep project setup: research decision question triggers approval boundary pause", () => {
-  assert.equal(
-    shouldPauseForQuestion("research-decision", [
-      {
-        role: "assistant",
-        content: "Run domain research now? (y/n)",
-      },
-    ]),
-    true,
-  );
-});
-
 test("deep project setup: plain-text approval questions map to write-gate ids", () => {
   assert.equal(approvalGateIdForUnit("discuss-project", "PROJECT"), "depth_verification_project_confirm");
   assert.equal(approvalGateIdForUnit("discuss-requirements", "REQUIREMENTS"), "depth_verification_requirements_confirm");
   assert.equal(approvalGateIdForUnit("discuss-milestone", "M001"), "depth_verification_M001_confirm");
-  assert.equal(approvalGateIdForUnit("research-decision", "RESEARCH-DECISION"), "depth_verification_research_decision_confirm");
 });
 
 test("deep project setup: plain-text approval gate clears only on explicit approval", () => {
@@ -1228,7 +1183,6 @@ test("deep project setup: plain-text approval gate clears only on explicit appro
   assert.equal(isExplicitApprovalResponse("go ahead and write it"), true);
   assert.equal(isExplicitApprovalResponse("yes, add delete support first"), false);
   assert.equal(isExplicitApprovalResponse("not quite, remove the due date"), false);
-  assert.equal(isExplicitApprovalResponse("research", "depth_verification_research_decision_confirm"), true);
 });
 
 test("deep project setup: discuss-milestone question failure pauses instead of artifact-retrying", async () => {

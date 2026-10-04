@@ -36,7 +36,6 @@ import { isClosedStatus, isInactiveStatus } from "./status-guards.js";
 import { extractVerdict, isAcceptableUatVerdict } from "./verdict-parser.js";
 
 import {
-  gsdRoot,
   resolveGsdPathContract,
   resolveMilestoneFile,
   resolveMilestonePath,
@@ -50,8 +49,7 @@ import {
   buildTaskFileName,
   gsdProjectionRoot,
 } from "./paths.js";
-import { validateArtifact } from "./schemas/validate.js";
-import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { atomicWriteSync } from "./atomic-write.js";
 import { recordCompatProjectionWrite } from "./compat/compat-marker.js";
 import { logWarning, logError } from "./workflow-logger.js";
@@ -63,7 +61,6 @@ import {
   buildDiscussMilestonePrompt,
   buildDiscussProjectPrompt,
   buildDiscussRequirementsPrompt,
-  buildResearchDecisionPrompt,
   buildResearchProjectPrompt,
   buildResearchMilestonePrompt,
   buildPlanMilestonePrompt,
@@ -104,13 +101,14 @@ import { resolveWorkflowMcpProjectRoot } from "./workflow-mcp.js";
 import { getUnitWorkflowDispatchReadinessError } from "./tool-contract.js";
 import { prepareBrowserDaemonForUat } from "./browser-daemon-auto-prep.js";
 import {
-  PROJECT_RESEARCH_INFLIGHT_MARKER,
-} from "./project-research-policy.js";
-import {
-  isWorkflowPrefsCaptured,
   resolveDeepProjectSetupState,
   type DeepProjectSetupStage,
 } from "./deep-project-setup-policy.js";
+import {
+  isSetupArtifactSaved,
+  isWorkflowPreferencesCaptured,
+  recordWorkflowPreferencesCaptured,
+} from "./project-setup-facts.js";
 import { annotateBackgroundable } from "./delegation-policy.js";
 import { invalidateAllCaches } from "./cache.js";
 import { insertMilestoneValidationGates } from "./milestone-validation-gates.js";
@@ -376,7 +374,7 @@ export async function readUatGateVerdict(
 /**
  * Deep planning mode: check whether any project-level stage gate
  * (workflow-preferences, discuss-project, discuss-requirements,
- * research-decision, research-project) still has work pending.
+ * research-project) still has work pending.
  *
  * Used by the milestone-level discuss rules to yield to project-level
  * deep-mode rules when the project hasn't finished its setup interview.
@@ -386,17 +384,15 @@ export async function readUatGateVerdict(
 export function getDeepStageGate(
   prefs: GSDPreferences | undefined,
   basePath: string,
-  preview = false,
 ): DeepStageGate {
-  return resolveDeepProjectSetupState(prefs, basePath, preview);
+  return resolveDeepProjectSetupState(prefs, basePath);
 }
 
 export function hasPendingDeepStage(
   prefs: GSDPreferences | undefined,
   basePath: string,
-  preview = false,
 ): boolean {
-  const gate = getDeepStageGate(prefs, basePath, preview);
+  const gate = getDeepStageGate(prefs, basePath);
   return gate.status === "pending" || gate.status === "blocked";
 }
 
@@ -974,10 +970,10 @@ export const DISPATCH_RULES: DispatchRule[] = [
       if (state.phase !== "needs-discussion") return null;
       // Deep mode bypass: yield to the project-level deep stage gates
       // (workflow-prefs, discuss-project, discuss-requirements,
-      // research-decision, research-project) when any of them still have
+      // research-project) when any of them still have
       // work pending. Without this guard, the milestone discuss rule wins
       // before the deep rules ever get a chance to fire.
-      if (hasPendingDeepStage(prefs, basePath, preview)) return null;
+      if (hasPendingDeepStage(prefs, basePath)) return null;
       // H6 fix (#4973): keep the non-deep auto-mode bypass, but do not
       // pre-verify deep planning's user-facing milestone approval gate.
       if (shouldBypassMilestoneDepthGateInAuto(prefs)) {
@@ -1007,23 +1003,26 @@ export const DISPATCH_RULES: DispatchRule[] = [
     match: async ({ state, basePath, prefs, preview }) => {
       if (prefs?.planning_depth !== "deep") return null;
       if (state.phase !== "pre-planning" && state.phase !== "needs-discussion") return null;
-      if (isWorkflowPrefsCaptured(basePath)) return null; // already captured — fall through
+      if (isWorkflowPreferencesCaptured()) return null; // already captured — fall through
       // Preview: report the same fall-through without writing the defaults.
-      if (!preview) ensureWorkflowPreferencesCaptured(basePath);
+      if (!preview) {
+        ensureWorkflowPreferencesCaptured(basePath);
+        // With no database the stage stays pending and is recorded on a later turn.
+        if (isDbAvailable()) recordWorkflowPreferencesCaptured();
+      }
       return null;
     },
   },
   {
-    // Deep mode stage gate: PROJECT.md missing or invalid.
-    // Fires only when planning_depth === "deep" and PROJECT.md is missing/invalid.
+    // Deep mode stage gate: no valid PROJECT artifact row in the database.
+    // Fires only when planning_depth === "deep" and the PROJECT stage is not saved.
     // Project-level interview must complete before any milestone-level discussion.
     // Light mode (default) skips this rule entirely — falls through to milestone rules.
     name: "deep: pre-planning (no PROJECT) → discuss-project",
     match: async ({ state, basePath, prefs, structuredQuestionsAvailable }) => {
       if (prefs?.planning_depth !== "deep") return null;
       if (state.phase !== "pre-planning" && state.phase !== "needs-discussion") return null;
-      const projectPath = join(gsdRoot(basePath), "PROJECT.md");
-      if (existsSync(projectPath) && validateArtifact(projectPath, "project").ok) return null; // PROJECT.md valid — fall through
+      if (isSetupArtifactSaved("project")) return null; // PROJECT saved — fall through
       return {
         action: "dispatch",
         unitType: "discuss-project",
@@ -1034,18 +1033,15 @@ export const DISPATCH_RULES: DispatchRule[] = [
     },
   },
   {
-    // Deep mode stage gate: REQUIREMENTS.md missing or invalid.
-    // Fires only when planning_depth === "deep", PROJECT.md is valid, and
-    // REQUIREMENTS.md is missing/invalid.
-    // Falls through in light mode or when REQUIREMENTS.md already exists and is valid.
+    // Deep mode stage gate: no valid REQUIREMENTS artifact row in the database.
+    // Fires only when planning_depth === "deep", the PROJECT stage is saved, and
+    // the REQUIREMENTS stage is not.
     name: "deep: pre-planning (no REQUIREMENTS) → discuss-requirements",
     match: async ({ state, basePath, prefs, structuredQuestionsAvailable }) => {
       if (prefs?.planning_depth !== "deep") return null;
       if (state.phase !== "pre-planning" && state.phase !== "needs-discussion") return null;
-      const projectPath = join(gsdRoot(basePath), "PROJECT.md");
-      if (!existsSync(projectPath) || !validateArtifact(projectPath, "project").ok) return null; // PROJECT.md missing/invalid — earlier rule handles
-      const requirementsPath = join(gsdRoot(basePath), "REQUIREMENTS.md");
-      if (existsSync(requirementsPath) && validateArtifact(requirementsPath, "requirements").ok) return null; // REQUIREMENTS.md valid — fall through
+      if (!isSetupArtifactSaved("project")) return null; // PROJECT not saved — earlier rule handles
+      if (isSetupArtifactSaved("requirements")) return null; // REQUIREMENTS saved — fall through
       return {
         action: "dispatch",
         unitType: "discuss-requirements",
@@ -1056,38 +1052,17 @@ export const DISPATCH_RULES: DispatchRule[] = [
     },
   },
   {
-    // Deep mode research gate: capture user's research decision.
-    // Fires after discuss-requirements (REQUIREMENTS.md exists) when no decision
-    // marker has been written yet. Asks one yes/no question via ask_user_questions
-    // and writes .gsd/runtime/research-decision.json. Downstream research-project
-    // rule reads the marker to decide whether to fan out 4 parallel research subagents.
-    // Light mode skips entirely.
-    name: "deep: pre-planning (no research decision) → research-decision",
-    match: async ({ state, basePath, prefs, structuredQuestionsAvailable, preview }) => {
-      if (prefs?.planning_depth !== "deep") return null;
-      if (state.phase !== "pre-planning" && state.phase !== "needs-discussion") return null;
-      const gate = resolveDeepProjectSetupState(prefs, basePath, preview);
-      if (gate.status !== "pending" || gate.stage !== "research-decision") return null;
-      return {
-        action: "dispatch",
-        unitType: "research-decision",
-        unitId: "RESEARCH-DECISION",
-        prompt: await buildResearchDecisionPrompt(basePath, structuredQuestionsAvailable),
-      };
-    },
-  },
-  {
     // Deep mode parallel research.
-    // Fires when planning_depth === "deep", REQUIREMENTS.md exists,
-    // research-decision marker says "research", and any of the 4 project
+    // Fires when planning_depth === "deep", the REQUIREMENTS stage is saved,
+    // the recorded research decision is "research", and any of the 4 project
     // research files is missing. Spawns one orchestrator session that fans
     // out 4 parallel subagents (stack, features, architecture, pitfalls).
-    // Skipped entirely when user chose "skip" at the research-decision gate.
+    // Skipped entirely when the user did not choose research.
     name: "deep: pre-planning (research approved, files missing) → research-project",
-    match: async ({ state, basePath, prefs, structuredQuestionsAvailable, sessionProvider, preview }) => {
+    match: async ({ state, basePath, prefs, structuredQuestionsAvailable, sessionProvider }) => {
       if (prefs?.planning_depth !== "deep") return null;
       if (state.phase !== "pre-planning" && state.phase !== "needs-discussion") return null;
-      const gate = resolveDeepProjectSetupState(prefs, basePath, preview);
+      const gate = resolveDeepProjectSetupState(prefs, basePath);
       if (gate.status === "blocked" && gate.stage === "project-research") {
         return {
           action: "stop" as const,
@@ -1096,55 +1071,12 @@ export const DISPATCH_RULES: DispatchRule[] = [
         };
       }
       if (gate.status !== "pending" || gate.stage !== "project-research") return null;
-      // Idempotency guard: one orchestrator owns the project research fan-out
-      // until guided-research-project.md deletes this marker during closeout.
-      const runtimeDir = join(gsdRoot(basePath), "runtime");
-      const inflightMarkerPath = join(runtimeDir, PROJECT_RESEARCH_INFLIGHT_MARKER);
-      const researchInFlightStop = {
-        action: "stop" as const,
-        reason:
-          "Project research is already in progress. Wait for it to finish, or clear `.gsd/runtime/research-project-inflight` if the prior run crashed.",
-        level: "info" as const,
+      return {
+        action: "dispatch",
+        unitType: "research-project",
+        unitId: "RESEARCH-PROJECT",
+        prompt: await researchProjectPromptBuilder(basePath, structuredQuestionsAvailable, sessionProvider),
       };
-      if (existsSync(inflightMarkerPath)) return researchInFlightStop;
-      // Preview: the in-flight marker is a dispatch effect — report the
-      // dispatch without claiming the fan-out.
-      if (!preview) {
-        mkdirSync(runtimeDir, { recursive: true });
-        try {
-          writeFileSync(
-            inflightMarkerPath,
-            JSON.stringify({ started: new Date().toISOString() }) + "\n",
-            { encoding: "utf-8", flag: "wx" },
-          );
-        } catch (err) {
-          if (err && typeof err === "object" && "code" in err && err.code === "EEXIST") {
-            return researchInFlightStop;
-          }
-          throw err;
-        }
-      }
-      try {
-        const prompt = await researchProjectPromptBuilder(basePath, structuredQuestionsAvailable, sessionProvider);
-        return {
-          action: "dispatch",
-          unitType: "research-project",
-          unitId: "RESEARCH-PROJECT",
-          prompt,
-        };
-      } catch (err) {
-        try {
-          // Preview never created the marker — unlinking could delete one a
-          // concurrent dispatch just created (#2230).
-          if (!preview && existsSync(inflightMarkerPath)) unlinkSync(inflightMarkerPath);
-        } catch (cleanupErr) {
-          logWarning(
-            "dispatch",
-            `failed to remove research-project in-flight marker after prompt assembly error: ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`,
-          );
-        }
-        throw err;
-      }
     },
   },
   {

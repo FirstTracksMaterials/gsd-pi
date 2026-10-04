@@ -105,7 +105,6 @@ import { getPendingGate } from "./bootstrap/write-gate.js";
 import { isDeterministicPolicyError, isToolInvocationError, isToolUnavailableError } from "./auto-tool-tracking.js";
 import { formatConnectedStepStack, formatPostUnitStatusCard } from "./auto-status-message.js";
 import {
-  clearProjectResearchInflightMarker,
   finalizeProjectResearchTimeout,
 } from "./project-research-policy.js";
 import { validateArtifact } from "./schemas/validate.js";
@@ -1241,7 +1240,6 @@ export const USER_DRIVEN_DEEP_UNITS = new Set([
   "discuss-project",
   "discuss-requirements",
   "discuss-milestone",
-  "research-decision",
 ]);
 export { isAwaitingUserInput } from "./consent-question.js";
 
@@ -2301,14 +2299,6 @@ export async function postUnitPreVerification(pctx: PostUnitContext, opts?: PreV
           }
         } catch (e) {
           debugLog("postUnit", { phase: "regenerate-projection", error: String(e) });
-        }
-      }
-
-      if (s.currentUnit.type === "research-project") {
-        try {
-          clearProjectResearchInflightMarker(s.basePath);
-        } catch (e) {
-          debugLog("postUnit", { phase: "research-project-inflight-cleanup", error: String(e) });
         }
       }
 

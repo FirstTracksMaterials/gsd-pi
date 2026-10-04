@@ -1830,8 +1830,8 @@ export async function buildWorkflowPreferencesPrompt(
  * Build a prompt for the research-project (parallel) unit type (deep mode).
  * Orchestrator that spawns 4 parallel Task() calls covering stack, features,
  * architecture, and pitfalls. Each subagent writes its findings to .gsd/research/.
- * Fires after research-decision marker says "research" and project research files
- * are missing. Skipped entirely if user picked "skip".
+ * Fires when the recorded research decision is "research" and project research
+ * files are missing. Skipped entirely if the user did not choose research.
  */
 export async function buildResearchProjectPrompt(
   base: string,
@@ -1844,22 +1844,6 @@ export async function buildResearchProjectPrompt(
     structuredQuestionsAvailable,
     scoutAgentType,
   }), "standalone", sessionProvider);
-}
-
-/**
- * Build a prompt for the research-decision unit type (deep mode).
- * Fixed-question stage: asks "research first or skip?" via ask_user_questions
- * and writes .gsd/runtime/research-decision.json. Fires after discuss-requirements
- * and before research-project-parallel.
- */
-export async function buildResearchDecisionPrompt(
-  base: string,
-  structuredQuestionsAvailable = "false",
-): Promise<string> {
-  return prependContextModeToBlock("research-decision", base, loadPrompt("guided-research-decision", {
-    workingDirectory: base,
-    structuredQuestionsAvailable,
-  }));
 }
 
 /**
