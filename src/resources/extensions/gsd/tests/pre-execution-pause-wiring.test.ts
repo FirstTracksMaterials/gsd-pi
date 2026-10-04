@@ -20,6 +20,10 @@ import { join } from "node:path";
 
 import { postUnitPostVerification, type PostUnitContext } from "../auto-post-unit.ts";
 import { AutoSession } from "../auto/session.ts";
+import { readUnitBudget, spendUnitBudget } from "../db/unit-dispatch-budgets.ts";
+import { registerAutoWorker } from "../db/auto-workers.ts";
+import { claimMilestoneLease } from "../db/milestone-leases.ts";
+import { recordDispatchClaim } from "../db/unit-dispatches.ts";
 import { openDatabase, closeDatabase, insertMilestone, insertSlice, insertTask, _getAdapter } from "../gsd-db.ts";
 import { invalidateAllCaches } from "../cache.ts";
 import { _clearGsdRootCache } from "../paths.ts";
@@ -29,6 +33,13 @@ import { _clearGsdRootCache } from "../paths.ts";
 let tempDir: string;
 let dbPath: string;
 let originalCwd: string;
+const PRE_EXEC_BUDGET = { unitType: "plan-slice", unitId: "M001/S01", kind: "pre-exec" } as const;
+const MISSING_TASK_INPUTS = [
+  "nonexistent-file-that-does-not-exist.ts",
+  "missing-second-file.ts",
+  "missing-third-file.ts",
+  "missing-fourth-file.ts",
+];
 
 function resetAllCaches(): void {
   invalidateAllCaches();
@@ -199,17 +210,31 @@ function createFailingTasks(): void {
       estimate: "1h",
       files: [],
       verify: "npm test",
-      inputs: [
-        "nonexistent-file-that-does-not-exist.ts",
-        "missing-second-file.ts",
-        "missing-third-file.ts",
-        "missing-fourth-file.ts",
-      ],
+      inputs: MISSING_TASK_INPUTS,
       expectedOutput: [],
       observabilityImpact: "",
     },
     sequence: 0,
   });
+}
+
+/**
+ * Claim the plan-slice unit, so its budgets are on a real dispatch row.
+ */
+function claimPlanSliceDispatch(traceId: string): void {
+  const workerId = registerAutoWorker({ projectRootRealpath: tempDir });
+  const lease = claimMilestoneLease(workerId, "M001");
+  if (!lease.ok) throw new Error("expected test lease");
+  const claim = recordDispatchClaim({
+    traceId,
+    workerId,
+    milestoneLeaseToken: lease.token,
+    milestoneId: "M001",
+    sliceId: "S01",
+    unitType: "plan-slice",
+    unitId: "M001/S01",
+  });
+  assert.equal(claim.ok, true);
 }
 
 /**
@@ -313,7 +338,7 @@ describe("Pre-execution checks → retry/pause wiring", () => {
       "postUnitPostVerification should return 'retry' so auto can re-dispatch planning"
     );
 
-    assert.equal(s.preExecRetryCount.get("M001/S01"), 1);
+    assert.equal(readUnitBudget(s.unclaimedUnitBudgets, PRE_EXEC_BUDGET), 1);
     assert.equal(s.lastPreExecFailure?.unitId, "M001/S01");
     assert.ok(
       s.lastPreExecFailure?.blockingFindings.some((finding) =>
@@ -410,7 +435,7 @@ describe("Pre-execution checks → retry/pause wiring", () => {
       "retry",
       "postUnitPostVerification should return 'retry' when strict mode treats warnings as blocking"
     );
-    assert.equal(s.preExecRetryCount.get("M001/S01"), 1);
+    assert.equal(readUnitBudget(s.unclaimedUnitBudgets, PRE_EXEC_BUDGET), 1);
     assert.equal(s.pendingVerificationRetry?.unitId, "M001/S01");
 
     // Verify UI was notified of the warning
@@ -430,7 +455,7 @@ describe("Pre-execution checks → retry/pause wiring", () => {
     const pi = makeMockPi();
     const pauseAutoMock = mock.fn(async () => {});
     const s = makeMockSession(tempDir, { type: "plan-slice", id: "M001/S01" });
-    s.preExecRetryCount.set("M001/S01", 1);
+    spendUnitBudget(s.unclaimedUnitBudgets, PRE_EXEC_BUDGET);
     const pctx = makePostUnitContext(s, ctx, pi, pauseAutoMock);
 
     const result = await postUnitPostVerification(pctx);
@@ -441,7 +466,11 @@ describe("Pre-execution checks → retry/pause wiring", () => {
       1,
       "pauseAuto should be called when pre-exec repair reaches the retry cap",
     );
-    assert.equal(s.preExecRetryCount.get("M001/S01"), 2);
+    assert.equal(
+      readUnitBudget(s.unclaimedUnitBudgets, PRE_EXEC_BUDGET),
+      0,
+      "the cap pause releases the budget for the resume",
+    );
     assert.equal(s.pendingVerificationRetry, null);
 
     const notifyCalls = ctx.ui.notify.mock.calls;
@@ -451,6 +480,96 @@ describe("Pre-execution checks → retry/pause wiring", () => {
         String(call.arguments[0]).includes("Planner repair failed after 2 consecutive pre-exec failures"),
     );
     assert.ok(errorNotify, "Should show an error notification when pre-exec repair is exhausted");
+  });
+
+  test("a restart continues the pre-execution repair budget of a claimed plan-slice unit", async () => {
+    createFailingTasks();
+    claimPlanSliceDispatch("trace-pre-exec-restart");
+
+    const beforeKill = makeMockSession(tempDir, { type: "plan-slice", id: "M001/S01" });
+    const firstResult = await postUnitPostVerification(
+      makePostUnitContext(beforeKill, makeMockCtx(), makeMockPi(), mock.fn(async () => {})),
+    );
+    assert.equal(firstResult, "retry", "the first failure uses one planner retry");
+
+    // Kill: the session is gone and the database file is opened again.
+    closeDatabase();
+    openDatabase(dbPath);
+    const pauseAutoMock = mock.fn(async () => {});
+    const afterRestart = makeMockSession(tempDir, { type: "plan-slice", id: "M001/S01" });
+
+    const result = await postUnitPostVerification(
+      makePostUnitContext(afterRestart, makeMockCtx(), makeMockPi(), pauseAutoMock),
+    );
+
+    assert.equal(result, "stopped", "the restarted process must not get a new retry budget");
+    assert.equal(pauseAutoMock.mock.callCount(), 1);
+  });
+
+  test("a restart after the cap pause gives a claimed plan-slice unit a full repair budget again", async () => {
+    createFailingTasks();
+    claimPlanSliceDispatch("trace-pre-exec-cap-restart");
+    // Each call is a new process: a new session with no memory of the last one.
+    const runPlanSlice = () => postUnitPostVerification(
+      makePostUnitContext(
+        makeMockSession(tempDir, { type: "plan-slice", id: "M001/S01" }),
+        makeMockCtx(),
+        makeMockPi(),
+        mock.fn(async () => {}),
+      ),
+    );
+
+    assert.equal(await runPlanSlice(), "retry", "the first failure uses one planner retry");
+    assert.equal(await runPlanSlice(), "stopped", "the second failure reaches the cap and pauses");
+
+    // The user stops auto-mode, edits the plan and starts again. The edit
+    // repairs one input; the plan still fails for the other inputs.
+    closeDatabase();
+    openDatabase(dbPath);
+    writeFileSync(join(tempDir, MISSING_TASK_INPUTS[0]), "");
+
+    assert.equal(
+      await runPlanSlice(),
+      "retry",
+      "the first failure after the restart must get a planner retry, not pause at once",
+    );
+  });
+
+  test("a passed pre-execution check gives a claimed plan-slice unit a full repair budget again", async () => {
+    createFailingTasks();
+    claimPlanSliceDispatch("trace-pre-exec-release");
+    // Each call is a new process: a new session with no memory of the last one.
+    const runPlanSlice = () => postUnitPostVerification(
+      makePostUnitContext(
+        makeMockSession(tempDir, { type: "plan-slice", id: "M001/S01" }),
+        makeMockCtx(),
+        makeMockPi(),
+        mock.fn(async () => {}),
+      ),
+    );
+
+    assert.equal(await runPlanSlice(), "retry", "the first failure uses one planner retry");
+    assert.equal(readUnitBudget(new Map(), PRE_EXEC_BUDGET), 1);
+
+    // The planner repair worked: the files the task reads now exist.
+    for (const input of MISSING_TASK_INPUTS) writeFileSync(join(tempDir, input), "");
+    assert.equal(await runPlanSlice(), "continue", "the repaired plan passes the checks");
+
+    closeDatabase();
+    openDatabase(dbPath);
+    assert.equal(
+      readUnitBudget(new Map(), PRE_EXEC_BUDGET),
+      0,
+      "the pass releases the stored count",
+    );
+
+    // A later, unrelated failure of the same slice.
+    rmSync(join(tempDir, MISSING_TASK_INPUTS[0]));
+    assert.equal(
+      await runPlanSlice(),
+      "retry",
+      "a later failure must get a planner retry, not pause on its first failure",
+    );
   });
 
   test("pauseAuto is NOT called when enhanced_verification_strict: false and pre-execution returns warn", async () => {
