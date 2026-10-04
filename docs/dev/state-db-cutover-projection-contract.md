@@ -33,6 +33,19 @@ database — a rendered view, not a record.
   parsing and SQLite options with separate values (such as `-init FILE`)
   remain outside its supported parsing. Regression cases live in
   `src/resources/extensions/gsd/tests/block-db-writes.test.ts`.
+  The same module refuses a direct Write, Edit or shell write to a managed
+  projection that has a save tool (PROJECT, REQUIREMENTS, DECISIONS,
+  KNOWLEDGE, QUEUE, ROADMAP, PLAN, REPLAN, SUMMARY, VALIDATION, ASSESSMENT,
+  UAT, CONTEXT, CONTEXT-DRAFT, RESEARCH, UI-SPEC, PARKED) and names that tool.
+  It covers only the paths the renderers own: the root kinds at the `.gsd`
+  root and the other kinds below `.gsd/milestones` and `.gsd/phases`. A file
+  with such a name in another directory (for example a `/gsd milestone-summary`
+  report in `.gsd/summaries`) is a document the agent writes directly.
+  The shell check sees only a path written with its `.gsd` directory. The
+  guard runs on the native engine and, through a PreToolUse hook, on
+  claude-code-cli; cursor-cli has no pre-execution hook. A managed file with
+  no save tool yet (LEARNINGS, SECRETS, VERIFICATION-FAILED, CONTINUE) stays
+  writable. Cases live in `tests/projection-write-guard.test.ts`.
 - **Readers MUST NOT treat projections as authority.** Reading a projection is
   legitimate for display, for external integrations that only need a snapshot,
   and for drift detection (which compares projection against DB *by design*).

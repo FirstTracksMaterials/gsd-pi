@@ -2256,7 +2256,6 @@ export async function buildPlanMilestonePrompt(
     milestonePath: displayProjectPath(milestoneScope.milestoneDir()),
     contextPath: contextRel,
     researchPath: researchRel,
-    researchOutputPath: displayProjectPath(researchTarget),
     outputPath: displayProjectPath(roadmapPath),
     secretsOutputPath: displayProjectPath(secretsOutputPath),
     inlinedContext,
