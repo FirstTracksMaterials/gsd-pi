@@ -1810,7 +1810,7 @@ export async function handleDbAdopt(ctx: ExtensionCommandContext, basePath: stri
     return;
   }
   try {
-    const { applyLifecycleBackfill, previewLifecycleBackfill, OPEN_UNDER_COMPLETED_PARENT_REMEDY } =
+    const { applyLifecycleBackfill, previewLifecycleBackfill } =
       await import("./lifecycle-backfill-domain-operation.js");
     const preview = previewLifecycleBackfill();
     if (preview.unknownStatuses.length > 0) {
@@ -1822,25 +1822,29 @@ export async function handleDbAdopt(ctx: ExtensionCommandContext, basePath: stri
       );
       return;
     }
-    if (preview.openUnderCompletedParent.length > 0) {
+    if (preview.items.length === 0 && preview.waiverRepairs.length === 0) {
       ctx.ui.notify(
-        `gsd db adopt: open work under a completed parent, nothing adopted:\n${
-          preview.openUnderCompletedParent.map((entry) => `  ${entry.row}: ${JSON.stringify(entry.rawStatus)}`).join("\n")
-        }\n${OPEN_UNDER_COMPLETED_PARENT_REMEDY}`,
-        "error",
+        "gsd db adopt: every milestone, slice and task already has a lifecycle row, " +
+          "and every adopted cancellation has a Waiver.",
+        "info",
       );
-      return;
-    }
-    if (preview.items.length === 0) {
-      ctx.ui.notify("gsd db adopt: every milestone, slice and task already has a lifecycle row.", "info");
       return;
     }
     const byRule = new Map<string, number>();
     for (const item of preview.items) byRule.set(item.rule, (byRule.get(item.rule) ?? 0) + 1);
-    const summary = [...byRule].map(([rule, count]) => `  ${rule}: ${count}`).join("\n");
+    if (preview.waiverRepairs.length > 0) {
+      byRule.set("adopted-cancelled-without-waiver", preview.waiverRepairs.length);
+    }
+    const summary = [...byRule].map(([rule, count]) => `  ${rule}: ${count}`).join("\n") +
+      (preview.openUnderCompletedParent.length > 0
+        ? `\nOpen work under a completed parent, adopted as cancelled:\n${
+          preview.openUnderCompletedParent.map((entry) => `  ${entry.row}: ${JSON.stringify(entry.rawStatus)}`).join("\n")
+        }`
+        : "");
     if (!/(^|\s)--apply(\s|$)/.test(args)) {
       ctx.ui.notify(
-        `gsd db adopt: ${preview.items.length} row(s) would be adopted:\n${summary}\n` +
+        `gsd db adopt: ${preview.items.length} row(s) would be adopted and ` +
+          `${preview.waiverRepairs.length} adopted cancellation(s) would get a Waiver:\n${summary}\n` +
           "Run /gsd db adopt --apply to adopt them in one operation (a verified backup is written first).",
         "info",
       );
@@ -1855,7 +1859,7 @@ export async function handleDbAdopt(ctx: ExtensionCommandContext, basePath: stri
     ctx.ui.notify(
       `gsd db adopt: adopted ${result.adopted} row(s) in operation ${result.operationId} ` +
         `(${result.waivers} legacy-attested Waiver(s)).\n${summary}` +
-        (result.findings.length > 0 ? `\nCompletion without evidence, adopted as open work:\n  ${result.findings.join("\n  ")}` : "") +
+        (result.findings.length > 0 ? `\nCompletion without evidence:\n  ${result.findings.join("\n  ")}` : "") +
         "\nA verified backup was written beside the database; /gsd db restore-backup lists it.",
       "info",
     );

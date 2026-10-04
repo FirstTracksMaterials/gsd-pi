@@ -40,6 +40,9 @@ import {
 } from "../tools/validate-milestone.ts";
 import type { GateId } from "../types.ts";
 import { captureVerificationSourceSnapshot } from "../verification-source-integrity.ts";
+import type { LegacyImportApplicationPlanInstruction } from "../legacy-import-application-plan.ts";
+import { applyLifecycleBackfill } from "../lifecycle-backfill-domain-operation.ts";
+import { applyImport, emptyPreview, planFor } from "./helpers/legacy-import-writer-harness.ts";
 
 const tempDirs = new Set<string>();
 let testedSourceRevision = "";
@@ -840,6 +843,76 @@ test("Milestone completion accepts an authorized empty cancelled Slice", async (
   assert.equal(result.status, "committed");
   assert.deepEqual(result.cancelledSliceIds, ["S02", "S03"]);
   assert.equal(result.waiverIds.length, 2);
+});
+
+test("Milestone completion accepts the legacy-attested Waivers of a Slice and Task adopted as cancelled by an Import Application", async () => {
+  await prepareFixture(() => {
+    // An empty skipped Slice, and a skipped Task under the completed Slice S01.
+    insertSlice({ id: "S03", milestoneId: "M001", status: "skipped" });
+    insertTask({ id: "T09", sliceId: "S01", milestoneId: "M001", status: "skipped" });
+    const fence = readDomainOperationFence();
+    const artifact = emptyPreview(fence.revision, fence.authorityEpoch);
+    const adopt = (sliceId: string, taskId: string | null): LegacyImportApplicationPlanInstruction => ({
+      action: "adopt-lifecycle",
+      lifecycleAction: "create",
+      targetKind: taskId === null ? "slice-lifecycle" : "task-lifecycle",
+      targetKey: taskId === null ? `M001/${sliceId}` : `M001/${sliceId}/${taskId}`,
+      itemKind: taskId === null ? "slice" : "task",
+      milestoneId: "M001",
+      sliceId,
+      taskId,
+      lifecycleStatus: "cancelled",
+      changeIds: [`adopt-${sliceId}-${taskId ?? "slice"}`],
+    });
+    applyImport(artifact, planFor(artifact, [adopt("S03", null), adopt("S01", "T09")]));
+  });
+
+  const result = await completeMilestone(input("milestone-complete/import-cancelled"));
+
+  assert.equal(result.status, "committed");
+  assert.ok(result.cancelledSliceIds.includes("S03"));
+  assert.ok(result.cancelledTaskIds.includes("S01/T09"));
+  const importWaiverIds = rows(`
+    SELECT waiver.waiver_id
+    FROM workflow_waivers waiver
+    JOIN workflow_operations operation ON operation.operation_id = waiver.operation_id
+    WHERE operation.operation_type = 'import.apply'
+  `).map((waiver) => String(waiver.waiver_id));
+  assert.equal(importWaiverIds.length, 2);
+  for (const waiverId of importWaiverIds) assert.ok(result.waiverIds.includes(waiverId));
+});
+
+test("Milestone completion accepts a Slice and Task adopted as cancelled with no Waiver once the backfill grants them", async () => {
+  await prepareFixture((basePath) => {
+    // An Import Application of an earlier build adopted these rows as cancelled and granted no Waiver.
+    insertSlice({ id: "S03", milestoneId: "M001", status: "skipped" });
+    insertTask({ id: "T09", sliceId: "S01", milestoneId: "M001", status: "skipped" });
+    executeAtFence("test.earlier-build-import", "fixture/milestone-completion/earlier-build-import", (context) => {
+      adoptOrTransitionLifecycle(context, {
+        itemKind: "slice", milestoneId: "M001", sliceId: "S03", lifecycleStatus: "cancelled",
+      });
+      adoptOrTransitionLifecycle(context, {
+        itemKind: "task", milestoneId: "M001", sliceId: "S01", taskId: "T09", lifecycleStatus: "cancelled",
+      });
+    });
+    // The fixture Task S02/T02, cancelled with its Slice, has no Waiver either.
+    assert.equal(applyLifecycleBackfill(basePath).waivers, 3);
+  });
+
+  const result = await completeMilestone(input("milestone-complete/backfill-waived-cancelled"));
+
+  assert.equal(result.status, "committed");
+  assert.ok(result.cancelledSliceIds.includes("S03"));
+  assert.ok(result.cancelledTaskIds.includes("S01/T09"));
+  const backfillWaiverIds = rows(`
+    SELECT waiver.waiver_id
+    FROM workflow_waivers waiver
+    JOIN workflow_operations operation ON operation.operation_id = waiver.operation_id
+    WHERE operation.operation_type = 'lifecycle.backfill'
+      AND waiver.scope IN ('slice:M001/S03', 'M001/S01/T09 cancellation')
+  `).map((waiver) => String(waiver.waiver_id));
+  assert.equal(backfillWaiverIds.length, 2);
+  for (const waiverId of backfillWaiverIds) assert.ok(result.waiverIds.includes(waiverId));
 });
 
 test("Milestone completion records every current Waiver for a cancelled Task", async () => {

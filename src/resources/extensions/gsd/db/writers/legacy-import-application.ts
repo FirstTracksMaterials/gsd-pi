@@ -5,6 +5,7 @@ import type { DomainOperationContext } from "../domain-operation.js";
 import { getDb } from "../engine.js";
 import {
   adoptLifecycleIfMissing,
+  grantLegacyAttestedCancellationWaiver,
   requireActiveDomainOperationContext,
 } from "./lifecycle-commands.js";
 import {
@@ -779,6 +780,7 @@ function applyDecision(
 function adoptLifecycle(
   context: Readonly<DomainOperationContext>,
   occurredAt: string,
+  previewId: string,
   instruction: Extract<LegacyImportApplicationPlanInstruction, { action: "adopt-lifecycle" }>,
 ): LegacyImportApplicationInstructionResult {
   const adopted = adoptLifecycleIfMissing(context, {
@@ -799,36 +801,58 @@ function adoptLifecycle(
   if (!adopted.adopted || adopted.stateVersion !== 0) {
     fail("legacy import lifecycle already exists or was not adopted exactly");
   }
+  // Same rule as lifecycle.backfill: a legacy skipped, deferred or cancelled
+  // row is adopted as cancelled with one legacy-attested Waiver, so closeout
+  // and reopen do not refuse it. An Import Application has one event for the
+  // whole import, so the Waiver rationale keeps the raw legacy status (the
+  // hierarchy row status that the Preview's plan wrote) and the rule used.
+  if (instruction.lifecycleStatus === "cancelled") {
+    const table = instruction.itemKind === "milestone" ? "milestones"
+      : instruction.itemKind === "slice" ? "slices" : "tasks";
+    const rawStatus = getDb().prepare(`
+      SELECT status FROM ${table}
+      WHERE ${instruction.itemKind === "milestone" ? "id" : "milestone_id"} = :milestone_id
+        ${instruction.itemKind === "slice" ? "AND id = :slice_id" : ""}
+        ${instruction.itemKind === "task" ? "AND slice_id = :slice_id AND id = :task_id" : ""}
+    `).get({
+      ":milestone_id": instruction.milestoneId,
+      ...(instruction.itemKind === "milestone" ? {} : { ":slice_id": instruction.sliceId }),
+      ...(instruction.itemKind === "task" ? { ":task_id": instruction.taskId } : {}),
+    })?.["status"];
+    if (typeof rawStatus !== "string") fail("legacy import cancelled lifecycle has no hierarchy row status");
+    grantLegacyAttestedCancellationWaiver(context, {
+      lifecycleId: adopted.lifecycleId,
+      itemKind: instruction.itemKind,
+      milestoneId: instruction.milestoneId,
+      sliceId: instruction.sliceId ?? null,
+      taskId: instruction.taskId ?? null,
+      rationale: `Legacy-attested cancellation adopted by legacy import Preview ${previewId} ` +
+        `(raw status ${JSON.stringify(rawStatus)}, rule legacy-cancelled)`,
+      grantedByActorId: "legacy-import",
+    });
+  }
   return resultFor(instruction, 1, 1);
 }
 
 function seedQualityGate(
-  occurredAt: string,
   instruction: Extract<LegacyImportApplicationPlanInstruction, { action: "seed-quality-gate" }>,
 ): LegacyImportApplicationInstructionResult {
-  // #1658: complete-slice hard-requires exactly one Q8 quality gate per slice,
-  // so every imported slice mints the row the canonical seam would have left
-  // behind — plan_slice seeds a pending scope:"slice" Q8 (insertGateRow), and
-  // completeSliceHierarchy closes it with verdict "omitted" when no
-  // Operational Readiness evidence exists. A legacy import carries no gate
-  // evidence, so completed slices adopt the omitted shape; no gate_runs ledger
-  // row is minted because no evaluation actually ran.
-  const complete = instruction.gateStatus === "complete";
+  // #1658: an open imported slice gets the pending scope:"slice" Q8 row that
+  // plan_slice would have seeded (insertGateRow), so the complete-slice turn
+  // is told to close it. A legacy import carries no gate evidence, so a slice
+  // imported as completed gets no gate row: a closed verdict that no
+  // evaluation produced would be fabricated. Slice completion creates the row
+  // when it is missing (#1679), so a later reopen and closeout still works.
+  if (instruction.gateStatus === "complete") return resultFor(instruction, 0, 0);
   const result = getDb().prepare(`
     INSERT INTO quality_gates (
-      milestone_id, slice_id, gate_id, scope, task_id,
-      status, verdict, rationale, findings, evaluated_at
+      milestone_id, slice_id, gate_id, scope, task_id, status
     ) VALUES (
-      :milestone_id, :slice_id, 'Q8', 'slice', '',
-      :status, :verdict, :rationale, '', :evaluated_at
+      :milestone_id, :slice_id, 'Q8', 'slice', '', 'pending'
     )
   `).run({
     ":milestone_id": instruction.milestoneId,
     ":slice_id": instruction.sliceId,
-    ":status": instruction.gateStatus,
-    ":verdict": complete ? "omitted" : "",
-    ":rationale": complete ? "Seeded by legacy import — no Operational Readiness evidence available" : "",
-    ":evaluated_at": complete ? occurredAt : null,
   });
   const affected = changes(result);
   if (affected !== 1) fail("legacy import quality gate seed must affect exactly one row");
@@ -851,9 +875,9 @@ export function applyLegacyImportApplicationPlan(
     } else if (instruction.action === "delete-slice-dependencies") {
       instructionResults.push(deleteDependencies(instruction));
     } else if (instruction.action === "adopt-lifecycle") {
-      instructionResults.push(adoptLifecycle(context, occurredAt, instruction));
+      instructionResults.push(adoptLifecycle(context, occurredAt, snapshot.previewId, instruction));
     } else if (instruction.action === "seed-quality-gate") {
-      instructionResults.push(seedQualityGate(occurredAt, instruction));
+      instructionResults.push(seedQualityGate(instruction));
     } else if (
       instruction.action === "create-decision-memory"
       || instruction.action === "update-decision-memory"
