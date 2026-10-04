@@ -1,5 +1,5 @@
 // Project/App: gsd-pi
-// File Purpose: Gate for the schema fence that refuses a hierarchy row without a lifecycle row after the Authority Epoch cutover.
+// File Purpose: Gate for the schema fence of the hierarchy tables after the Authority Epoch cutover: no row without a lifecycle row, no status change outside a Domain Operation.
 
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -22,10 +22,13 @@ import {
   reconcileWorktreeDb,
 } from "../gsd-db.ts";
 import { registerMilestones } from "../milestone-registration.ts";
+import { forwardRepairRecreate } from "./helpers/legacy-import-writer-harness.ts";
 import { copyWorktreeDb } from "./helpers/worktree-db-fixture.ts";
 
 const OUTSIDE_OPERATION = /a hierarchy row needs a lifecycle row from the same Domain Operation/;
 const UNCOVERED = /a hierarchy row has no lifecycle row/;
+const STATUS_OUTSIDE_OPERATION = /the status of a hierarchy row changes only in a Domain Operation/;
+const HIERARCHY_TABLES = ["milestones", "slices", "tasks"];
 
 const tempDirs = new Set<string>();
 
@@ -158,6 +161,111 @@ test("after the cutover a write to a hierarchy row that exists is not fenced", (
   assert.equal(insertMilestone({ id: "M001", title: "Ignored" }), false);
   insertTask({ milestoneId: "M001", sliceId: "S01", id: "T01", title: "Retitled", status: "pending" });
   assert.equal(getTask("M001", "S01", "T01")?.title, "Retitled");
+});
+
+function hierarchyStatuses(): unknown {
+  return [getMilestone("M001")?.status, getSlice("M001", "S01")?.status, getTask("M001", "S01", "T01")?.status];
+}
+
+test("after the cutover a status change of a hierarchy row outside a Domain Operation is refused", () => {
+  openAdoptedProject();
+  advanceAuthorityEpoch();
+
+  for (const table of HIERARCHY_TABLES) {
+    assert.throws(() => db().prepare(`UPDATE ${table} SET status = 'complete'`).run(), STATUS_OUTSIDE_OPERATION);
+  }
+  assert.deepEqual(hierarchyStatuses(), ["active", "pending", "pending"]);
+});
+
+test("after the cutover a Domain Operation still changes the status of a hierarchy row", () => {
+  openAdoptedProject();
+  advanceAuthorityEpoch();
+
+  operate(() => {
+    for (const table of HIERARCHY_TABLES) db().prepare(`UPDATE ${table} SET status = 'in_progress'`).run();
+  });
+
+  assert.deepEqual(hierarchyStatuses(), ["in_progress", "in_progress", "in_progress"]);
+});
+
+test("before the cutover a status change outside a Domain Operation is not fenced", () => {
+  openAdoptedProject();
+
+  for (const table of HIERARCHY_TABLES) db().prepare(`UPDATE ${table} SET status = 'complete'`).run();
+
+  assert.deepEqual(hierarchyStatuses(), ["complete", "complete", "complete"]);
+});
+
+test("after the cutover the status of a row with no lifecycle row can be fixed for the backfill", () => {
+  openAdoptedProject();
+  advanceAuthorityEpoch();
+  insertTaskAsEarlierBuild("T02", "wip-custom");
+
+  db().prepare("UPDATE tasks SET status = 'pending' WHERE id = 'T02'").run();
+
+  assert.equal(getTask("M001", "S01", "T02")?.status, "pending");
+});
+
+function recreatedTask(id: string, status: string): Parameters<typeof forwardRepairRecreate>[0][number] {
+  return {
+    rowSet: "tasks",
+    identity: { milestone_id: "M001", slice_id: "S01", id },
+    values: { milestone_id: "M001", slice_id: "S01", id, title: "Deleted by an import", status },
+  };
+}
+
+test("after the cutover a Forward Repair adopts the hierarchy row that it puts back", () => {
+  openAdoptedProject();
+  advanceAuthorityEpoch();
+
+  forwardRepairRecreate([recreatedTask("T02", "pending")]);
+
+  assert.equal(getTask("M001", "S01", "T02")?.title, "Deleted by an import");
+  assert.deepEqual(
+    db().prepare(`
+      SELECT lifecycle_status FROM workflow_item_lifecycles
+      WHERE item_kind = 'task' AND milestone_id = 'M001' AND slice_id = 'S01' AND task_id = 'T02'
+    `).get(),
+    { lifecycle_status: "ready" },
+  );
+});
+
+test("after the cutover a Forward Repair refuses to put back a row with an unknown legacy status", () => {
+  openAdoptedProject();
+  advanceAuthorityEpoch();
+
+  assert.throws(
+    () => forwardRepairRecreate([recreatedTask("T02", "mystery")]),
+    /unknown legacy statuses: task M001\/S01\/T02="mystery"/,
+  );
+  assert.equal(getTask("M001", "S01", "T02"), null);
+});
+
+function taskLifecycle(id: string): unknown {
+  return db().prepare(`
+    SELECT lifecycle_status FROM workflow_item_lifecycles
+    WHERE item_kind = 'task' AND milestone_id = 'M001' AND slice_id = 'S01' AND task_id = :id
+  `).get({ ":id": id });
+}
+
+test("before the cutover a Forward Repair leaves a row unadopted when adoption would change its status or the status is unknown", () => {
+  openAdoptedProject();
+
+  forwardRepairRecreate([
+    recreatedTask("T02", "pending"),
+    // A legacy completion with no evidence: the backfill would make it open work again.
+    recreatedTask("T03", "complete"),
+    recreatedTask("T04", "mystery"),
+  ]);
+
+  assert.equal(authority().authority_epoch, 0);
+  assert.deepEqual(taskLifecycle("T02"), { lifecycle_status: "ready" });
+  assert.equal(getTask("M001", "S01", "T03")?.status, "complete");
+  assert.equal(taskLifecycle("T03"), undefined);
+  assert.equal(getTask("M001", "S01", "T04")?.status, "mystery");
+  assert.equal(taskLifecycle("T04"), undefined);
+  // The Authority Epoch cannot advance over the rows the repair left unadopted.
+  assert.throws(advanceAuthorityEpoch, UNCOVERED);
 });
 
 test("the Authority Epoch cannot advance while a hierarchy row has no lifecycle row", () => {
