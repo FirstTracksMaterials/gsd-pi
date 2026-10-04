@@ -188,7 +188,6 @@ import { checkResourcesStale, readResourceVersion } from "./auto-worktree-resour
 import { escapeStaleWorktree } from "./auto-worktree-runtime-cleanup.js";
 import { teardownWarmedBrowserDaemons } from "./browser-daemon-auto-prep.js";
 import { getAutoWorktreeOriginalBase } from "./auto-worktree-session-registry.js";
-import { syncWorktreeStateBack } from "./auto-worktree-sync.js";
 import { teardownAutoWorktree } from "./auto-worktree-teardown.js";
 import { pruneQueueOrder } from "./queue-order.js";
 import { startCommandPolling as _startCommandPolling, isRemoteConfigured } from "../remote-questions/manager.js";
@@ -1957,6 +1956,16 @@ export async function stopAuto(
             notifyCtx,
           );
           if (!r.ok && r.cause instanceof Error) throw r.cause;
+          if (r.ok) {
+            // A merged `.gsd` file is not authority: render the project-root
+            // projections from the database after the merge.
+            try {
+              const { rebuildMarkdownProjectionsFromDb } = await import("./commands-maintenance.js");
+              await rebuildMarkdownProjectionsFromDb(s.originalBasePath || s.basePath);
+            } catch (err) {
+              logWarning("engine", `markdown projection rebuild after stop merge failed: ${err instanceof Error ? err.message : String(err)}`, { file: "auto.ts" });
+            }
+          }
         } else if (exitAction === "preserve") {
           // Milestone still in progress — preserve branch for later resumption
           const r = lifecycle.exitMilestone(

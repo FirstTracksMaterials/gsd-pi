@@ -1078,8 +1078,8 @@ export function removeWorktree(
   // The computed path may differ when .gsd/ is (or was) a symlink to an
   // external state directory — git resolves symlinks at worktree creation
   // time, so its registered path points to the resolved external location.
-  // If syncStateToProjectRoot later creates a real .gsd/ directory that
-  // shadows the symlink, the computed path diverges from git's record.
+  // If a real .gsd/ directory later shadows the symlink, the computed path
+  // diverges from git's record.
   let gitReportedPath: string | null = null;
   try {
     const entries = nativeWorktreeList(basePath);
@@ -1417,19 +1417,6 @@ export function diffWorktreeNumstat(
     stats.push({ file: entry.path, added: entry.added, removed: entry.removed });
   }
   return stats;
-}
-
-/**
- * Get the full diff content for .gsd/ between the worktree branch and main.
- * Returns the raw unified diff for LLM consumption.
- */
-export function getWorktreeGSDDiff(basePath: string, name: string, mainBranchOverride?: string): string {
-  basePath = normalizeBasePathForWorktreeOps(basePath);
-
-  const branch = worktreeBranchName(name);
-  const mainBranch = mainBranchOverride ?? nativeDetectMainBranch(basePath);
-
-  return nativeDiffContent(basePath, mainBranch, branch, ".gsd/", undefined, true);
 }
 
 /**

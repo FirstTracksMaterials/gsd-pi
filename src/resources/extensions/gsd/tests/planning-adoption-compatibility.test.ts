@@ -27,10 +27,9 @@ import {
   reconcileWorktreeDb,
 } from "../gsd-db.ts";
 import { copyWorktreeDb } from "./helpers/worktree-db-fixture.ts";
-import { reconcileWorktreeDbBeforeManualMerge } from "../worktree-command.ts";
+import { importWorktreeLocalDb } from "../worktree-command.ts";
 import { worktreePath } from "../worktree-manager.ts";
 import { createWorkspace } from "../workspace.ts";
-import { _resetLogs, peekLogs, setStderrLoggingEnabled } from "../workflow-logger.ts";
 
 const tempDirs = new Set<string>();
 
@@ -484,7 +483,7 @@ test("worktree reconcile rejects extra canonical operations and lifecycle state 
   assert.deepEqual(hierarchyIdentitySnapshot(), before);
 });
 
-test("manual merge preflight propagates canonical divergence instead of continuing", async (t) => {
+test("the explicit worktree database import refuses canonical divergence", async (t) => {
   const mainDb = openFixture(t);
   adoptHierarchy();
   const worktreeDb = join(tempDir("gsd-manual-merge-worktree-"), "gsd.db");
@@ -497,12 +496,12 @@ test("manual merge preflight propagates canonical divergence instead of continui
 
   assert.equal(openDatabase(mainDb), true);
   await assert.rejects(
-    reconcileWorktreeDbBeforeManualMerge(mainDb, worktreeDb),
+    importWorktreeLocalDb(mainDb, worktreeDb, async () => true),
     /canonical worktree divergence/i,
   );
 });
 
-test("auto-worktree teardown preserves canonical divergence when the database starts closed", (t) => {
+test("auto-worktree teardown keeps a worktree that holds its own database", (t) => {
   const originalCwd = process.cwd();
   const base = tempDir("gsd-teardown-divergence-");
   const mainDb = join(base, ".gsd", "gsd.db");
@@ -527,8 +526,8 @@ test("auto-worktree teardown preserves canonical divergence when the database st
     setActiveWorkspace(workspace);
     process.chdir(worktreeRoot);
     teardownAutoWorktree(base, "M001", { preserveWorktree: true, preserveBranch: true });
-    assert.equal(existsSync(worktreeRoot), true, "divergent canonical history must preserve worktree contents");
-    assert.equal(getActiveWorkspace(), workspace, "divergent canonical history must keep workspace registered for recovery");
+    assert.equal(existsSync(worktreeRoot), true, "a worktree-local database must preserve worktree contents");
+    assert.equal(getActiveWorkspace(), workspace, "a worktree-local database must keep workspace registered for recovery");
   } finally {
     setActiveWorkspace(null);
     process.chdir(originalCwd);
@@ -536,19 +535,11 @@ test("auto-worktree teardown preserves canonical divergence when the database st
   t.after(() => process.chdir(originalCwd));
 });
 
-test("auto-worktree teardown keeps the worktree when the coverage fence refuses the database merge", (t) => {
-  const originalCwd = process.cwd();
-  t.after(() => process.chdir(originalCwd));
-  const base = tempDir("gsd-teardown-coverage-refusal-");
-  const mainDb = join(base, ".gsd", "gsd.db");
-  const worktreeRoot = worktreePath(base, "M001");
-  const worktreeDb = join(worktreeRoot, ".gsd", "gsd.db");
-  mkdirSync(join(base, ".gsd"), { recursive: true });
-  mkdirSync(join(worktreeRoot, ".gsd"), { recursive: true });
-
-  assert.equal(openDatabase(mainDb), true);
-  seedLegacyHierarchy();
+test("the explicit worktree database import keeps the worktree database when the coverage fence refuses the merge", async (t) => {
+  const mainDb = openFixture(t);
   adoptHierarchy();
+  const worktreeDb = join(tempDir("gsd-import-coverage-refusal-"), "gsd.db");
+
   closeDatabase();
   assert.equal(copyWorktreeDb(mainDb, worktreeDb), true);
   assert.equal(openDatabase(worktreeDb), true);
@@ -562,26 +553,22 @@ test("auto-worktree teardown keeps the worktree when the coverage fence refuses 
     UPDATE project_authority SET authority_epoch = authority_epoch + 1 WHERE singleton = 1;
   `);
   closeDatabase();
+  // The open puts the coverage fence back.
+  assert.equal(openDatabase(mainDb), true);
 
-  const stderrWasEnabled = setStderrLoggingEnabled(false);
-  _resetLogs();
-  try {
-    const workspace = createWorkspace(worktreeRoot);
-    setActiveWorkspace(workspace);
-    process.chdir(worktreeRoot);
-    teardownAutoWorktree(base, "M001");
-
-    assert.equal(existsSync(worktreeDb), true, "the worktree database holds the only copy of T03");
-    assert.equal(getActiveWorkspace(), workspace, "the workspace stays registered for recovery");
-    const errors = peekLogs().filter((entry) => entry.severity === "error").map((entry) => entry.message);
-    assert.equal(errors.length, 1);
-    assert.match(errors[0]!, /canonical worktree divergence/);
-    assert.match(errors[0]!, /a hierarchy row has no lifecycle row: task M001\/S01\/T02="not-a-status"/);
-    assert.match(errors[0]!, /\/gsd db adopt/);
-  } finally {
-    setActiveWorkspace(null);
-    process.chdir(originalCwd);
-    setStderrLoggingEnabled(stderrWasEnabled);
-    _resetLogs();
-  }
+  await assert.rejects(
+    importWorktreeLocalDb(mainDb, worktreeDb, async () => true),
+    (err: Error) => {
+      assert.match(err.message, /canonical worktree divergence/);
+      assert.match(err.message, /a hierarchy row has no lifecycle row: task M001\/S01\/T02="not-a-status"/);
+      assert.match(err.message, /\/gsd db adopt/);
+      return true;
+    },
+  );
+  assert.equal(existsSync(worktreeDb), true, "the worktree database holds the only copy of T03");
+  assert.equal(
+    db().prepare("SELECT COUNT(*) AS n FROM tasks WHERE id = 'T03'").get()!["n"],
+    0,
+    "nothing was merged",
+  );
 });
