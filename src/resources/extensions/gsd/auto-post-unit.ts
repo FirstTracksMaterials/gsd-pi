@@ -3031,7 +3031,6 @@ export async function postUnitPostVerification(pctx: PostUnitContext): Promise<"
           verdictExcerpt: string,
           heading: string,
         ): "retry" | "pause" => {
-          const findings = checks.map(formatPreExecutionFinding);
           const details = checks.slice(0, MAX_NOTIFICATION_DETAILS).map(formatPreExecutionCheckDetail).join("\n");
           const suffix = checks.length > MAX_NOTIFICATION_DETAILS
             ? `\n  ${NOTIFICATION_BULLET} ...and ${checks.length - MAX_NOTIFICATION_DETAILS} more`
@@ -3043,12 +3042,6 @@ export async function postUnitPostVerification(pctx: PostUnitContext): Promise<"
             kind: "pre-exec",
           } as const;
           const attempt = spendUnitBudget(s.unclaimedUnitBudgets, preExecBudget);
-
-          s.lastPreExecFailure = {
-            unitId: currentUnit.id,
-            blockingFindings: findings,
-            verdictExcerpt,
-          };
 
           if (attempt >= MAX_PRE_EXEC_RETRIES) {
             resetUnitBudget(s.unclaimedUnitBudgets, preExecBudget);
@@ -3112,9 +3105,6 @@ export async function postUnitPostVerification(pctx: PostUnitContext): Promise<"
             unitId: currentUnit.id,
             kind: "pre-exec",
           });
-          if (s.lastPreExecFailure?.unitId === currentUnit.id) {
-            s.lastPreExecFailure = null;
-          }
         }
 
         debugLog("postUnitPostVerification", {

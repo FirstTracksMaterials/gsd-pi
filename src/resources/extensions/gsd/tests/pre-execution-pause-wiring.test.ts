@@ -339,13 +339,6 @@ describe("Pre-execution checks → retry/pause wiring", () => {
     );
 
     assert.equal(readUnitBudget(s.unclaimedUnitBudgets, PRE_EXEC_BUDGET), 1);
-    assert.equal(s.lastPreExecFailure?.unitId, "M001/S01");
-    assert.ok(
-      s.lastPreExecFailure?.blockingFindings.some((finding) =>
-        finding.includes("nonexistent-file-that-does-not-exist.ts"),
-      ),
-      "lastPreExecFailure should preserve actionable missing-file findings",
-    );
     assert.equal(s.pendingVerificationRetry?.unitId, "M001/S01");
     assert.equal(s.pendingVerificationRetry?.attempt, 1);
     assert.ok(
