@@ -226,7 +226,12 @@ export interface LoopDeps {
 
   // Budget/context/secrets
   getLedger: () => unknown;
-  getProjectTotals: (units: unknown) => { cost: number };
+  /**
+   * Total unit cost in USD from the database. With `sinceMs`, only units
+   * started at or after it. With `unitScope` (`<MID>` or `<MID>/<SID>`), only
+   * the units of that Milestone or Slice.
+   */
+  getBudgetSpend: (sinceMs?: number, unitScope?: string) => number;
   formatCost: (cost: number) => string;
   getBudgetAlertLevel: (pct: number) => number;
   getNewBudgetAlertLevel: (lastLevel: number, pct: number) => number;

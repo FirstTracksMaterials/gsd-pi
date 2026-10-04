@@ -51,6 +51,7 @@ interface GsdMcpBridge {
   runDoctorFromDb: (projectDir: string, scope?: string) => unknown;
   readKnowledgeMarkdown: (projectDir: string) => string;
   loadAllCaptures: (projectDir: string) => DatabaseCapture[];
+  listUnitMetrics: () => unknown[];
   loadEffectiveGSDPreferences: (...args: any[]) => any;
   saveDecisionToDb: (...args: any[]) => any;
   saveRequirementToDb: (...args: any[]) => any;
@@ -1423,6 +1424,16 @@ export async function readCapturesViaBridge(projectDir: string): Promise<Databas
     }
     return bridge.loadAllCaptures(projectDir);
   });
+}
+
+/**
+ * Unit cost and token rows of the project database (gsd_history). Returns
+ * null when the database cannot be opened, so the caller can use the
+ * display-only file read. The caller also uses the file read when the database
+ * holds no unit rows and .gsd/metrics.json holds units.
+ */
+export async function readHistoryViaBridge(projectDir: string): Promise<unknown[] | null> {
+  return readDbViaBridge(projectDir, (bridge) => bridge.listUnitMetrics());
 }
 
 async function runSerializedCanonicalReadOperation(

@@ -12,6 +12,7 @@ import { basename } from "node:path";
 import { debugLog } from "../debug-logger.js";
 import { logWarning } from "../workflow-logger.js";
 import { getContextPauseAction } from "../auto-budget.js";
+import { unimportedLedgerUnits } from "../metrics.js";
 import { BUDGET_THRESHOLDS, type IterationContext, type PhaseResult } from "./types.js";
 import type { AutoSession } from "./session.js";
 
@@ -119,19 +120,31 @@ export async function runGuards(
   // Budget ceiling guard
   const budgetCeiling = prefs?.budget_ceiling;
   if (budgetCeiling !== undefined && budgetCeiling > 0) {
-    const currentLedger = deps.getLedger() as { units: unknown } | null;
-    // In parallel worker mode, only count cost from the current auto-mode session
-    // to avoid hitting the ceiling due to historical project-wide spend (#2184).
-    let costUnits = currentLedger?.units;
-    if (process.env.GSD_PARALLEL_WORKER && s.autoStartTime && Array.isArray(costUnits)) {
-      const sessionStartISO = new Date(s.autoStartTime).toISOString();
-      costUnits = costUnits.filter(
-        (u: { startedAt?: string }) => u.startedAt != null && u.startedAt >= sessionStartISO,
-      );
+    // The spend is the sum of the unit_metrics rows of the database, not the
+    // metrics.json ledger. In parallel worker mode, only count cost from the
+    // current auto-mode session to avoid hitting the ceiling due to historical
+    // project-wide spend (#2184). All workers write to one database, so the
+    // sum is also limited to the units of this worker's lock (Milestone, or
+    // Milestone and Slice). The coordinator owns the total across workers.
+    const sessionSpendOnly = Boolean(process.env.GSD_PARALLEL_WORKER && s.autoStartTime);
+    const milestoneLock = process.env.GSD_MILESTONE_LOCK?.trim();
+    const sliceLock = process.env.GSD_SLICE_LOCK?.trim();
+    const workerScope = milestoneLock && sliceLock ? `${milestoneLock}/${sliceLock}` : milestoneLock;
+    const totalCost = sessionSpendOnly
+      ? deps.getBudgetSpend(s.autoStartTime, workerScope)
+      : deps.getBudgetSpend();
+    // Unit runs that only metrics.json holds (written by an older release) are
+    // not in the sum. The import is an operator action, so the ceiling must not
+    // lose that spend without a message: tell the operator one time per session.
+    if (!sessionSpendOnly && !s.uncountedLedgerSpendNotified) {
+      s.uncountedLedgerSpendNotified = true;
+      const uncounted = unimportedLedgerUnits(s.originalBasePath || s.basePath);
+      if (uncounted.length > 0) {
+        const uncountedCost = uncounted.reduce((sum, unit) => sum + unit.cost, 0);
+        const msg = `Budget ceiling ${deps.formatCost(budgetCeiling)} does not count ${deps.formatCost(uncountedCost)} of earlier spend: ${uncounted.length} unit run(s) are only in .gsd/metrics.json. Run /gsd doctor --fix to import them.`;
+        ctx.ui.notify(msg, "warning");
+      }
     }
-    const totalCost = costUnits
-      ? deps.getProjectTotals(costUnits).cost
-      : 0;
     const budgetPct = totalCost / budgetCeiling;
     const budgetAlertLevel = deps.getBudgetAlertLevel(budgetPct);
     const newBudgetAlertLevel = deps.getNewBudgetAlertLevel(

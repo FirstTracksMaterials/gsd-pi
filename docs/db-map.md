@@ -750,8 +750,9 @@ the ADR-047 liveness feature, the ADR-048
 [`unit_dispatch_retries`](#unit_dispatch_retries-non-versioned) features,
 the runtime-control feature, the
 [`milestone_integration_branches`](#milestone_integration_branches-non-versioned)
-feature and the
-[custom workflow run](#custom-workflow-run-tables-non-versioned) feature below;
+feature, the
+[custom workflow run](#custom-workflow-run-tables-non-versioned) feature and
+the [`unit_metrics`](#unit_metrics-non-versioned) feature below;
 `db-liveness-backstop-schema.ts` owns the liveness table and open-wedge-index
 DDL. Startup repair and `/gsd doctor` query the same registry, so missing
 required objects trigger guarded startup maintenance without changing
@@ -811,6 +812,28 @@ FOREIGN KEY dispatch_id → unit_dispatches(id)
 
 - DDL owner: `db-unit-dispatch-retry-schema.ts`. Access: `db/unit-dispatch-retries.ts`.
 - Store, read and release rules: see the second 2026-10-04 amendment in [ADR-048](dev/ADR-048-unitrun-dispatch-row.md).
+
+---
+
+#### `unit_metrics` (non-versioned)
+
+```
+unit_type     TEXT NOT NULL
+unit_id       TEXT NOT NULL
+started_at    INTEGER NOT NULL      ← ms; with unit_type and unit_id it identifies one unit run
+finished_at   INTEGER NOT NULL      ← ms
+cost          REAL NOT NULL CHECK (cost >= 0)   ← USD; the budget ceiling sums this column
+metrics_json  TEXT NOT NULL         ← the full unit record (tokens, model, tool calls, ...)
+PRIMARY KEY (unit_type, unit_id, started_at)
+```
+
+- DDL owner: `db-unit-metrics-schema.ts`. Reads: `db/unit-metrics.ts`. Write: `db/writers/unit-metrics.ts`.
+- Written by `snapshotUnitMetrics` and `snapshotUnitMetricsByScope` (`metrics.ts`) together with `.gsd/metrics.json`. A second snapshot of the same run replaces the row.
+- Read by the budget ceiling guard (`auto/phases.ts`), the budget pressure of dynamic model routing (`auto-model-selection.ts`), MCP `gsd_history` and the web history panel. `.gsd/metrics.json` stays the telemetry file of the TUI dashboards; it does not decide the budget.
+- A row is telemetry: it is not a Domain Operation and does not change the project revision. `unit_metrics` is an exempt runtime/telemetry table, like `gate_runs` and the exec runs: one writer module (`db/writers/unit-metrics.ts`) writes it directly.
+- A parallel worker (`GSD_PARALLEL_WORKER`) counts only its own units against the budget ceiling: rows with `started_at` at or after its session start and with a `unit_id` in its lock scope (`GSD_MILESTONE_LOCK`, or `GSD_MILESTONE_LOCK`/`GSD_SLICE_LOCK`). The coordinator owns the total across workers.
+- When the table has no rows and `.gsd/metrics.json` holds units, MCP `gsd_history` and the web history panel return the ledger units with `readMetadata: { source: "projection", authority: "projection-fallback" }`. They do the same when the database is missing.
+- Units that only `.gsd/metrics.json` holds (written by an older release) are not counted. When a budget ceiling is set, the budget guard warns the operator with the uncounted amount one time per auto session. `/gsd doctor` reports them (`metrics_ledger_units_unimported`) and `/gsd doctor --fix` imports them.
 
 ---
 
