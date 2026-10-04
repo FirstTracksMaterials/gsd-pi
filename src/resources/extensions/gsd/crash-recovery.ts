@@ -16,8 +16,8 @@
  * unavailable (fresh project before init), all readers return null and
  * the lock writers log a warning and skip their DB half.
  *
- * The journal-based emitCrashRecoveredUnitEnd is unchanged from the file
- * era — it queries the journal independently of the lock mechanism.
+ * emitCrashRecoveredUnitEnd is independent of the lock mechanism: it records
+ * the unit-end outcome on the unit runtime row and emits the journal event.
  */
 
 import {
@@ -42,7 +42,14 @@ import { gsdRoot, normalizeRealPath } from "./paths.js";
 import { crashResumeHint } from "./guidance.js";
 import { atomicWriteSync } from "./atomic-write.js";
 import { effectiveLockFile } from "./session-lock.js";
-import { isInFlightRuntimePhase, listUnitRuntimeRecords, type AutoUnitRuntimeRecord } from "./unit-runtime.js";
+import {
+  isInFlightRuntimePhase,
+  listUnitRuntimeRecords,
+  listUnitRuntimeWorkRoots,
+  readUnitRuntimeRecord,
+  recordUnitEnd,
+  type AutoUnitRuntimeRecord,
+} from "./unit-runtime.js";
 import { settleRunningAttemptsForWorker } from "./task-execution-domain-operation.js";
 
 export interface LockData {
@@ -357,17 +364,21 @@ export function formatCrashInfo(lock: LockData): string {
 }
 
 /**
- * Emit a synthetic unit-end event for a unit that crashed without emitting its own.
- * Unchanged from the file era — operates on the journal, not the lock.
+ * Record and emit a synthetic unit-end for a unit that crashed without its own,
+ * in every work root that holds a runtime record for the unit.
  */
 export function emitCrashRecoveredUnitEnd(basePath: string, lock: LockData): void {
   if (!lock.unitType || !lock.unitId || lock.unitType === "starting") return;
-  emitOpenUnitEndForUnit(basePath, lock.unitType, lock.unitId, "crash-recovered");
+  // The crashed session may have run the unit in a worktree; its record is there.
+  for (const root of new Set([basePath, ...listUnitRuntimeWorkRoots(lock.unitType, lock.unitId)])) {
+    emitOpenUnitEndForUnit(root, lock.unitType, lock.unitId, "crash-recovered");
+  }
 }
 
 /**
  * Emit a synthetic unit-end journal event for a unit whose unit-start has
- * no matching unit-end. Returns true if an event was emitted, false if the
+ * no matching unit-end. Also records the outcome on the unit runtime row when
+ * the row has none. Returns true if an event was emitted, false if the
  * unit was already closed or no open start was found.
  *
  * Used by emitCrashRecoveredUnitEnd and the dispatch loop crash closeout
@@ -381,6 +392,17 @@ export function emitOpenUnitEndForUnit(
   errorContext?: { message: string; category: string; stopReason?: string; isTransient?: boolean; retryAfterMs?: number },
 ): boolean {
   try {
+    // The database row is the outcome that workflow decisions read. Record it
+    // for a run that has no outcome yet, whatever the journal holds.
+    const runtime = readUnitRuntimeRecord(basePath, unitType, unitId);
+    if (runtime && !runtime.unitEnd) {
+      recordUnitEnd(basePath, unitType, unitId, {
+        status,
+        artifactVerified: false,
+        ...(errorContext ? { error: errorContext.message } : {}),
+      });
+    }
+
     const all = queryJournal(basePath);
 
     const starts = all.filter(
