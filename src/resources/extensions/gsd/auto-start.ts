@@ -1617,13 +1617,6 @@ export async function bootstrapAutoSession(
     s.unitLifetimeDispatches.clear();
     resetHookState();
     restoreHookState(base);
-    // A restored activeHook has no live dispatch (the sidecar queue is not
-    // persisted); re-enqueue it so the hook runs instead of blocking the next
-    // unrelated unit's close-out (#1246).
-    reconcileRestoredHookDispatch(base, s.sidecarQueue);
-    // A restored gate block has no dispatch either; re-enqueue the blocked
-    // hook so a failed blocking gate cannot be bypassed by resuming (#2194).
-    reconcileRestoredGateBlock(base, s.sidecarQueue);
     resetProactiveHealing();
     // Notify user on health level transitions (green→yellow→red and back)
     setLevelChangeCallback((_from, to, summary) => {
@@ -1632,11 +1625,17 @@ export async function bootstrapAutoSession(
     });
     s.autoStartTime = Date.now();
     s.resourceVersionOnStart = readResourceVersion();
-    s.pendingQuickTasks = [];
     s.clearCurrentUnit();
     s.currentMilestoneId ??=
       strandedRecoveryAction?.milestoneId ??
       (deepProjectStagePending ? null : state.activeMilestone?.id ?? null);
+    // A restored activeHook may have no queued dispatch (a pause closed its
+    // row); re-enqueue it so the hook runs instead of blocking the next
+    // unrelated unit's close-out (#1246).
+    reconcileRestoredHookDispatch(base);
+    // A restored gate block has no dispatch either; re-enqueue the blocked
+    // hook so a failed blocking gate cannot be bypassed by resuming (#2194).
+    reconcileRestoredGateBlock(base);
     s.originalModelId = startModelSnapshot?.id ?? ctx.model?.id ?? null;
     s.originalModelProvider = startModelSnapshot?.provider ?? ctx.model?.provider ?? null;
     s.originalThinkingLevel = startThinkingSnapshot ?? null;

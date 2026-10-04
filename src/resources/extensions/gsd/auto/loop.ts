@@ -98,6 +98,8 @@ import { createWorkflowPhaseReporter } from "./workflow-phase-reporter.js";
 import { createWorkflowTurnReporter } from "./workflow-turn-reporter.js";
 import { validateWorkflowSessionLock } from "./workflow-session-lock.js";
 import { dequeueSidecarItem } from "./workflow-sidecar-queue.js";
+import { listQueuedSidecarItems } from "../db/unit-dispatch-sidecars.js";
+import { settleSidecarItem } from "../db/writers/unit-dispatch-sidecars.js";
 import { maintainWorkerHeartbeat, runWithWorkerHeartbeat } from "./workflow-worker-heartbeat.js";
 import { gsdRoot } from "../paths.js";
 import {
@@ -621,6 +623,9 @@ export async function autoLoop(
 
     let dispatchId: number | null = null;
     let dispatchSettled = false;
+    // The queue row of the sidecar item this iteration runs. It stays queued
+    // until the iteration ends, so a killed process leaves it for the restart.
+    let dequeuedSidecarId: number | null = null;
     let iterData: IterationData | undefined;
     // #2218 — unit-phase break reasons that represent a mid-unit timeout kill
     // record a structured exit_reason on the dispatch row, so a timeout is
@@ -824,13 +829,14 @@ export async function autoLoop(
       // even when the session lock invalidates this iteration. Inverting this
       // order silently drops queued items on lock-loss. Refs #5308.
       const sidecarItem = await dequeueSidecarItem({
-        queue: s.sidecarQueue,
+        queue: listQueuedSidecarItems(),
         executionGraphEnabled: uokFlags.executionGraph,
         scheduleQueue: scheduleSidecarQueue,
         warnSchedulingFailure: message => logWarning("dispatch", `sidecar queue scheduling failed: ${message}`),
         logDequeue: payload => debugLog("autoLoop", { phase: "sidecar-dequeue", ...payload }),
         emitDequeue: payload => journalReporter.emit("sidecar-dequeue", payload),
       });
+      dequeuedSidecarId = sidecarItem?.id ?? null;
 
       const sessionLockOutcome = validateWorkflowSessionLock({
         active: s.active,
@@ -2056,17 +2062,23 @@ export async function autoLoop(
         unitType: iterData.unitType,
         unitId: iterData.unitId,
       });
+      const finalizeIterData = iterData;
       try {
-        finalizeResult = await runFinalize(ic, iterData, loopState, sidecarItem, async () => {
-          await (deps.taskPublicationBoundary ?? publishVerifiedTaskExecution)({
-            unitType: unitIterData.unitType,
-            unitId: unitIterData.unitId,
-            workerId: s.workerId,
-            traceId: flowId,
-            turnId,
-            basePath: s.basePath,
-          }, VERIFIED_TASK_PUBLICATION_DEPS);
-        });
+        finalizeResult = await runWithWorkerHeartbeat(
+          s,
+          workerHeartbeatDeps,
+          WORKER_HEARTBEAT_INTERVAL_MS,
+          () => runFinalize(ic, finalizeIterData, loopState, sidecarItem, async () => {
+            await (deps.taskPublicationBoundary ?? publishVerifiedTaskExecution)({
+              unitType: unitIterData.unitType,
+              unitId: unitIterData.unitId,
+              workerId: s.workerId,
+              traceId: flowId,
+              turnId,
+              basePath: s.basePath,
+            }, VERIFIED_TASK_PUBLICATION_DEPS);
+          }),
+        );
       } catch (err) {
         const error = formatDispatchExceptionSummary({ error: err });
         journalReporter.emit("post-unit-finalize-end", {
@@ -2324,6 +2336,15 @@ export async function autoLoop(
       }
       finishTurn(errorDecision.turnStatus, "execution", msg, "iteration-error");
     } finally {
+      if (dequeuedSidecarId !== null) {
+        try {
+          settleSidecarItem(dequeuedSidecarId);
+        } catch (err) {
+          // The row stays queued and runs again. The rest of this block must
+          // still close the dispatch row and deliver a pending stop.
+          logWarning("dispatch", `sidecar queue settle failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
       if (!runClosed && (dispatchId !== null || (observedUnitType && observedUnitId))) {
         await closeRun("failed", abnormalUnitExitReason);
       }

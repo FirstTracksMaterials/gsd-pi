@@ -37,6 +37,8 @@ import { ModelPolicyDispatchBlockedError } from "../auto-model-selection.js";
 import type { SessionLockStatus } from "../session-lock.js";
 import { _getAdapter, openDatabase, closeDatabase, getTask, insertArtifact, insertMilestone, insertSlice, insertTask } from "../gsd-db.js";
 import { getOpenWedge } from "../auto-liveness-backstop.js";
+import { listQueuedSidecarItems } from "../db/unit-dispatch-sidecars.js";
+import { enqueueSidecarItem } from "../db/writers/unit-dispatch-sidecars.js";
 import { isBlockedStopReason, stopNoticeKind } from "../stop-notice.js";
 import { mapStatusToExitCode } from "../../../../headless-events.ts";
 import { getAutoWorker, registerAutoWorker } from "../db/auto-workers.js";
@@ -1838,8 +1840,6 @@ function makeLoopSession(overrides?: Partial<Record<string, unknown>>) {
     pendingVerificationRetryDispatch: null,
     pendingCrashRecovery: null,
     verificationRetryFailureHashes: new Map<string, string>(),
-    pendingQuickTasks: [],
-    sidecarQueue: [],
     autoModeStartModel: null,
     unitDispatchCount: new Map<string, number>(),
     unitLifetimeDispatches: new Map<string, number>(),
@@ -3151,6 +3151,66 @@ test("autoLoop refreshes its milestone lease while an execute-task call is pendi
   }
 });
 
+test("autoLoop keeps the worker heartbeat and the milestone lease fresh during a long finalize", async (t) => {
+  _resetPendingResolve();
+  mock.timers.enable({ apis: ["setInterval"] });
+  t.after(() => mock.timers.reset());
+
+  const ctx = makeMockCtx();
+  ctx.ui.setStatus = () => {};
+  ctx.sessionManager = { getSessionFile: () => "/tmp/session.json" };
+  const pi = makeMockPi();
+  const s = makeLoopSession();
+  openLoopDatabase(t, s);
+  insertMilestone({ id: "M001", title: "Test Milestone", status: "active" });
+  const workerId = registerAutoWorker({ projectRootRealpath: s.basePath });
+  const lease = claimMilestoneLease(workerId, "M001");
+  assert.equal(lease.ok, true);
+  if (!lease.ok) return;
+  s.workerId = workerId;
+  s.milestoneLeaseToken = lease.token;
+  enqueueSidecarItem({
+    kind: "hook" as const,
+    unitType: "hook/review",
+    unitId: "M001/S01/T01",
+    prompt: "review the code",
+  }, null);
+
+  const past = "1970-01-01T00:00:00.000Z";
+  let duringFinalize: { heartbeatAt?: string; leaseExpiresAt?: string } = {};
+  const deps = makeMockDeps({
+    isDbAvailable: () => true,
+    postUnitPostVerification: async () => {
+      // The finalize step runs longer than the heartbeat interval.
+      _getAdapter()!.prepare("UPDATE workers SET last_heartbeat_at = :past").run({ ":past": past });
+      _getAdapter()!.prepare("UPDATE milestone_leases SET expires_at = :past").run({ ":past": past });
+      mock.timers.tick(milestoneLeaseTtlSeconds() * 500);
+      duringFinalize = {
+        heartbeatAt: getAutoWorker(workerId)?.last_heartbeat_at,
+        leaseExpiresAt: getMilestoneLease("M001")?.expires_at,
+      };
+      s.active = false;
+      return "continue" as const;
+    },
+  });
+
+  const loopPromise = autoLoop(ctx, pi, s, deps);
+  for (let i = 0; !_hasPendingResolveForTest() && i < 100; i++) {
+    await new Promise((r) => setTimeout(r, 5));
+  }
+  resolveAgentEnd(makeEvent());
+  await loopPromise;
+
+  assert.ok(
+    Date.parse(duringFinalize.heartbeatAt ?? "") > Date.parse(past),
+    `the heartbeat is renewed during finalize: ${duringFinalize.heartbeatAt}`,
+  );
+  assert.ok(
+    Date.parse(duringFinalize.leaseExpiresAt ?? "") > Date.now(),
+    `the lease is renewed during finalize: ${duringFinalize.leaseExpiresAt}`,
+  );
+});
+
 test("autoLoop pauses when provider readiness cancels before dispatch", async (t) => {
   _resetPendingResolve();
 
@@ -3230,19 +3290,20 @@ test("autoLoop passes structured session-lock failure details to the handler", a
 // (popping the queue and emitting the `sidecar-dequeue` journal event) BEFORE
 // validateSessionLock + break-on-invalid. Inverting that order silently drops
 // queued sidecar work on lock-loss. Covers first-iteration and mid-session.
-test("autoLoop dequeues sidecar item before session-lock break (first iteration, #5308)", async () => {
+test("autoLoop dequeues sidecar item before session-lock break (first iteration, #5308)", async (t) => {
   _resetPendingResolve();
 
   const ctx = makeMockCtx();
   ctx.ui.setStatus = () => {};
   const pi = makeMockPi();
   const s = makeLoopSession();
-  s.sidecarQueue.push({
+  openLoopDatabase(t, s);
+  enqueueSidecarItem({
     kind: "hook" as const,
     unitType: "hook/review",
     unitId: "M001/S01/T01/review",
     prompt: "review the code",
-  });
+  }, null);
 
   const journalEvents: string[] = [];
   const deps = makeMockDeps({
@@ -3263,7 +3324,7 @@ test("autoLoop dequeues sidecar item before session-lock break (first iteration,
   await autoLoop(ctx, pi, s, deps);
 
   assert.equal(
-    s.sidecarQueue.length,
+    listQueuedSidecarItems().length,
     0,
     "sidecar item must be popped on lock-loss iteration (pre-#5308 ordering)",
   );
@@ -3278,13 +3339,14 @@ test("autoLoop dequeues sidecar item before session-lock break (first iteration,
   assert.ok(!deps.callLog.includes("deriveState"), "lock loss should stop before deriving state");
 });
 
-test("autoLoop dequeues sidecar item before session-lock break (mid-session, #5308)", async () => {
+test("autoLoop dequeues sidecar item before session-lock break (mid-session, #5308)", async (t) => {
   _resetPendingResolve();
 
   const ctx = makeMockCtx();
   ctx.ui.setStatus = () => {};
   const pi = makeMockPi();
   const s = makeLoopSession();
+  openLoopDatabase(t, s);
 
   const journalEvents: string[] = [];
   let lockCheckCount = 0;
@@ -3311,12 +3373,12 @@ test("autoLoop dequeues sidecar item before session-lock break (mid-session, #53
     // with a non-empty queue and an invalid lock.
     postUnitPostVerification: async () => {
       deps.callLog.push("postUnitPostVerification");
-      s.sidecarQueue.push({
+      enqueueSidecarItem({
         kind: "hook" as const,
         unitType: "run-uat",
         unitId: "M001/S01/T01/review",
         prompt: "review the code",
-      });
+      }, null);
       return "continue" as const;
     },
   });
@@ -3329,7 +3391,7 @@ test("autoLoop dequeues sidecar item before session-lock break (mid-session, #53
 
   assert.ok(lockCheckCount >= 2, "lock validator must run on iteration 2");
   assert.equal(
-    s.sidecarQueue.length,
+    listQueuedSidecarItems().length,
     0,
     "queued sidecar item must be popped on the lock-loss iteration",
   );
@@ -5330,17 +5392,18 @@ test("autoLoop drains sidecar queue after postUnitPostVerification enqueues item
   ctx.sessionManager = { getSessionFile: () => "/tmp/session.json" };
   const pi = makeMockPi();
   const s = makeLoopSession();
+  openLoopDatabase(t, s);
 
   let postVerCallCount = 0;
   const postVerActions: Array<() => void> = [
     () => {
       // First call (main unit): enqueue a sidecar item
-      s.sidecarQueue.push({
+      enqueueSidecarItem({
         kind: "hook" as const,
         unitType: "run-uat",
         unitId: "M001/S01/T01/review",
         prompt: "review the code",
-      });
+      }, null);
     },
     () => {
       // Second call (sidecar unit completed): deactivate
@@ -5380,6 +5443,52 @@ test("autoLoop drains sidecar queue after postUnitPostVerification enqueues item
     2,
     "postUnitPostVerification should be called twice (main + sidecar)",
   );
+});
+
+test("autoLoop runs a hook row left queued by a killed process and closes it when the unit ends", async (t) => {
+  _resetPendingResolve();
+
+  const ctx = makeMockCtx();
+  ctx.ui.setStatus = () => {};
+  ctx.sessionManager = { getSessionFile: () => "/tmp/session.json" };
+  const pi = makeMockPi();
+  // A new session: the process that queued the hook is gone.
+  const s = makeLoopSession();
+  openLoopDatabase(t, s);
+  enqueueSidecarItem({
+    kind: "hook" as const,
+    unitType: "hook/review",
+    unitId: "M001/S01/T01",
+    prompt: "review the code",
+  }, null);
+
+  const finishedUnits: string[] = [];
+  const deps = makeMockDeps({
+    postUnitPostVerification: async () => {
+      finishedUnits.push(`${s.currentUnit?.type}:${s.currentUnit?.id}`);
+      s.active = false;
+      return "continue" as const;
+    },
+  });
+
+  const loopPromise = autoLoop(ctx, pi, s, deps);
+  for (let i = 0; !_hasPendingResolveForTest() && i < 100; i++) {
+    await new Promise((r) => setTimeout(r, 5));
+  }
+  assert.equal(_hasPendingResolveForTest(), true, "the hook unit should be awaiting agent_end");
+  // Read now, assert after the loop ends: a failed assert must not leave the loop running.
+  const queuedWhileRunning = listQueuedSidecarItems().length;
+  resolveAgentEnd(makeEvent());
+  await loopPromise;
+
+  assert.equal(
+    queuedWhileRunning,
+    1,
+    "the row stays queued while the hook runs, so a kill here leaves it for the next start",
+  );
+  assert.deepEqual(finishedUnits, ["hook/review:M001/S01/T01"], "the hook ran before any unit was selected");
+  assert.ok(!deps.callLog.includes("resolveDispatch"), "no other unit was dispatched");
+  assert.equal(listQueuedSidecarItems().length, 0, "the row is closed after the iteration");
 });
 
 test("autoLoop exits when no active milestone found", async (t) => {
