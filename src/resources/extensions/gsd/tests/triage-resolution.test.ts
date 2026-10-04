@@ -2,12 +2,13 @@
  * Unit tests for GSD Triage Resolution — resolution execution and file overlap detection.
  */
 
-import test from "node:test";
+import test, { afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { appendCapture, markCaptureResolved, markCaptureExecuted, loadAllCaptures, loadActionableCaptures } from "../captures.ts";
+import { closeDatabase, isDbAvailable, openDatabase } from "../gsd-db.ts";
 // Import only the functions that don't depend on @gsd/pi-coding-agent
 // (triage-ui.ts imports next-action-ui.ts which imports the unavailable package)
 import { executeInject, executeReplan, detectFileOverlap, loadDeferredCaptures, loadReplanCaptures, buildQuickTaskPrompt, executeTriageResolutions, ensureDeferMilestoneDir } from "../triage-resolution.ts";
@@ -18,8 +19,14 @@ function makeTempDir(prefix: string): string {
     `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
   );
   mkdirSync(dir, { recursive: true });
+  // Captures are database rows; CAPTURES.md is their render.
+  assert.equal(openDatabase(":memory:"), true);
   return dir;
 }
+
+afterEach(() => {
+  if (isDbAvailable()) closeDatabase();
+});
 
 function setupPlanFile(tmp: string, mid: string, sid: string, content: string): string {
   const planDir = join(tmp, ".gsd", "milestones", mid, "slices", sid);
@@ -457,6 +464,22 @@ test("resolution: executeTriageResolutions skips already-executed captures", () 
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
+});
+
+test("resolution: executeTriageResolutions reports that a backtrack capture pauses auto-mode", (t) => {
+  const tmp = makeTempDir("res-exec-backtrack");
+  t.after(() => rmSync(tmp, { recursive: true, force: true }));
+  const quickTaskId = appendCapture(tmp, "fix the typo");
+  markCaptureResolved(tmp, quickTaskId, "quick-task", "fix inline", "small");
+  const backtrackId = appendCapture(tmp, "go back to M003");
+  markCaptureResolved(tmp, backtrackId, "backtrack", "Backtrack to M003", "User backtrack");
+
+  const result = executeTriageResolutions(tmp, "M005", "S01");
+
+  assert.deepEqual(result.backtracks.map((capture) => capture.id), [backtrackId]);
+  assert.deepEqual(result.actions.filter((action) => action.includes(backtrackId)), [
+    `Backtrack directive from ${backtrackId}: "go back to M003" — auto-mode pauses on the next dispatch`,
+  ]);
 });
 
 test("resolution: executeTriageResolutions returns empty result when no actionable captures", () => {

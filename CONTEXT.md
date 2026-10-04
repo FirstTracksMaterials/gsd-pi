@@ -170,6 +170,28 @@ What shipped:
   not active. The render keeps it, doctor reports it as a warning, and
   `/gsd doctor --fix` imports it with an `override.import` Domain Operation. A
   block with an unknown scope is reported and is not imported.
+- Captures (`/gsd capture`) are `capture.*` events of Domain Operations.
+  CAPTURES.md is rendered from them and is never read as state: triage, the
+  stop and backtrack guard, the quick-task check, the web captures panel and
+  MCP `gsd_captures` read only the database. It is not a pure projection: the
+  render sets the field lines of each database capture's section and keeps
+  every other line of the file (free text, a note under a capture). The triage
+  agent records a classification with `gsd_capture_resolve`. A quick-task
+  capture is executed only when its agent calls `gsd_capture_complete`; the
+  host does not mark it before the unit runs. A backtrack directive pauses
+  auto-mode and its capture is recorded as executed; no BACKTRACK-TRIGGER.md or
+  REGRESSION.md file is written. A file section that no database capture holds
+  is not read. The render keeps it as it is, doctor reports it as a warning,
+  and `/gsd doctor --fix` imports it with a `capture.import` Domain Operation.
+- Backlog items (`/gsd backlog`) are `backlog.*` events of Domain Operations.
+  `/gsd backlog promote` runs one `backlog.promote` operation: the queued
+  milestone row and the promotion of the item commit together, and the item
+  records the milestone id. BACKLOG.md is rendered from the events, but
+  is not a pure projection: the render sets each database item's header line
+  and keeps every other line of the file (notes under an item, free text). A
+  ticked checkbox in the file promotes nothing. An item line that no database
+  item holds is not listed and cannot be promoted; doctor reports it and
+  `/gsd doctor --fix` imports it with a `backlog.import` Domain Operation.
 
 The frozen projection format, stamp, and reader contract live in
 [`docs/dev/state-db-cutover-projection-contract.md`](docs/dev/state-db-cutover-projection-contract.md).
