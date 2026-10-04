@@ -18,9 +18,12 @@ import {
 } from "./gsd-db.js";
 import {
   nativeAddAllWithExclusions,
+  nativeBranchExists,
   nativeCommit,
   nativeConflictFiles,
+  nativeCommitCountBetween,
   nativeGetCurrentBranch,
+  nativeIsAncestor,
   nativeMergeRegular,
   nativeMergeSquash,
   nativeWorkingTreeStatus,
@@ -34,6 +37,7 @@ import { createMilestoneDirectoryShelter } from "./auto-worktree-milestone-shelt
 import { getActiveWorkspace } from "./auto-worktree-session-registry.js";
 import {
   assertNoUnanchoredCodeChangesAfterEmptyMerge,
+  milestoneCodeNotOn,
   detectMergedCodeFilesChanged,
 } from "./auto-worktree-merge-code-changes.js";
 import { reconcileMilestoneBranchHead } from "./auto-worktree-merge-branch-head.js";
@@ -44,6 +48,12 @@ import { prepareIntegrationBranchForMilestoneMerge } from "./auto-worktree-merge
 import { buildMilestoneMergeMessage } from "./auto-worktree-merge-message.js";
 import { assertMilestoneWorktreeCleanBeforeTeardown } from "./auto-worktree-merge-pre-teardown.js";
 import { createPreMergeStash } from "./auto-worktree-merge-stash.js";
+import {
+  completeSettledCloseout,
+  readSettledMilestoneMerge,
+  settleMilestoneMerge,
+  type SettledMilestoneMerge,
+} from "./milestone-closeout-effects.js";
 import {
   cleanupConflictState,
   removeMergeStateFiles,
@@ -159,6 +169,29 @@ export function mergeMilestoneToMain(
   } catch (error) {
     authorizationStash?.restoreForMergeFailure();
     throw error;
+  }
+
+  // The merge already has a Settlement Receipt: a prior run committed it and
+  // stopped before cleanup. Finish from the receipt; never merge twice.
+  const settledMerge = readSettledMilestoneMerge(milestoneId);
+  if (settledMerge) {
+    return finishSettledMilestoneMerge({
+      projectRoot: originalBasePath_,
+      worktreeCwd,
+      milestoneId,
+      milestoneBranch,
+      roadmapContent,
+      settledMerge,
+    });
+  }
+  // The branch is gone (merged and deleted by hand): there is nothing to merge.
+  if (!nativeBranchExists(originalBasePath_, milestoneBranch)) {
+    throw new GSDError(
+      GSD_GIT_ERROR,
+      `Milestone branch ${milestoneBranch} does not exist, so there is nothing to merge. ` +
+        `If its work is already on the integration branch, run \`/gsd dispatch complete-milestone ${milestoneId}\` ` +
+        `to complete the Milestone.`,
+    );
   }
   if (shouldAutoCommit) autoCommitDirtyState(worktreeCwd);
 
@@ -351,6 +384,23 @@ export function mergeMilestoneToMain(
   // 9c. Detect whether any non-.gsd/ code files were actually merged (#1906).
   const codeFilesChanged = detectMergedCodeFilesChanged(originalBasePath_, nothingToCommit);
 
+  // 9d. Settle the Closeout Plan: record the merge receipt, then mark the
+  //     Milestone complete in the settle transaction (ADR-046). Publication
+  //     and cleanup below never gate completion.
+  try {
+    settleMilestoneMerge({
+      projectRoot: originalBasePath_,
+      milestoneId,
+      milestoneBranch,
+      integrationBranch: mainBranch,
+      recognized: nothingToCommit,
+      codeFilesChanged,
+    });
+  } catch (err) {
+    process.chdir(previousCwd);
+    throw err;
+  }
+
   const finalizeMilestoneCleanup = (): void => {
     cleanupMergedMilestoneWorktree({
       projectRoot: originalBasePath_,
@@ -404,5 +454,83 @@ export function mergeMilestoneToMain(
         `Skipping worktree cleanup for ${milestoneBranch}; merge did not reach safe-cleanup point and milestone work is preserved for manual recovery.`,
       );
     }
+  }
+}
+
+/**
+ * Finish a milestone whose merge commit is already recorded: complete the
+ * Milestone if the settle transaction did not run, retry publication, and
+ * remove the worktree and branch.
+ */
+function finishSettledMilestoneMerge(request: {
+  projectRoot: string;
+  worktreeCwd: string;
+  milestoneId: string;
+  milestoneBranch: string;
+  roadmapContent: string;
+  settledMerge: SettledMilestoneMerge;
+}): { commitMessage: string; pushed: boolean; prCreated: boolean; codeFilesChanged: boolean } {
+  const { projectRoot, worktreeCwd, milestoneId, milestoneBranch, settledMerge } = request;
+  if (
+    nativeBranchExists(projectRoot, milestoneBranch) &&
+    nativeCommitCountBetween(projectRoot, settledMerge.milestoneBranchSha, milestoneBranch) > 0
+  ) {
+    throw new GSDError(
+      GSD_GIT_ERROR,
+      `Milestone branch ${milestoneBranch} has commits after its recorded merge ${settledMerge.commitSha}. ` +
+        `The branch is preserved; merge the new commits manually or re-run milestone validation.`,
+    );
+  }
+  // A recognized merge means GSD did not merge the branch itself. Remove the
+  // branch only while its work is still on the integration branch.
+  if (
+    settledMerge.recognized &&
+    nativeBranchExists(projectRoot, milestoneBranch) &&
+    !nativeIsAncestor(projectRoot, milestoneBranch, settledMerge.integrationBranch) &&
+    milestoneCodeNotOn(projectRoot, settledMerge.commitSha, milestoneBranch).length > 0
+  ) {
+    throw new GSDError(
+      GSD_GIT_ERROR,
+      `Milestone branch ${milestoneBranch} was recorded as already merged, but its work is not on ` +
+        `${settledMerge.integrationBranch}. The branch is preserved; merge it manually.`,
+    );
+  }
+  const { commitMessage, milestoneTitle, sliceSummaries } = buildMilestoneMergeMessage({
+    milestoneId,
+    milestoneBranch,
+    roadmapContent: request.roadmapContent,
+  });
+  const previousCwd = process.cwd();
+  process.chdir(projectRoot);
+  try {
+    completeSettledCloseout(projectRoot, milestoneId);
+    const prefs = loadEffectiveGSDPreferences()?.preferences?.git ?? {};
+    const { pushed } = publishMilestone({
+      basePath: projectRoot,
+      milestoneId,
+      milestoneTitle,
+      integrationBranch: settledMerge.integrationBranch,
+      milestoneBranch,
+      sliceSummaries,
+      nothingToCommit: true,
+      prefs: {
+        autoPush: prefs.auto_push === true,
+        autoPr: prefs.auto_pr === true,
+        remote: prefs.remote,
+        prTargetBranch: prefs.pr_target_branch,
+      },
+    });
+    assertMilestoneWorktreeCleanBeforeTeardown({ milestoneBranch, previousCwd, worktreeCwd });
+    cleanupMergedMilestoneWorktree({
+      projectRoot,
+      milestoneId,
+      milestoneBranch,
+      previousCwd,
+      chdirWarningContext: "after settled merge",
+    });
+    return { commitMessage, pushed, prCreated: false, codeFilesChanged: settledMerge.codeFilesChanged };
+  } catch (err) {
+    process.chdir(previousCwd);
+    throw err;
   }
 }
