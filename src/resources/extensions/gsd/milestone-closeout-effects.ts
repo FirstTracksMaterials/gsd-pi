@@ -10,12 +10,13 @@ import {
   readMilestoneCloseoutPlan,
   recordSettlementReceipt,
   settleCloseout,
+  supersedeCloseoutPlan,
   type CloseoutEffectInput,
 } from "./closeout-domain-operation.js";
 import { readUnsettledEffectsBehind } from "./db/writers/closeout.js";
 import { refreshWorkflowDatabaseFromDisk } from "./db-workspace.js";
 import { isDbAvailable } from "./gsd-db.js";
-import { nativeBranchExists } from "./native-git-bridge.js";
+import { nativeBranchExists, nativeIsAncestor } from "./native-git-bridge.js";
 import { getIsolationMode, loadEffectiveGSDPreferences } from "./preferences.js";
 import { logWarning } from "./workflow-logger.js";
 import { getMilestoneRecord, loadSyncMapping } from "../github-sync/mapping.js";
@@ -98,6 +99,71 @@ export function readSettledMilestoneMerge(milestoneId: string): SettledMilestone
     milestoneBranchSha: String(proof["milestoneBranchSha"]),
     codeFilesChanged: proof["codeFilesChanged"] === true,
   };
+}
+
+/**
+ * True when GSD made the merge but its commit is no longer on the integration
+ * branch (a reset or a rebase dropped it). The receipt then proves nothing:
+ * the milestone branch can be the only place the work lives.
+ */
+export function isSettledMergeDropped(projectRoot: string, settled: SettledMilestoneMerge): boolean {
+  return !settled.recognized && !nativeIsAncestor(projectRoot, settled.commitSha, settled.integrationBranch);
+}
+
+/**
+ * What the merge Settlement Receipt says about the milestone branch.
+ * `settled`: GSD merged the whole branch; the branch still points at the
+ * merged commit and the merge commit is still on the integration branch. A
+ * squash merge leaves no git ancestry, so the receipt is the only durable
+ * record of that merge. `dropped`: the recorded merge commit left the
+ * integration branch, so the merge must be finished again. `unrecorded`: the
+ * receipt does not decide (none, recognized, or the branch moved on); the
+ * caller inspects git.
+ */
+export function milestoneBranchMergeState(
+  projectRoot: string,
+  milestoneId: string,
+  milestoneBranch: string,
+): "settled" | "dropped" | "unrecorded" {
+  const settled = readSettledMilestoneMerge(milestoneId);
+  if (!settled || settled.recognized) return "unrecorded";
+  if (isSettledMergeDropped(projectRoot, settled)) return "dropped";
+  try {
+    return revParse(projectRoot, milestoneBranch) === settled.milestoneBranchSha ? "settled" : "unrecorded";
+  } catch {
+    // The branch cannot be read; let the caller inspect git.
+    return "unrecorded";
+  }
+}
+
+/**
+ * The recorded merge commit left the integration branch and the milestone
+ * work is on that branch again (merged by hand). Supersede the Closeout Plan
+ * and record the merge as recognized at the integration branch tip. The old
+ * receipt stays under the superseded plan.
+ */
+export function recognizeMilestoneMergeAgain(request: {
+  projectRoot: string;
+  milestoneId: string;
+  milestoneBranch: string;
+  settled: SettledMilestoneMerge;
+}): SettledMilestoneMerge {
+  const { projectRoot, milestoneId, settled } = request;
+  supersedeCloseoutPlan(milestoneId);
+  const commitSha = revParse(projectRoot, settled.integrationBranch);
+  recordSettlementReceipt({
+    milestoneId,
+    effectKind: MILESTONE_MERGE_EFFECT,
+    outcome: "recognized",
+    externalRef: commitSha,
+    proof: {
+      commitSha,
+      integrationBranch: settled.integrationBranch,
+      milestoneBranchSha: revParse(projectRoot, request.milestoneBranch),
+      codeFilesChanged: settled.codeFilesChanged,
+    },
+  });
+  return readSettledMilestoneMerge(milestoneId)!;
 }
 
 /** True while the current Closeout Plan still waits for a required host effect. */

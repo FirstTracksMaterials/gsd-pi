@@ -4,6 +4,7 @@
 import {
   executeDomainOperation,
   type DomainJsonValue,
+  type DomainOperationContext,
 } from "./db/domain-operation.js";
 import { getDb } from "./db/engine.js";
 import { readMilestoneCloseoutAuthorization } from "./db/milestone-closeout-readiness.js";
@@ -102,6 +103,50 @@ function requireTerminalDescendants(projectId: string, milestoneId: string): voi
   }
 }
 
+interface PreparedCloseoutPlanInput {
+  milestoneId: string;
+  lifecycleId: string;
+  attemptId: string;
+  readinessBasisHash: string;
+  sourceRevision: string;
+  closeout: MilestoneCompletionCloseout;
+  audit: { actorName: string | null; triggerReason: string | null };
+  effects: CloseoutEffectInput[];
+}
+
+/** Insert the Closeout Plan and return its `milestone.closeout.prepared` event. */
+function insertPreparedCloseoutPlan(
+  context: Readonly<DomainOperationContext>,
+  input: PreparedCloseoutPlanInput,
+) {
+  const closeoutPlanId = insertCloseoutPlan(context, {
+    milestoneId: input.milestoneId,
+    lifecycleId: input.lifecycleId,
+    attemptId: input.attemptId,
+    testedSourceSetHash: closeoutHash(input.sourceRevision),
+    readinessBasisHash: input.readinessBasisHash,
+    effects: input.effects,
+    preparedAt: new Date().toISOString(),
+  });
+  return {
+    events: [{
+      eventType: "milestone.closeout.prepared",
+      entityType: "milestone",
+      entityId: input.milestoneId,
+      payload: {
+        closeoutPlanId,
+        milestoneLifecycleId: input.lifecycleId,
+        sourceRevision: input.sourceRevision,
+        closeout: input.closeout as unknown as DomainJsonValue,
+        audit: input.audit,
+        effectKinds: input.effects.map((effect) => effect.effectKind),
+      },
+      destinations: ["projection" as const],
+    }],
+    projections: lifecycleProjection(input.milestoneId),
+  };
+}
+
 /**
  * Store the Closeout Plan while the Milestone is still open. The plan proves
  * the completion requirements at one source revision and lists the host
@@ -171,32 +216,16 @@ export function prepareCloseout(input: {
         );
       }
       requireTerminalDescendants(context.projectId, milestoneId);
-      const closeoutPlanId = insertCloseoutPlan(context, {
+      return insertPreparedCloseoutPlan(context, {
         milestoneId,
         lifecycleId,
         attemptId,
-        testedSourceSetHash: closeoutHash(sourceRevision),
         readinessBasisHash,
+        sourceRevision,
+        closeout: input.closeout,
+        audit,
         effects: input.effects,
-        preparedAt: new Date().toISOString(),
       });
-      return {
-        events: [{
-          eventType: "milestone.closeout.prepared",
-          entityType: "milestone",
-          entityId: milestoneId,
-          payload: {
-            closeoutPlanId,
-            milestoneLifecycleId: lifecycleId,
-            sourceRevision,
-            closeout: input.closeout as unknown as DomainJsonValue,
-            audit,
-            effectKinds: input.effects.map((effect) => effect.effectKind),
-          },
-          destinations: ["projection"],
-        }],
-        projections: lifecycleProjection(milestoneId),
-      };
     },
   );
   return readMilestoneCloseoutPlan(milestoneId)!;
@@ -289,6 +318,50 @@ function preparedCloseoutPayload(plan: CloseoutPlan): PreparedCloseoutPayload {
       ...(audit?.["triggerReason"] ? { triggerReason: audit["triggerReason"] } : {}),
     },
   };
+}
+
+/**
+ * Replace the current Closeout Plan with a copy that has no Settlement
+ * Receipts, for a recorded effect that no longer holds and must settle again.
+ * The old plan and its receipts stay as history.
+ */
+export function supersedeCloseoutPlan(milestoneId: string): CloseoutPlan {
+  const plan = readMilestoneCloseoutPlan(milestoneId);
+  if (!plan) throw new Error(`Milestone ${milestoneId} has no Closeout Plan to supersede`);
+  const prepared = preparedCloseoutPayload(plan);
+  const audit = {
+    actorName: prepared.audit.actorName ?? null,
+    triggerReason: prepared.audit.triggerReason ?? null,
+  };
+  const effects: CloseoutEffectInput[] = plan.effects.map((effect) => ({
+    effectKind: effect.effectKind,
+    required: effect.required,
+    spec: effect.spec,
+  }));
+  executeDomainOperation(
+    operationRequest(
+      CLOSEOUT_PREPARE_OPERATION,
+      internalExecutionInvocation(`internal:closeout.supersede:${plan.closeoutPlanId}`),
+      {
+        milestoneId,
+        sourceRevision: prepared.sourceRevision,
+        closeout: prepared.closeout as unknown as DomainJsonValue,
+        audit,
+        effects: effects as unknown as DomainJsonValue,
+      },
+    ),
+    (context) => insertPreparedCloseoutPlan(context, {
+      milestoneId,
+      lifecycleId: plan.lifecycleId,
+      attemptId: plan.attemptId,
+      readinessBasisHash: plan.readinessBasisHash,
+      sourceRevision: prepared.sourceRevision,
+      closeout: prepared.closeout,
+      audit,
+      effects,
+    }),
+  );
+  return readMilestoneCloseoutPlan(milestoneId)!;
 }
 
 /**
