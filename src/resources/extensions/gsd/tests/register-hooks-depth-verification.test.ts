@@ -9,7 +9,7 @@ import {
   clearPendingAutoStart,
   setPendingAutoStart,
 } from "../guided-flow.ts";
-import { _getAdapter, closeDatabase, getMilestone } from "../gsd-db.ts";
+import { _getAdapter, closeDatabase, getMilestone, openDatabase } from "../gsd-db.ts";
 import { deriveState, invalidateStateCache } from "../state.ts";
 import {
   getPendingGate,
@@ -276,7 +276,7 @@ test("register-hooks canonicalizes lower-case milestone ids in depth-verificatio
   );
 });
 
-test("register-hooks persists first structured question round for new milestone re-entry", async (t) => {
+test("an answered question round is captured into the database under an external engine", async (t) => {
   const dir = makeTempDir("question-draft");
   const originalCwd = process.cwd();
   process.chdir(dir);
@@ -333,33 +333,60 @@ test("register-hooks persists first structured question round for new milestone 
     },
   ];
 
-  for (const handler of handlers.get("tool_result") ?? []) {
-    await handler({
-      toolName: "ask_user_questions",
-      input: { questions },
-      details: {
-        response: {
-          answers: {
-            m004_shape: { selected: "Planning metadata (Recommended)" },
-            boundary: { selected: "No new dependencies (Recommended)" },
-          },
-        },
-      },
-    }, ctx);
-  }
+  // An external engine runs the tool in the workflow MCP server. The host sees
+  // only tool_execution_start and tool_execution_end; the MCP structured
+  // content arrives as the result details. tool_call and tool_result never fire.
+  let callSeq = 0;
+  const externalRound = async (
+    details: Record<string, unknown>,
+    args: Record<string, unknown> = { questions: details.questions },
+  ): Promise<void> => {
+    const toolCallId = `call-${++callSeq}`;
+    const toolName = "mcp__gsd-workflow__ask_user_questions";
+    for (const handler of handlers.get("tool_execution_start") ?? []) {
+      await handler({ toolCallId, toolName, args }, ctx);
+    }
+    for (const handler of handlers.get("tool_execution_end") ?? []) {
+      await handler({
+        toolCallId,
+        toolName,
+        isError: false,
+        result: { content: [{ type: "text", text: "answered" }], details },
+      }, ctx);
+    }
+  };
 
   // Flat-phase: ensureMilestoneShell creates phases/04-new-milestone-m004/ for M004
   const milestoneDir = join(dir, ".gsd", "phases", "04-new-milestone-m004");
   const draftPath = join(milestoneDir, "04-CONTEXT-DRAFT.md");
   const discussionPath = join(milestoneDir, "04-DISCUSSION.md");
+  const artifactContent = (type: string): string | undefined =>
+    _getAdapter()?.prepare(
+      "SELECT full_content FROM artifacts WHERE milestone_id = 'M004' AND artifact_type = :type",
+    ).get({ ":type": type })?.["full_content"] as string | undefined;
 
-  assert.equal(existsSync(draftPath), true, "first answer round should create a resumable context draft");
-  assert.equal(existsSync(discussionPath), true, "first answer round should create a discussion log");
+  await externalRound({ questions, response: null, cancelled: true });
+  assert.equal(existsSync(draftPath), false, "a cancelled round is not captured");
 
-  const draft = readFileSync(draftPath, "utf-8");
-  assert.match(draft, /What are you picturing for M004\?/);
-  assert.match(draft, /Planning metadata \(Recommended\)/);
-  assert.match(draft, /No new dependencies \(Recommended\)/);
+  await externalRound({
+    questions,
+    cancelled: false,
+    response: {
+      answers: {
+        m004_shape: { selected: "Planning metadata (Recommended)" },
+        boundary: { selected: "No new dependencies (Recommended)" },
+      },
+    },
+  });
+
+  for (const type of ["CONTEXT-DRAFT", "DISCUSSION"]) {
+    const content = artifactContent(type) ?? "";
+    assert.match(content, /What are you picturing for M004\?/, `${type} row holds the question`);
+    assert.match(content, /Planning metadata \(Recommended\)/, `${type} row holds the answer`);
+    assert.match(content, /No new dependencies \(Recommended\)/, `${type} row holds the answer`);
+  }
+  assert.equal(readFileSync(draftPath, "utf-8"), artifactContent("CONTEXT-DRAFT"), "the draft file is a render of the row");
+  assert.equal(readFileSync(discussionPath, "utf-8"), artifactContent("DISCUSSION"), "the log file is a render of the row");
 
   const row = getMilestone("M004");
   assert.equal(row?.status, "queued", "new milestone shell should be registered in the DB");
@@ -378,6 +405,139 @@ test("register-hooks persists first structured question round for new milestone 
   const state = await deriveState(dir);
   assert.equal(state.activeMilestone?.id, "M004");
   assert.equal(state.phase, "needs-discussion");
+
+  // The next round is built from the database rows, not from the files.
+  rmSync(draftPath);
+  rmSync(discussionPath);
+  await externalRound({
+    questions: [{
+      id: "scope",
+      header: "Scope",
+      question: "What is out of scope?",
+      options: [
+        { label: "Sync (Recommended)", description: "No sync in this milestone." },
+        { label: "Nothing", description: "Everything is in scope." },
+      ],
+    }],
+    cancelled: false,
+    response: { answers: { scope: { selected: "Sync (Recommended)" } } },
+  });
+
+  for (const [type, path] of [["CONTEXT-DRAFT", draftPath], ["DISCUSSION", discussionPath]] as const) {
+    const content = artifactContent(type) ?? "";
+    assert.match(content, /What are you picturing for M004\?/, `${type} row keeps the first round`);
+    assert.match(content, /What is out of scope\?/, `${type} row holds the second round`);
+    assert.equal(readFileSync(path, "utf-8"), content, `${type} file is rendered again from the row`);
+  }
+
+  // The provider result shape (#1894) has answers and no questions field: the
+  // questions come from the tool call input.
+  const providerQuestions = [{
+    id: "storage",
+    header: "Storage",
+    question: "Where is the data stored?",
+    options: [
+      { label: "Local file (Recommended)", description: "One file on disk." },
+      { label: "Server", description: "A remote store." },
+    ],
+  }];
+  await externalRound(
+    { answers: { storage: { answers: ["Local file (Recommended)"] } } },
+    { questions: providerQuestions },
+  );
+  for (const type of ["CONTEXT-DRAFT", "DISCUSSION"]) {
+    const content = artifactContent(type) ?? "";
+    assert.match(content, /Where is the data stored\?/, `${type} row holds the question from the tool input`);
+    assert.match(content, /Local file \(Recommended\)/, `${type} row holds the provider-shape answer`);
+  }
+
+  // A result with answers and no questions anywhere is not written as an empty round.
+  const before = { draft: artifactContent("CONTEXT-DRAFT"), log: artifactContent("DISCUSSION") };
+  await externalRound({ answers: { storage: { answers: ["Server"] } } }, {});
+  assert.equal(artifactContent("CONTEXT-DRAFT"), before.draft, "a round with no questions does not change the draft");
+  assert.equal(artifactContent("DISCUSSION"), before.log, "a round with no questions does not change the log");
+});
+
+test("the first captured round keeps a draft and a discussion log that have no database row", async (t) => {
+  const dir = makeTempDir("question-adopt");
+  const originalCwd = process.cwd();
+  process.chdir(dir);
+  resetWriteGateState(dir);
+  clearPendingAutoStart(dir);
+
+  t.after(() => {
+    try {
+      resetWriteGateState(dir);
+      clearPendingAutoStart(dir);
+      closeDatabase();
+    } finally {
+      process.chdir(originalCwd);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // The triage defer seed and a discussion started before the rows existed
+  // both leave files with no artifact row in an existing project database.
+  const milestoneDir = join(dir, ".gsd", "milestones", "M005");
+  const draftPath = join(milestoneDir, "M005-CONTEXT-DRAFT.md");
+  const discussionPath = join(milestoneDir, "M005-DISCUSSION.md");
+  mkdirSync(milestoneDir, { recursive: true });
+  assert.equal(openDatabase(join(dir, ".gsd", "gsd.db")), true);
+  writeFileSync(draftPath, "# M005: Deferred Work\n\n## Deferred Captures\n\n- **CAP-1:** export the report as CSV\n");
+  writeFileSync(discussionPath, "# M005 Discussion Log\n\n## Exchange — earlier\n\nWhich format comes first?\n\n---\n\n");
+
+  const handlers = new Map<string, Array<(event: any, ctx?: any) => Promise<void> | void>>();
+  const pi = {
+    on(event: string, handler: (event: any, ctx?: any) => Promise<void> | void) {
+      handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+    },
+  } as any;
+  const ctx = { cwd: dir, ui: { notify: () => undefined } } as any;
+
+  registerHooks(pi, []);
+  setPendingAutoStart(dir, {
+    basePath: dir,
+    milestoneId: "M005",
+    ctx,
+    pi: { sendMessage: () => undefined } as any,
+  });
+
+  for (const handler of handlers.get("tool_execution_end") ?? []) {
+    await handler({
+      toolCallId: "call-1",
+      toolName: "ask_user_questions",
+      isError: false,
+      result: {
+        content: [{ type: "text", text: "answered" }],
+        details: {
+          questions: [{
+            id: "scope",
+            header: "Scope",
+            question: "What is out of scope?",
+            options: [
+              { label: "Sync (Recommended)", description: "No sync in this milestone." },
+              { label: "Nothing", description: "Everything is in scope." },
+            ],
+          }],
+          cancelled: false,
+          response: { answers: { scope: { selected: "Sync (Recommended)" } } },
+        },
+      },
+    }, ctx);
+  }
+
+  const seeds = [
+    ["CONTEXT-DRAFT", draftPath, /export the report as CSV/],
+    ["DISCUSSION", discussionPath, /Which format comes first\?/],
+  ] as const;
+  for (const [type, path, seed] of seeds) {
+    const content = _getAdapter()?.prepare(
+      "SELECT full_content FROM artifacts WHERE milestone_id = 'M005' AND artifact_type = :type",
+    ).get({ ":type": type })?.["full_content"] as string | undefined;
+    assert.match(content ?? "", seed, `${type} row keeps the text that was only on disk`);
+    assert.match(content ?? "", /What is out of scope\?/, `${type} row holds the new round`);
+    assert.equal(readFileSync(path, "utf-8"), content, `${type} file is a render of the row`);
+  }
 });
 
 test("register-hooks clears depth gate when remote (Telegram/Slack/Discord) answer is normalized (#4406)", async (t) => {
