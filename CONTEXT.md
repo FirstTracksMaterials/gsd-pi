@@ -90,12 +90,56 @@ completed.
 - **`tool-unavailable` (Recovery kind)**: the Recovery Classification failure kind for a tool call that raced the workflow MCP server's registration (`No such tool available` / a Tool Surface Readiness abort). Transient — action `retry` with bounded attempts and its own exit reason; distinct from `tool-schema`/`tool-contract`, which are deterministic stops. The system retries; the model must never improvise a fallback around a missing workflow tool.
 - **Workflow Bridge Warm-up**: the stdio MCP server's eager load + shape-check of the executor and write-gate bridges before connecting when workflow tools are enabled. A broken bridge fails the spawn with the actionable error (fail closed) instead of advertising tools that error on first call; a healthy spawn pre-pays the bridge import.
 
-## State layer (markdown fallback removed; Cutover not yet executed)
+## State layer (markdown fallback removed; Cutover on first open is opt-in)
 
 The 2026-08 state-DB milestone removed the markdown fallback for state
-derivation. It was not a **Cutover** in the glossary sense: no production
-command advances a Project's Authority Epoch (`cutoverProjectAuthority` has no
-production caller), and the ADR-046 program is not finished.
+derivation. It was not a **Cutover** in the glossary sense.
+
+The **Cutover** runs by itself (owner decision 2026-10-04,
+`authority-cutover-on-open.ts`). For now it is an opt-in canary (ADR-046
+migration step 6): it runs only with the environment variable
+`GSD_AUTHORITY_CUTOVER=1`. Without it, an open changes nothing and
+no production path advances the Authority Epoch. Some writers can still create
+a hierarchy row with no lifecycle row; the automatic Cutover becomes the
+default after the writer-coverage gate passes: those writers are closed and a
+database trigger refuses such a row after the Cutover. The rest of this section
+describes an open with the flag on.
+
+The first open of an existing project database
+whose Authority Epoch is 0 writes a verified backup, runs `lifecycle.backfill`,
+and advances the Authority Epoch with `cutoverProjectAuthority`. The
+precondition is a lifecycle row for every milestone, slice and task, and idle
+coordination. A row with an unknown legacy status stops the run with nothing
+changed: the open logs the rows as an error and doctor reports
+`lifecycle_unmappable_status` (doctor reports it with the flag off too).
+Active coordination defers the run to a later
+open. A database that an open creates is cut over by its next open. An import
+open (`/gsd recover`, `/gsd migrate`) and `/gsd db restore-backup` do not run
+it: the first seals an Import Preview on the current revision and epoch, and
+the second replaces the database that it opens. After the Cutover,
+`/gsd db restore-backup` refuses a backup from the earlier epoch.
+
+The automatic run does not change a legacy status. The backfill adopts a
+legacy completion as completed only with completion evidence (see
+`lifecycle-backfill-domain-operation.ts`); without evidence it makes the row
+open work again, and it cancels open work under a completed or cancelled
+parent. When the
+preview has such a row, the automatic run stops with nothing changed: the open
+logs the rows as an error and doctor reports `lifecycle_missing_shadow`. The
+route is the preview of `/gsd db adopt`, then `/gsd db adopt --apply`; the next
+open advances the Authority Epoch.
+
+While the operation head is an Import Application, its Restore Window is open
+and the automatic run does nothing. The next accepted work closes the window,
+and the open after that runs the Cutover.
+
+A file lock beside the database (`gsd.db.lock`) lets one process run the
+Cutover at a time. A process that opens the project during the run leaves it
+to the lock holder. The cutover operation is bound to Authority Epoch 0, so
+the epoch advances once.
+
+After the Cutover, the read interface `db/lifecycle-read.ts` answers from
+canonical lifecycle rows and Waivers. The ADR-046 program is not finished.
 
 What shipped:
 
@@ -133,9 +177,9 @@ authority. The owner confirmed it on 2026-10-02. Its project-database row is
 not written yet, so D012 is a provisional ID and that row is pending. The read cutover is
 implemented in the read interface `db/lifecycle-read.ts` only: it answers from
 canonical lifecycle rows and Waivers when the Authority Epoch of the Project
-is above 0, and from legacy rows at epoch 0. No production command advances
-the epoch yet, so public status responses, dispatch, and dependency decisions
-still read legacy rows in practice. `gate:lifecycle-shadow-no-cutover` pins
+is above 0, and from legacy rows at epoch 0. The epoch advances only with
+`GSD_AUTHORITY_CUTOVER=1` (see above), so by default public status responses,
+dispatch, and dependency decisions still read legacy rows. `gate:lifecycle-shadow-no-cutover` pins
 both epochs. Other decision sites still read legacy rows directly and must be
 routed through the interface before a Project cuts over. The decision
 document lists both groups.

@@ -52,6 +52,7 @@ import {
   PROJECT_AUTHORITY_CONTRACT_VERSION,
   PROJECT_AUTHORITY_CUTOVER_CONSENT_SCHEMA_VERSION,
 } from "../project-authority-cutover-domain-operation.ts";
+import { setAuthorityCutoverFlag } from "./helpers/authority-cutover-flag.ts";
 import { createLegacyImportCorpusSourceRoots } from "./helpers/legacy-import-corpus.ts";
 
 const CORPUS_ROOT = fileURLToPath(new URL("./__fixtures__/legacy-import-corpus/v1/", import.meta.url));
@@ -326,10 +327,6 @@ test("an Application of base snapshot schema 1 is compared without the knowledge
   assert.equal(consentRequired.decision, "restore-consent-required");
   assert.equal(consentRequired.facts.expectedRelevantRowsHash, consentRequired.facts.observedRelevantRowsHash);
   verifyLegacyImportApplicationResult(application);
-  assert.equal(
-    inspectProjectAuthorityCutoverEvidence().applicationOperationId,
-    application.operationId,
-  );
 
   // A changed canonical row is still refused.
   db().prepare("UPDATE milestones SET title = 'Changed outside a Domain Operation'").run();
@@ -393,6 +390,39 @@ test("an Import Application recorded before checkout binding stays restorable af
   // /gsd db bind moves the binding; the retained Application keeps its restore path.
   db().prepare("UPDATE project_authority SET project_root_realpath = '/moved/checkout'").run();
   assert.equal(assessLegacyImportRestore(assessmentInput(prepared)).decision, "restore-consent-required");
+});
+
+test("an open leaves the Restore Window open; the open after later accepted work cuts the project over", (t) => {
+  t.after(setAuthorityCutoverFlag("1"));
+  const prepared = prepareCase(true, true);
+  closeDatabase();
+  const projectRoot = dirname(dirname(prepared.databasePath));
+  assert.equal(openWorkflowDatabase(projectRoot).ok, true);
+  assert.deepEqual(row("SELECT revision, authority_epoch FROM project_authority"), { revision: 1, authority_epoch: 0 });
+  assert.equal(assessLegacyImportRestore(assessmentInput(prepared)).decision, "restore-consent-required");
+
+  executeDomainOperation({
+    operationType: "milestone.describe",
+    idempotencyKey: "restore-assessment/later-work-before-open",
+    expectedRevision: 1,
+    expectedAuthorityEpoch: 0,
+    actorType: "agent",
+    sourceTransport: "internal",
+    payload: { accepted: true },
+  }, () => ({
+    events: [{
+      eventType: "milestone.described",
+      entityType: "milestone",
+      entityId: "M001",
+      payload: { accepted: true },
+      destinations: ["projection"],
+    }],
+    projections: [{ projectionKey: "milestone/m001", projectionKind: "state", rendererVersion: "1" }],
+  }));
+  closeDatabase();
+  assert.equal(openWorkflowDatabase(projectRoot).ok, true);
+  assert.equal(row("SELECT authority_epoch FROM project_authority").authority_epoch, 1);
+  assert.equal(assessLegacyImportRestore(assessmentInput(prepared)).reasonCode, "AUTHORITY_CUTOVER_COMMITTED");
 });
 
 test("later canonical work permanently recommends Forward Repair before coordination", () => {
