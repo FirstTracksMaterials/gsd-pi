@@ -57,6 +57,7 @@ After commit: regenerate markdown artifacts → write to disk → invalidate cac
 - Sibling worktrees share the same `.gsd/gsd.db` via SQLite WAL
 - Only one connection is "active" at a time; others cached for fast re-activation
 - Fresh, active, and cached opens verify the registered non-versioned schema invariants described under [ADR-047 liveness ledger](#adr-047-liveness-ledger-non-versioned) before reuse.
+- A new open fails closed when the database is at a lower Authority Epoch than a Domain Operation receipt that the same process holds for that Project (the file was replaced by an older copy). The receipt is in process memory only, so a new process does not have this fence.
 - On process exit: close without checkpointing; coordinated maintenance owns checkpoint and vacuum
 - Before file-backed schema migrations, `db-migration-backup.ts` checkpoints WAL and copies the database being migrated to `.gsd/gsd.db.backup-vN`. An existing backup is never overwritten: later copies go to the first free `backup-vN.latest`, `backup-vN.latest-2`, ... name, and `/gsd db restore-backup` lists and accepts all of them. The copy must report the expected schema version and pass SQLite `quick_check`; checkpoint, copy, or validation failures warn and fail closed before migration DDL.
 
@@ -1076,6 +1077,20 @@ last_authority_epoch  INTEGER NOT NULL
   provenance must advance; deletes are rejected as durable-history loss.
 - Indexes: `idx_workflow_lifecycle_milestone`,
   `idx_workflow_lifecycle_slice`, and `idx_workflow_lifecycle_task`.
+- Lifecycle coverage fence (non-versioned, `db-lifecycle-coverage-schema.ts`,
+  created on every open that does not find it). When `authority_epoch` is
+  above 0, every `milestones`, `slices` and `tasks` row has a lifecycle row:
+  `trg_milestones_lifecycle_coverage`, `trg_slices_lifecycle_coverage` and
+  `trg_tasks_lifecycle_coverage` refuse an inserted hierarchy row when no
+  Domain Operation is open, and `trg_project_authority_lifecycle_coverage`
+  refuses the `project_authority` update of a Domain Operation, and of the
+  cutover itself, while a hierarchy row has no lifecycle row. The Domain
+  Operation error names each such row and `/gsd db adopt`. Epoch 0 is not
+  fenced. A database that is already above epoch 0 and holds such a row (a
+  canary cutover by an earlier build) is repaired when it opens: the open
+  writes a verified backup, runs `lifecycle.backfill` for those rows and logs
+  each legacy status that it changed. A row with an unknown raw status stops
+  that run with an error that names it; `/gsd doctor` reports it too.
 
 #### `workflow_execution_attempts`
 
@@ -2209,7 +2224,23 @@ and fails closed. Hierarchy merging uses identity-preserving UPSERTs and does
 not overwrite a status protected by a newer canonical lifecycle head. When the
 main lifecycle is newer, worktree planning fields may still merge, but main-side
 completion summaries, verification results, blocker/escalation facts, and other
-execution evidence remain authoritative.
+execution evidence remain authoritative. The merge runs in one
+`lifecycle.backfill` Domain Operation with one revision bump. Each hierarchy
+row that the merge inserts gets its lifecycle row in that operation, by the
+rules of the lifecycle backfill. At Authority Epoch 0 a row that main already
+held keeps its adoption state, and the merge never refuses for adoption: an
+inserted row with an unknown raw status, or whose adoption would change its
+legacy status (a legacy completion with no evidence, or open work under a
+completed or cancelled parent), merges with no lifecycle row and waits for
+`/gsd db adopt`. After the Cutover the merge applies those status changes,
+logs them and returns them in `adoptionStatusChanges`. An inserted row with an
+unknown raw status then refuses the whole merge as a canonical divergence, so
+the worktree is kept; the error names each row and the `sqlite3` statement
+that gives it a known status in the worktree database. After the Cutover the
+same operation also adopts each row that main already held with no lifecycle
+row. If such a row has an unknown raw status, the coverage fence refuses the
+commit; that is a canonical divergence too, so the worktree is kept, and the
+error names the row and `/gsd db adopt`.
 
 ---
 

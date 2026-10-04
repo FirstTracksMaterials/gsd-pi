@@ -10,6 +10,11 @@ import { GSDError, GSD_STALE_STATE } from "../../errors.js";
 import { logError, logWarning } from "../../workflow-logger.js";
 import { getDbOrNull, openDatabase, transaction } from "../engine.js";
 import { TERMINAL_STATUS_SQL } from "../sql-constants.js";
+import { LifecycleCoverageRefusedError } from "../../db-lifecycle-coverage-schema.js";
+import {
+  LifecycleBackfillRefusedError,
+  mergeLegacyRowsWithAdoption,
+} from "../../lifecycle-backfill-domain-operation.js";
 
 export class CanonicalWorktreeDivergenceError extends GSDError {
   constructor(surfaces: readonly string[]) {
@@ -60,6 +65,19 @@ export interface ReconcileResult {
   gate_runs: number;
   milestone_commit_attributions: number;
   conflicts: string[];
+  /** Legacy status changes that the adoption of merged rows made (only after the Cutover). */
+  adoptionStatusChanges: string[];
+}
+
+/** The statement that gives one hierarchy row (`kind M/S/T`) of a worktree database a known status. */
+function knownStatusSql(row: string): string {
+  const [kind, label = ""] = row.split(" ");
+  const [milestoneId, sliceId, taskId] = label.split("/").map((id) => `'${id.replaceAll("'", "''")}'`);
+  if (kind === "task") {
+    return `UPDATE tasks SET status = 'pending' WHERE milestone_id = ${milestoneId} AND slice_id = ${sliceId} AND id = ${taskId}`;
+  }
+  if (kind === "slice") return `UPDATE slices SET status = 'pending' WHERE milestone_id = ${milestoneId} AND id = ${sliceId}`;
+  return `UPDATE milestones SET status = 'queued' WHERE id = ${milestoneId}`;
 }
 
 export function reconcileWorktreeDb(
@@ -82,6 +100,7 @@ export function reconcileWorktreeDb(
     gate_runs: 0,
     milestone_commit_attributions: 0,
     conflicts: [],
+    adoptionStatusChanges: [],
   };
   if (!existsSync(worktreeDbPath)) return zero;
   // Guard: bail when both paths resolve to the same physical file.
@@ -295,7 +314,7 @@ export function reconcileWorktreeDb(
         for (const row of reqConf) conflicts.push(`requirement ${(row as Record<string, unknown>)["id"]}: modified in both`);
       }
 
-      const merged: Omit<ReconcileResult, "conflicts"> = {
+      const merged: Omit<ReconcileResult, "conflicts" | "adoptionStatusChanges"> = {
         decisions: 0,
         requirements: 0,
         artifacts: 0,
@@ -326,7 +345,9 @@ export function reconcileWorktreeDb(
            END`
         : "COALESCE(m.target_repositories, '[]')";
 
-      transaction(() => {
+      // One Domain Operation: the merge commits with a revision bump, and
+      // the hierarchy rows it inserts get their lifecycle rows with it.
+      const adoptionStatusChanges = mergeLegacyRowsWithAdoption("worktree-reconcile", () => transaction(() => {
         // Join the target decisions so we can prefer an existing main.source
         // when the worktree predates v16 — otherwise a write-through reconcile
         // would clobber 'escalation'-sourced decisions with the literal default.
@@ -707,13 +728,33 @@ export function reconcileWorktreeDb(
           `).run());
         }
 
-      });
-      return { ...merged, conflicts };
+        return { ...merged };
+      }));
+      if (adoptionStatusChanges.length > 0) {
+        logWarning(
+          "db",
+          `worktree DB reconciliation changed the legacy status of ${adoptionStatusChanges.length} merged row(s) ` +
+            `to adopt them:\n  ${adoptionStatusChanges.join("\n  ")}`,
+        );
+      }
+      return { ...merged, conflicts, adoptionStatusChanges };
     } finally {
       try { adapter.exec("DETACH DATABASE wt"); } catch (e) { logWarning("db", `detach worktree DB failed: ${(e as Error).message}`); }
     }
   } catch (err) {
     if (err instanceof CanonicalWorktreeDivergenceError) throw err;
+    // A merged row that cannot be adopted stays in the worktree database.
+    if (err instanceof LifecycleBackfillRefusedError) {
+      throw new CanonicalWorktreeDivergenceError([
+        `${err.message}. Nothing was merged. Give each row a known legacy status in the worktree database, ` +
+          `then merge again: ${
+            err.unknownRows.map((row) => `sqlite3 '${worktreeDbPath}' "${knownStatusSql(row)}"`).join("; ")
+          }`,
+      ]);
+    }
+    if (err instanceof LifecycleCoverageRefusedError) {
+      throw new CanonicalWorktreeDivergenceError([`${err.message} Nothing was merged`]);
+    }
     logError("db", "worktree DB reconciliation failed", { error: (err as Error).message });
     return { ...zero, conflicts };
   }

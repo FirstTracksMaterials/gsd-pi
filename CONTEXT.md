@@ -99,11 +99,18 @@ The **Cutover** runs by itself (owner decision 2026-10-04,
 `authority-cutover-on-open.ts`). For now it is an opt-in canary (ADR-046
 migration step 6): it runs only with the environment variable
 `GSD_AUTHORITY_CUTOVER=1`. Without it, an open changes nothing and
-no production path advances the Authority Epoch. Some writers can still create
-a hierarchy row with no lifecycle row; the automatic Cutover becomes the
-default after the writer-coverage gate passes: those writers are closed and a
-database trigger refuses such a row after the Cutover. The rest of this section
-describes an open with the flag on.
+no production path advances the Authority Epoch. After the Cutover, database
+triggers refuse a hierarchy row with no lifecycle row
+(`db-lifecycle-coverage-schema.ts`), and a process that holds a receipt of the
+Cutover refuses an older copy of the database file. A project that was cut
+over before those triggers existed can hold such a row: its next open adopts
+the row with `lifecycle.backfill`, with or without the environment variable,
+and logs each legacy status that it changes. At Authority Epoch 0 two
+writers can still create a hierarchy row with no lifecycle row: a Forward
+Repair that puts back a row that an Import Application deleted, and the legacy
+Task completion writer when it has no call identity. The automatic Cutover
+becomes the default after those writers are closed and the test fixtures create
+adopted rows. The rest of this section describes an open with the flag on.
 
 The first open of an existing project database
 whose Authority Epoch is 0 writes a verified backup, runs `lifecycle.backfill`,
@@ -119,7 +126,7 @@ it: the first seals an Import Preview on the current revision and epoch, and
 the second replaces the database that it opens. After the Cutover,
 `/gsd db restore-backup` refuses a backup from the earlier epoch.
 
-The automatic run does not change a legacy status. The backfill adopts a
+The automatic run at Authority Epoch 0 does not change a legacy status. The backfill adopts a
 legacy completion as completed only with completion evidence (see
 `lifecycle-backfill-domain-operation.ts`); without evidence it makes the row
 open work again, and it cancels open work under a completed or cancelled

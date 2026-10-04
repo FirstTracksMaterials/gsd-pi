@@ -18,12 +18,14 @@ import {
 } from "../legacy-import-preview.js";
 import type { LegacyImportForwardRepairPlan } from "../legacy-import-forward-repair-plan.js";
 import type { LegacyImportValue } from "../legacy-import-contract.js";
+import { describeLifecycleCoverageRefusal } from "../db-lifecycle-coverage-schema.js";
 import { isSqliteBusyError } from "../sqlite-errors.js";
 import {
   assertDatabaseReplacementReceiptIntent,
   getDb,
   immediateTransaction,
   isInTransaction,
+  noteAuthorityEpochReceipt,
   withDatabaseReplacementWriteBypass,
   type DatabaseReplacementReceiptCapability,
 } from "./engine.js";
@@ -1205,23 +1207,28 @@ function executeDomainOperationCore(
     if (importForwardRepair) requireMatchingImportForwardRepair(storedOperation, importForwardRepair);
     hitFault("before-cas", request.operationType);
 
-    const update = db.prepare(`
-      UPDATE project_authority
-      SET revision = :resulting_revision,
-          authority_epoch = :resulting_authority_epoch,
-          updated_at = :updated_at
-      WHERE singleton = 1
-        AND project_id = :project_id
-        AND revision = :expected_revision
-        AND authority_epoch = :expected_authority_epoch
-    `).run({
-      ":resulting_revision": resultingRevision,
-      ":resulting_authority_epoch": resultingAuthorityEpoch,
-      ":updated_at": now,
-      ":project_id": authority.project_id,
-      ":expected_revision": request.expectedRevision,
-      ":expected_authority_epoch": request.expectedAuthorityEpoch,
-    });
+    let update: unknown;
+    try {
+      update = db.prepare(`
+        UPDATE project_authority
+        SET revision = :resulting_revision,
+            authority_epoch = :resulting_authority_epoch,
+            updated_at = :updated_at
+        WHERE singleton = 1
+          AND project_id = :project_id
+          AND revision = :expected_revision
+          AND authority_epoch = :expected_authority_epoch
+      `).run({
+        ":resulting_revision": resultingRevision,
+        ":resulting_authority_epoch": resultingAuthorityEpoch,
+        ":updated_at": now,
+        ":project_id": authority.project_id,
+        ":expected_revision": request.expectedRevision,
+        ":expected_authority_epoch": request.expectedAuthorityEpoch,
+      });
+    } catch (error) {
+      throw describeLifecycleCoverageRefusal(db, error);
+    }
     const changes =
       typeof (update as { changes?: unknown }).changes === "number"
         ? (update as { changes: number }).changes
@@ -1233,6 +1240,8 @@ function executeDomainOperationCore(
     preCommit?.();
     return loadReceipt(storedOperation, "committed");
   });
+
+  noteAuthorityEpochReceipt(result.projectId, result.resultingAuthorityEpoch);
 
   // The session's read is used up by its own committed write.
   if (result.status === "committed") {
