@@ -20,6 +20,9 @@ import {
 } from "../gsd-db.ts";
 import { openWorkflowDatabase } from "../db-workspace.ts";
 import { invalidateAllCaches } from "../cache.ts";
+import { handleDoctor } from "../commands-handlers.ts";
+import { withCommandCwd } from "../commands/context.ts";
+import { handleGSDCommand } from "../commands/dispatcher.ts";
 
 function runGit(args: string[], cwd: string): string {
   return execFileSync("git", args, { cwd, stdio: ["ignore", "pipe", "pipe"], encoding: "utf-8" });
@@ -120,4 +123,65 @@ test("plain doctor changes no file, no git state and no row", async (t) => {
   assert.equal(runGit(["status", "--porcelain"], base), gitBefore);
   assert.ok(existsSync(join(base, ".git", "MERGE_HEAD")));
   assert.deepEqual(snapshotRows(), rowsBefore);
+});
+
+test("plain /gsd doctor does not create a database", async (t) => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-doctor-no-create-"));
+  t.after(() => {
+    closeDatabase();
+    rmSync(base, { recursive: true, force: true });
+  });
+  mkdirSync(join(base, ".gsd"), { recursive: true });
+  closeDatabase();
+
+  const notifications: string[] = [];
+  const ctx = { ui: { notify: (message: string) => notifications.push(message) } } as any;
+  await withCommandCwd(base, async () => {
+    await handleDoctor("--json", ctx, {} as any);
+    await handleDoctor("--dry-run --json", ctx, {} as any);
+  });
+
+  assert.equal(notifications.length, 2, "both runs report");
+  assert.equal(existsSync(join(base, ".gsd", "gsd.db")), false);
+});
+
+test("plain /gsd doctor through the command dispatcher does not create a database", async (t) => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-doctor-dispatch-no-create-"));
+  t.after(() => {
+    closeDatabase();
+    rmSync(base, { recursive: true, force: true });
+  });
+  runGit(["init", "-b", "main"], base);
+  mkdirSync(join(base, ".gsd"), { recursive: true });
+  closeDatabase();
+
+  const notifications: string[] = [];
+  const ctx = { cwd: base, ui: { notify: (message: string) => notifications.push(message) } } as any;
+  await handleGSDCommand("doctor --json", ctx, {} as any);
+
+  assert.equal(notifications.length, 1, "doctor reports");
+  assert.equal(existsSync(join(base, ".gsd", "gsd.db")), false);
+});
+
+test("plain /gsd doctor refuses a project that lost its database and creates none", async (t) => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-doctor-lost-authority-"));
+  t.after(() => {
+    closeDatabase();
+    rmSync(base, { recursive: true, force: true });
+  });
+  // Milestone history on disk, no gsd.db.
+  mkdirSync(join(base, ".gsd", "milestones", "M001"), { recursive: true });
+  writeFileSync(join(base, ".gsd", "milestones", "M001", "M001-ROADMAP.md"), "# M001: Lost\n");
+  closeDatabase();
+
+  const notifications: string[] = [];
+  const ctx = { ui: { notify: (message: string) => notifications.push(message) } } as any;
+  await withCommandCwd(base, async () => {
+    for (const args of ["--json", "--dry-run --json"]) {
+      await assert.rejects(handleDoctor(args, ctx, {} as any), /authority-missing: .*\/gsd recover/s, args);
+    }
+  });
+
+  assert.deepEqual(notifications, [], "no clean report is shown");
+  assert.equal(existsSync(join(base, ".gsd", "gsd.db")), false);
 });

@@ -26,6 +26,8 @@ import {
 import { migrateHierarchyToDb } from './helpers/md-importer.ts';
 import { deriveStateFromDb, invalidateStateCache } from '../state.ts';
 import { handleRecover } from '../commands-maintenance.ts';
+import { generateDecisionsMd, generateRequirementsMd, saveDecisionToDb, saveRequirementToDb } from '../db-writer.ts';
+import { getAllDecisionsFromMemories } from '../context-store.ts';
 import { captureCurrentLegacyImportBaseSnapshot } from '../legacy-import-preview-base.ts';
 import { createLegacyImportPreview } from '../legacy-import-preview.ts';
 import { fingerprintLegacyImportCorpusTree } from './helpers/legacy-import-corpus.ts';
@@ -221,6 +223,13 @@ function recoverPreview(base: string) {
         logical_path: '.gsd/milestones',
         presence: 'optional',
       },
+      ...(['DECISIONS', 'REQUIREMENTS', 'KNOWLEDGE', 'PROJECT', 'QUEUE'] as const).map((stem) => ({
+        id: `project-root-${stem.toLowerCase()}`,
+        kind: 'project' as const,
+        physical_path: join(base, '.gsd', `${stem}.md`),
+        logical_path: `.gsd/${stem}.md`,
+        presence: 'optional' as const,
+      })),
     ],
   });
 }
@@ -1343,6 +1352,187 @@ describe('gsd-recover', async () => {
       assert.match(message, /M009-rfuh2h/);
       assert.match(message, /S02/);
       assert.match(message, /no PLAN establishes it as a real slice\/task/);
+    } finally {
+      closeDatabase();
+      cleanup(base);
+    }
+  });
+
+  test('recover on a lost database restores decisions and requirements and lists every source it does not import', async () => {
+    const base = createFixtureBase();
+    try {
+      // The projections a project keeps after its gsd.db is lost.
+      writeFile(base, 'milestones/M001/M001-ROADMAP.md', ROADMAP_M001);
+      writeFile(base, 'milestones/M001/M001-CONTEXT.md', '# M001 context\n\nWhy this milestone exists.\n');
+      writeFile(base, 'DECISIONS.md', generateDecisionsMd([{
+        seq: 1,
+        id: 'D001',
+        when_context: 'M001',
+        scope: 'architecture',
+        decision: 'Storage engine',
+        choice: 'SQLite | one file',
+        rationale: 'line one\nline two',
+        revisable: 'No',
+        made_by: 'human',
+        source: 'discussion',
+        superseded_by: null,
+      }]));
+      writeFile(base, 'REQUIREMENTS.md', generateRequirementsMd([{
+        id: 'R001',
+        class: 'functional',
+        status: 'active',
+        description: 'Recover restores registries',
+        why: 'line one\n\n- Status: deferred\nline two',
+        source: 'user',
+        primary_owner: 'M001/S01',
+        supporting_slices: 'none',
+        validation: 'unmapped',
+        notes: 'a | b',
+        full_content: '',
+        superseded_by: null,
+      }]));
+      writeFile(base, 'KNOWLEDGE.md', '# Knowledge\n\n## Rules\n\n- Keep it small.\n');
+
+      const first = makeCtx();
+      await handleRecover(first.ctx, base);
+
+      const preview = first.notes.at(-1)?.message ?? '';
+      assert.equal(first.notes.at(-1)?.kind, 'warning');
+      const notImported = preview.slice(
+        preview.indexOf('Not imported'),
+        preview.indexOf('Mappings:'),
+      );
+      assert.match(notImported, /\.gsd\/KNOWLEDGE\.md \(preserved\)/);
+      assert.match(notImported, /\.gsd\/milestones\/M001\/M001-CONTEXT\.md \(preserved\)/);
+      assert.doesNotMatch(notImported, /DECISIONS\.md|REQUIREMENTS\.md|M001-ROADMAP\.md/);
+      const approval = /--preview=(sha256:[0-9a-f]{64})/u.exec(preview)?.[0];
+      assert.ok(approval, 'the Preview names the hash to approve');
+
+      const second = makeCtx();
+      await handleRecover(second.ctx, base, approval);
+
+      assert.equal(second.notes.at(-1)?.kind, 'success');
+      assert.deepEqual(
+        getAllDecisionsFromMemories().map(({ id, decision, choice, rationale, made_by }) => (
+          { id, decision, choice, rationale, made_by }
+        )),
+        [{ id: 'D001', decision: 'Storage engine', choice: 'SQLite | one file', rationale: 'line one\nline two', made_by: 'human' }],
+      );
+      assert.deepEqual(
+        _getAdapter()!.prepare('SELECT id, status, description, why, primary_owner, notes FROM requirements').all(),
+        [{
+          id: 'R001',
+          status: 'active',
+          description: 'Recover restores registries',
+          why: 'line one\n\n- Status: deferred\nline two',
+          primary_owner: 'M001/S01',
+          notes: 'a | b',
+        }],
+      );
+      assert.ok(getMilestone('M001'));
+    } finally {
+      closeDatabase();
+      cleanup(base);
+    }
+  });
+
+  test('recover on a hand-written REQUIREMENTS.md imports wrapped values and ignores unknown lines', async () => {
+    const base = createFixtureBase();
+    try {
+      writeFile(base, 'milestones/M001/M001-ROADMAP.md', ROADMAP_M001);
+      writeFile(base, 'REQUIREMENTS.md', [
+        '# Requirements',
+        '',
+        '## Active',
+        '',
+        '### R001 — Unknown bullet after status',
+        '- Class: functional',
+        '- Status: active',
+        '- Priority: high',
+        '- Description: Unknown bullet after status',
+        '- Why it matters: first line',
+        'wrapped line',
+        '  indented line',
+        '',
+        '  indented paragraph',
+        '',
+        '### R002 — Rule and comment after notes',
+        '- Class: functional',
+        '- Status: active',
+        'not a status line',
+        '- Validation: by test',
+        '',
+        'A comment paragraph.',
+        '- Notes: keep this',
+        '---',
+        'A comment below the rule.',
+        '',
+      ].join('\n'));
+
+      const first = makeCtx();
+      await handleRecover(first.ctx, base);
+      const preview = first.notes.at(-1)?.message ?? '';
+      const approval = /--preview=(sha256:[0-9a-f]{64})/u.exec(preview)?.[0];
+      assert.ok(approval, `no diagnosis blocks the Preview: ${preview}`);
+
+      const second = makeCtx();
+      await handleRecover(second.ctx, base, approval);
+
+      assert.equal(second.notes.at(-1)?.kind, 'success', second.notes.at(-1)?.message);
+      assert.deepEqual(
+        _getAdapter()!.prepare('SELECT id, status, why, validation, notes FROM requirements ORDER BY id').all(),
+        [
+          {
+            id: 'R001',
+            status: 'active',
+            why: 'first line\nwrapped line\nindented line\n\nindented paragraph',
+            validation: '',
+            notes: '',
+          },
+          { id: 'R002', status: 'active', why: '', validation: 'by test', notes: 'keep this' },
+        ],
+      );
+    } finally {
+      closeDatabase();
+      cleanup(base);
+    }
+  });
+
+  test('recover on a database in sync with its registries changes no decision and no requirement', async () => {
+    const base = createFixtureBase();
+    try {
+      writeFile(base, 'milestones/M001/M001-ROADMAP.md', ROADMAP_M001);
+      openDatabase(join(base, '.gsd', 'gsd.db'));
+      // The real writers save the rows and render DECISIONS.md and REQUIREMENTS.md.
+      await saveDecisionToDb({
+        scope: 'architecture',
+        decision: 'Separator',
+        choice: 'a | b',
+        rationale: 'line one\nline two',
+        made_by: 'human',
+      }, base);
+      await saveRequirementToDb({
+        class: 'functional',
+        description: 'Recover keeps registries',
+        why: 'line one\n\nline two',
+        source: 'user',
+        notes: 'a | b',
+      }, base);
+      const decisionsBefore = getAllDecisionsFromMemories();
+      const requirementsBefore = _getAdapter()!.prepare('SELECT * FROM requirements').all();
+
+      const first = makeCtx();
+      await handleRecover(first.ctx, base);
+      const preview = first.notes.at(-1)?.message ?? '';
+      assert.doesNotMatch(preview, /(decision|requirement):/, 'the Preview changes no registry row');
+      const approval = /--preview=(sha256:[0-9a-f]{64})/u.exec(preview)?.[0];
+      assert.ok(approval, 'no diagnosis blocks the Preview');
+
+      const second = makeCtx();
+      await handleRecover(second.ctx, base, approval);
+      assert.equal(second.notes.at(-1)?.kind, 'success', second.notes.at(-1)?.message);
+      assert.deepEqual(getAllDecisionsFromMemories(), decisionsBefore);
+      assert.deepEqual(_getAdapter()!.prepare('SELECT * FROM requirements').all(), requirementsBefore);
     } finally {
       closeDatabase();
       cleanup(base);

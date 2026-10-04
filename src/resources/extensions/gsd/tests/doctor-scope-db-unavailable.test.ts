@@ -10,8 +10,11 @@ import {
   getTask,
   isDbAvailable,
   openDatabase,
+  pruneArtifactRows,
+  readDomainOperationFence,
   _setStartupSchemaDetectionForTest,
 } from "../gsd-db.ts";
+import { noteSessionRead, runInToolSession } from "../db/domain-operation.ts";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
@@ -716,6 +719,60 @@ test("checkEngineHealth repair prunes stale phases artifact rows with present mi
     .prepare("SELECT path FROM artifacts ORDER BY path")
     .all() as Array<{ path: string }>;
   assert.deepEqual(rows.map((row) => row.path), []);
+
+  // The prune is one Domain Operation: it has an operation row, a new
+  // revision and an event that lists the deleted path.
+  const operations = _getAdapter()!
+    .prepare("SELECT operation_id, operation_type, expected_revision, resulting_revision FROM workflow_operations")
+    .all();
+  assert.equal(operations.length, 1);
+  assert.equal(operations[0]!["operation_type"], "artifact.rows.prune");
+  assert.equal(operations[0]!["resulting_revision"], Number(operations[0]!["expected_revision"]) + 1);
+  const event = _getAdapter()!
+    .prepare("SELECT event_type, payload_json FROM workflow_domain_events WHERE operation_id = :id")
+    .get({ ":id": operations[0]!["operation_id"] });
+  assert.equal(event?.["event_type"], "artifact.rows.pruned");
+  assert.deepEqual(JSON.parse(String(event?.["payload_json"])), { source: "doctor", paths: [stalePath] });
+});
+
+test("checkEngineHealth repair reports a stale artifact row when the prune is refused", async (t) => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-doctor-prune-refused-"));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+
+  const gsdDir = join(base, ".gsd");
+  const stalePath = "phases/01-m001/01-01-PLAN.md";
+  const replacementPath = "milestones/M001/slices/S01/S01-PLAN.md";
+  mkdirSync(join(gsdDir, "milestones", "M001", "slices", "S01"), { recursive: true });
+  writeFileSync(join(gsdDir, replacementPath), "# Plan\n", "utf-8");
+
+  openDatabase(join(gsdDir, "gsd.db"));
+  insertArtifact({
+    path: stalePath,
+    artifact_type: "PLAN",
+    milestone_id: "M001",
+    slice_id: "S01",
+    task_id: null,
+    full_content: "# stale plan\n",
+  });
+
+  // The session reads the project, then another writer advances the revision.
+  const session = "doctor-prune-refused";
+  runInToolSession(session, () => noteSessionRead(readDomainOperationFence().revision));
+  pruneArtifactRows({ name: "other-writer", actorType: "system" }, ["phases/other.md"]);
+
+  const issues: any[] = [];
+  const fixes: string[] = [];
+  await runInToolSession(session, () => checkEngineHealth(base, issues, fixes, { repair: true }));
+
+  const issue = issues.find((candidate) => candidate.code === "artifact_file_missing" && candidate.file === stalePath);
+  assert.ok(issue, "a refused prune reports the stale row");
+  assert.equal(issue.fixable, true);
+  assert.match(issue.message, /stale view/);
+  assert.deepEqual(fixes.filter((fix) => fix.startsWith("pruned ")), []);
+  assert.deepEqual(
+    _getAdapter()!.prepare("SELECT path FROM artifacts").all().map((row) => row["path"]),
+    [stalePath],
+  );
 });
 
 test("checkEngineHealth repair prunes stale phases artifact rows with renamed flat-phase files", async (t) => {
