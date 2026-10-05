@@ -1296,6 +1296,24 @@ export function getSliceScopedArtifacts(milestoneId: string, sliceId: string): A
 }
 
 /**
+ * The saved artifact row of this type, with content, for a Milestone (sliceId
+ * and taskId null), a Slice (taskId null) or a Task. The newest row answers
+ * when a scope has more than one. Null when there is none.
+ */
+export function getScopedArtifact(
+  milestoneId: string, sliceId: string | null, taskId: string | null, artifactType: string,
+): ArtifactRow | null {
+  if (!getDbOrNull()!) return null;
+  const row = getDbOrNull()!.prepare(
+    `SELECT * FROM artifacts
+      WHERE milestone_id = :mid AND slice_id IS :sid AND task_id IS :tid
+        AND artifact_type = :type AND TRIM(full_content) <> ''
+      ORDER BY imported_at DESC, path LIMIT 1`,
+  ).get({ ":mid": milestoneId, ":sid": sliceId, ":tid": taskId, ":type": artifactType });
+  return row ? rowToArtifact(row) : null;
+}
+
+/**
  * True when the milestone (sliceId null) or the slice has a saved artifact row
  * of this type with content. This is the evidence that a discuss or research
  * unit saved its result; the rendered file is a projection and is not read.
