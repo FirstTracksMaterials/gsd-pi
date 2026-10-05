@@ -39,6 +39,7 @@ import {
 import {
   formatLegacyImportForwardRepairChoice,
   parseLegacyImportForwardRepairChoices,
+  parseLegacyImportKnowledgeFileRowChoices,
   parseLegacyImportPreviewChoices,
 } from "./legacy-import-forward-repair-choice-token.js";
 import { LEGACY_IMPORT_RESTORE_ASSESSMENT_CONSENT_SCHEMA_VERSION, type LegacyImportRestoreAssessmentConsent } from "./legacy-import-restore-assessment.js";
@@ -791,13 +792,25 @@ export async function handleRecover(
     let application = applicationId
       ? loadVerifiedRecoverApplication(applicationId)
       : loadRetainedVerifiedRecoverApplication();
+    const knowledgeFileRows = parseLegacyImportKnowledgeFileRowChoices(args);
+    if (application && knowledgeFileRows.length > 0) {
+      // A loaded Application is already applied: the choice would write nothing.
+      throw new Error(
+        `the KNOWLEDGE.md row choice for ${knowledgeFileRows.join(", ")} was not applied: `
+        + `Import Application ${application.receipt.operationId} is loaded, and a row choice needs a new Preview. `
+        + "No database changes made.",
+      );
+    }
     if (!application) {
       // Reviewed --choice tokens resolve 'requires-user' diagnoses and seal a
-      // new Preview; its hash is the one the operator approves.
+      // new Preview; its hash is the one the operator approves. A knowledge
+      // row choice makes the Preview write that KNOWLEDGE.md row over its
+      // differing database row.
       const previewChoices = parseLegacyImportPreviewChoices(args);
+      const created = prepareVerifiedRecoverApplication(basePath, knowledgeFileRows);
       const prepared = previewChoices.length === 0
-        ? prepareVerifiedRecoverApplication(basePath)
-        : resolvePreparedVerifiedRecoverApplication(prepareVerifiedRecoverApplication(basePath), previewChoices);
+        ? created
+        : resolvePreparedVerifiedRecoverApplication(created, previewChoices);
       const unresolved = formatUnresolvedRecoverDiagnoses(prepared);
       if (unresolved) {
         ctx.ui.notify(
