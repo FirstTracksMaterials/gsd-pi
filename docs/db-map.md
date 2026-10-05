@@ -958,6 +958,40 @@ PRIMARY KEY (milestone_id, slice_id)
 
 - Deleted by `slice.reopen` and `milestone.reopen`, so a redone slice gets a new budget.
 
+##### `write_gate_state`
+
+Discussion write-gate state: verified depth milestones, verified approval
+gates, the pending gate and the queue phase. `db-write-gate-schema.ts` owns the
+DDL. `db/writers/write-gate.ts` is the only reader and writer, and
+`bootstrap/write-gate.ts` is its only caller. The extension host and the
+workflow MCP child read the same rows; every change is one write transaction.
+These are enforcement rows, written outside Domain Operations.
+
+```
+gate_kind  TEXT NOT NULL   ← depth_verified | approval_verified | pending | queue_phase
+gate_id    TEXT NOT NULL   ← milestone id (depth_verified), gate question id (approval_verified, pending), 'active' (queue_phase)
+writer     TEXT NOT NULL   ← host | child (diagnostic)
+updated_at TEXT NOT NULL
+PRIMARY KEY (gate_kind, gate_id)
+```
+
+- At most one `pending` row. A verified gate is never also pending.
+- A session start and a resumed session delete the `pending` row and the
+  `queue_phase` row, and keep the verified rows. `/clear`, `/new` and the
+  discuss→auto handoff delete every row.
+- The latest answer to a gate question wins. A decline deletes the verified
+  rows of that gate and leaves the gate `pending`.
+- No file copy. `.gsd/runtime/write-gate-state.json` (older builds) is not read.
+- A gate call opens the existing project database when it is not the open one,
+  in the extension host and in the workflow MCP child. It never creates a
+  database.
+- A project database that exists and does not open fails closed for the gated
+  writes only (milestone CONTEXT, PROJECT, REQUIREMENTS and requirement
+  writes): they are refused with the open error and its remedy. Every other
+  tool runs. A gate write records nothing and logs a warning.
+- Only a project with no database keeps the gate in process memory. The first
+  gate call after the database exists moves that state into the rows.
+
 ##### `exec_runs`
 
 One row for each `gsd_exec` / `gsd_uat_exec` command the host ran. Evidence

@@ -26,10 +26,6 @@ import {
 	resolveWorkflowToolBasePath,
 	runInPiToolSession,
 } from "./dynamic-tools.js";
-import {
-	loadWriteGateSnapshot,
-	shouldBlockRootArtifactSaveInSnapshot,
-} from "./write-gate.js";
 
 async function loadWorkflowExecutors(): Promise<
 	typeof import("../tools/workflow-tool-executors.js")
@@ -96,29 +92,12 @@ function registerWorkflowTool(pi: ExtensionAPI, definition: any): void {
 	}
 }
 
-function requirementRootWriteGuard(
-	operation: string,
-	basePath: string,
-): {
-	content: Array<{ type: "text"; text: string }>;
-	details: Record<string, unknown>;
-	isError: true;
-} | null {
-	const guard = shouldBlockRootArtifactSaveInSnapshot(
-		loadWriteGateSnapshot(basePath),
-		"REQUIREMENTS",
-	);
-	if (!guard.block) return null;
-	return {
-		content: [
-			{
-				type: "text",
-				text: `Error ${operation} requirement: ${guard.reason ?? "requirements write blocked"}`,
-			},
-		],
-		details: { operation, error: "root_artifact_write_blocked" },
-		isError: true,
-	};
+function rootArtifactWriteBlock(
+	err: unknown,
+): { details: { error: "root_artifact_write_blocked" } } | null {
+	return (err as { code?: unknown } | null)?.code === "root_artifact_write_blocked"
+		? { details: { error: "root_artifact_write_blocked" } }
+		: null;
 }
 
 /**
@@ -388,8 +367,6 @@ export function registerDbTools(pi: ExtensionAPI): void {
 		_ctx: unknown,
 	) => {
 		const basePath = resolveCtxCwd(_ctx);
-		const gateBlock = requirementRootWriteGuard("update_requirement", basePath);
-		if (gateBlock) return gateBlock;
 		const dbAvailable = await ensureDbOpen(basePath);
 		if (!dbAvailable) {
 			return {
@@ -433,6 +410,16 @@ export function registerDbTools(pi: ExtensionAPI): void {
 			};
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
+			const gateBlock = rootArtifactWriteBlock(err);
+			if (gateBlock) {
+				return {
+					content: [
+						{ type: "text" as const, text: `Error updating requirement: ${msg}` },
+					],
+					details: { operation: "update_requirement", ...gateBlock.details } as any,
+					isError: true,
+				};
+			}
 			logError("tool", `gsd_requirement_update tool failed: ${msg}`, {
 				tool: "gsd_requirement_update",
 				error: String(err),
@@ -522,8 +509,6 @@ export function registerDbTools(pi: ExtensionAPI): void {
 		_ctx: unknown,
 	) => {
 		const basePath = resolveCtxCwd(_ctx);
-		const gateBlock = requirementRootWriteGuard("save_requirement", basePath);
-		if (gateBlock) return gateBlock;
 		const dbAvailable = await ensureDbOpen(basePath);
 		if (!dbAvailable) {
 			return {
@@ -564,6 +549,16 @@ export function registerDbTools(pi: ExtensionAPI): void {
 			};
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
+			const gateBlock = rootArtifactWriteBlock(err);
+			if (gateBlock) {
+				return {
+					content: [
+						{ type: "text" as const, text: `Error saving requirement: ${msg}` },
+					],
+					details: { operation: "save_requirement", ...gateBlock.details } as any,
+					isError: true,
+				};
+			}
 			logError("tool", `gsd_requirement_save tool failed: ${msg}`, {
 				tool: "gsd_requirement_save",
 				error: String(err),
