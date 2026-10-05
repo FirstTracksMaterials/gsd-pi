@@ -10,9 +10,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
 
+import { verifyExpectedArtifact } from "../artifact-verification.ts";
+import { shouldSkipTerminalMilestoneCloseout } from "../auto/closeout.ts";
 import { getAlreadyClosedDispatchReason } from "../auto/dispatch.ts";
+import type { AutoSession } from "../auto/session.ts";
 import { findOpenSlices, resolveDispatch } from "../auto-dispatch.ts";
+import { _repairCompleteSliceRoadmapProjectionForTest, detectRogueFileWrites } from "../auto-post-unit.ts";
+import { checkNeedsReassessment, loadRoadmapCompletedSliceCandidates } from "../auto-prompts.ts";
 import { auditOrphanedMilestoneBranches, findUnmergedCompletedMilestone } from "../auto-start.ts";
+import { checkCloseoutConsistencyGate } from "../closeout-consistency-gate.ts";
+import { detectIdleMilestoneResidueHint } from "../closeout-wizard.ts";
+import { handleCleanupBranches } from "../commands-maintenance.ts";
 import {
   _executeAuthorityCutoverDomainOperation,
   executeDomainOperation,
@@ -20,11 +28,14 @@ import {
   type DomainOperationMutation,
 } from "../db/domain-operation.ts";
 import {
+  readClosedSliceIds,
   readMilestone,
   readMilestoneSlices,
   readMilestones,
   readProgressCounts,
+  readSlice,
   readSliceTasks,
+  readTask,
 } from "../db/lifecycle-read.ts";
 import { insertAuthorityCutoverReceipt } from "../db/writers/authority-recovery.ts";
 import {
@@ -32,8 +43,24 @@ import {
   readDomainOperationFence,
 } from "../db/writers/lifecycle-commands.ts";
 import { getPriorSliceCompletionBlocker } from "../dispatch-guard.ts";
-import { closeDatabase, insertMilestone, insertSlice, insertTask, openDatabase } from "../gsd-db.ts";
+import { selectDoctorScope } from "../doctor.ts";
+import { _loadDiscussNormSlicesForTest } from "../guided-flow.ts";
+import {
+  _getAdapter,
+  closeDatabase,
+  insertMilestone,
+  insertSlice,
+  insertTask,
+  openDatabase,
+  setSliceUatMd,
+} from "../gsd-db.ts";
+import { findStaleScopedPauses } from "../interrupted-session.ts";
+import { discardMilestone, isParked, parkMilestone, unparkMilestone } from "../milestone-actions.ts";
+import { evaluateGuardedCompleteMilestoneDispatch } from "../milestone-closeout.ts";
+import { persistMilestonePlan } from "../milestone-planning-persistence.ts";
 import { analyzeParallelEligibility } from "../parallel-eligibility.ts";
+import { internalPlanningInvocation } from "../planning-invocation.ts";
+import { checkVerificationCommands } from "../pre-execution-checks.ts";
 import { reorderMilestones, setMilestoneDependencies } from "../queue-order.ts";
 import { loadSliceTaskIO } from "../reactive-graph.ts";
 import { cancelSlice } from "../slice-lifecycle-domain-operation.ts";
@@ -41,7 +68,18 @@ import { getEligibleSlicesFromRows } from "../slice-parallel-eligibility.ts";
 import { deriveState, invalidateStateCache, isGhostMilestone } from "../state.ts";
 import { readProgressFromDb } from "../state/progress-from-db.ts";
 import { readProjectSnapshotFromDb } from "../state/project-snapshot.ts";
-import { executeMilestoneStatus } from "../tools/workflow-tool-executors.ts";
+import { handleCompleteTask } from "../tools/complete-task.ts";
+import { handlePlanSlice } from "../tools/plan-slice.ts";
+import { handlePlanTask } from "../tools/plan-task.ts";
+import { handleReassessRoadmap } from "../tools/reassess-roadmap.ts";
+import { handleReplanSlice } from "../tools/replan-slice.ts";
+import { handleReplanTask } from "../tools/replan-task.ts";
+import { executeMilestoneStatus, executeTaskComplete } from "../tools/workflow-tool-executors.ts";
+import { checkNeedsRunUat, sliceAwaitsUatVerdict } from "../uat-dispatch.ts";
+import { undoLastCompletedUnit } from "../undo.ts";
+import { inspectExecuteTaskDurability } from "../unit-runtime.ts";
+import { findUnmergedCompletedMilestones } from "../unmerged-milestone-guard.ts";
+import { _resetLogs, drainLogs } from "../workflow-logger.ts";
 
 const tempDirectories = new Set<string>();
 
@@ -539,4 +577,575 @@ test("after the Cutover the milestone branch audit takes completion from the lif
     [["complete-merged-branch", "M001"], ["in-progress-stranded-work", "M002"]],
   );
   assert.equal(git("branch", "--list", "milestone/M001").toString().trim(), "");
+});
+
+test("the single-item reads and the closed Slice list follow the Authority Epoch", () => {
+  seedDisagreement();
+  const answers = () => ({
+    slices: ["S01", "S02"].map((id) => [id, readSlice("M002", id)?.closed]),
+    tasks: ["T01", "T02"].map((id) => [id, readTask("M002", "S01", id)?.done]),
+    closedSliceIds: readClosedSliceIds("M002"),
+    missing: [readSlice("M002", "S99"), readTask("M002", "S01", "T99")],
+  });
+
+  assert.deepEqual(answers(), {
+    slices: [["S01", true], ["S02", false]],
+    tasks: [["T01", true], ["T02", false]],
+    closedSliceIds: ["S01"],
+    missing: [null, null],
+  });
+
+  cutOver();
+
+  assert.deepEqual(answers(), {
+    slices: [["S01", false], ["S02", true]],
+    tasks: [["T01", false], ["T02", true]],
+    closedSliceIds: ["S02"],
+    missing: [null, null],
+  });
+});
+
+test("a deferred Slice is done but not closed before the Cutover, and closed after it", () => {
+  makeProject();
+  insertMilestone({ id: "M001", title: "Deferred slice", status: "active" });
+  insertSlice({ id: "S01", milestoneId: "M001", title: "Deferred", status: "deferred", depends: [], sequence: 1 });
+  seedLifecycles("deferred", [milestone("M001", "ready"), slice("M001", "S01", "cancelled")]);
+  const answer = () => [readSlice("M001", "S01")?.done, readSlice("M001", "S01")?.closed, readClosedSliceIds("M001")];
+
+  assert.deepEqual(answer(), [true, false, []]);
+
+  cutOver();
+
+  assert.deepEqual(answer(), [true, true, ["S01"]]);
+});
+
+test("after the Cutover the terminal closeout skip and the complete-milestone guard follow the lifecycle rows", async () => {
+  const base = seedDisagreement();
+  cutOver();
+  const session = { basePath: base, originalBasePath: base, completionStopInProgress: false } as unknown as AutoSession;
+  const state = { phase: "complete" as const, activeMilestone: null };
+
+  // M001 is legacy active and canonical completed. M002 is legacy complete and canonical ready.
+  assert.deepEqual(
+    await shouldSkipTerminalMilestoneCloseout(session, state, "M001"),
+    { skip: true, milestoneId: "M001" },
+  );
+  assert.deepEqual(
+    await shouldSkipTerminalMilestoneCloseout(session, state, "M002"),
+    { skip: false, milestoneId: "M002" },
+  );
+
+  const guard = (mid: string) => evaluateGuardedCompleteMilestoneDispatch({
+    basePath: base,
+    mid,
+    midTitle: mid,
+    prefs: { uat_dispatch: true },
+    preview: true,
+    state: {
+      activeMilestone: { id: mid, title: mid },
+      activeSlice: null,
+      activeTask: null,
+      phase: "completing-milestone",
+      recentDecisions: [],
+      blockers: [],
+      nextAction: "",
+      registry: [{ id: mid, title: mid, status: "active" }],
+    },
+  });
+
+  assert.deepEqual(await guard("M001"), { action: "skip" });
+  // The UAT sign-off check runs for the closed Slices. S02 is the canonically
+  // closed Slice of M002; the legacy row names S01.
+  const open = await guard("M002");
+  assert.equal(open.action, "stop");
+  assert.match(open.action === "stop" ? open.reason : "", /missing UAT PASS verdict for S02/);
+});
+
+/** Make the project a git repository with one commit on main. `.gsd/` is not tracked. */
+function initRepository(base: string): (...args: string[]) => Buffer {
+  const git = (...args: string[]) => execFileSync("git", args, { cwd: base, stdio: ["ignore", "pipe", "pipe"] });
+  git("init");
+  git("config", "user.email", "test@test.com");
+  git("config", "user.name", "Test");
+  writeFileSync(join(base, ".gitignore"), ".gsd/\n");
+  git("add", ".gitignore");
+  git("commit", "-m", "init");
+  git("branch", "-M", "main");
+  return git;
+}
+
+test("after the Cutover the closeout consistency gate follows the lifecycle rows", () => {
+  const base = makeProject();
+  // The gate reads the source revision of the repository.
+  initRepository(base);
+  // M001 is legacy complete and canonical ready. S01 is complete in both rows;
+  // its Task T01 is legacy pending and canonical completed. S02 is legacy
+  // complete and canonical ready.
+  insertMilestone({ id: "M001", title: "Canonical open", status: "complete" });
+  insertSlice({ id: "S01", milestoneId: "M001", title: "Completed", status: "complete", depends: [], sequence: 1 });
+  insertSlice({ id: "S02", milestoneId: "M001", title: "Canonical open", status: "complete", depends: [], sequence: 2 });
+  insertTask({ id: "T01", sliceId: "S01", milestoneId: "M001", title: "Canonical completed", status: "pending" });
+  // M002 is legacy active and canonical cancelled, and has no Slice.
+  insertMilestone({ id: "M002", title: "Canonical cancelled", status: "active" });
+  seedLifecycles("closeout-gate", [
+    milestone("M001", "ready"),
+    slice("M001", "S01", "completed"),
+    slice("M001", "S02", "ready"),
+    task("M001", "S01", "T01", "completed"),
+    milestone("M002", "cancelled"),
+  ]);
+  const gate = (milestoneId: string, allowOpenMilestone: boolean) => {
+    const result = checkCloseoutConsistencyGate(milestoneId, {
+      allowOpenMilestone,
+      assumeValidationWaived: true,
+      artifactBasePath: base,
+      readOnly: true,
+    });
+    return result.ok ? "ok" : result.reason;
+  };
+  const answers = () => [gate("M001", false), gate("M001", true), gate("M002", true)];
+
+  // The legacy rows: M001 is closed and its Task T01 is open. M002 is open and has no Slice.
+  assert.deepEqual(answers(), ["task-open", "task-open", "slice-missing"]);
+
+  cutOver();
+
+  // The lifecycle rows: M001 is open, T01 is done and S02 is open. M002 is discarded.
+  assert.deepEqual(answers(), ["milestone-open", "slice-open", "ok"]);
+});
+
+test("after the Cutover rogue file detection, the roadmap repair, task durability and artifact verification follow the lifecycle rows", async () => {
+  const base = seedDisagreement();
+  const tasksDirectory = join(base, ".gsd", "milestones", "M002", "slices", "S01", "tasks");
+  mkdirSync(tasksDirectory, { recursive: true });
+  for (const taskId of ["T01", "T02"]) writeFileSync(join(tasksDirectory, `${taskId}-SUMMARY.md`), `# ${taskId}\n`);
+  const rogueCount = (taskId: string) => detectRogueFileWrites("execute-task", `M002/S01/${taskId}`, base).length;
+  const repairs = (sliceId: string) =>
+    _repairCompleteSliceRoadmapProjectionForTest("complete-slice", `M002/${sliceId}`, base);
+
+  // T01 and S01 are legacy complete and canonical ready. T02 and S02 are
+  // legacy pending and canonical completed.
+  assert.deepEqual([rogueCount("T01"), rogueCount("T02")], [0, 1]);
+  assert.equal(await repairs("S02"), false);
+
+  cutOver();
+
+  assert.deepEqual([rogueCount("T01"), rogueCount("T02")], [1, 0]);
+  assert.equal(await repairs("S01"), false);
+  assert.equal(await repairs("S02"), true);
+  assert.deepEqual(inspectExecuteTaskDurability("M002/S01/T01"), { dbComplete: false });
+  assert.deepEqual(inspectExecuteTaskDurability("M002/S01/T02"), { dbComplete: true });
+  assert.equal(verifyExpectedArtifact("complete-slice", "M002/S01", base, { readOnly: true }), false);
+  assert.equal(verifyExpectedArtifact("complete-slice", "M002/S02", base, { readOnly: true }), true);
+  assert.equal(verifyExpectedArtifact("reactive-execute", "M002/S01/batch+T01", base, { readOnly: true }), false);
+  assert.equal(verifyExpectedArtifact("reactive-execute", "M002/S01/batch+T02", base, { readOnly: true }), true);
+  // The pre-execution checks skip a Task that needs no further work.
+  assert.deepEqual(
+    checkVerificationCommands(
+      readSliceTasks("M002", "S01").map((row) => ({ ...row, verify: "gsd_task_complete" })),
+    ).map((check) => check.target),
+    ["T01 Verify"],
+  );
+});
+
+test("after the Cutover the unmerged-milestone guard and the stranded-branch hint report the canonically closed milestone", async () => {
+  const base = seedDisagreement();
+  const git = initRepository(base);
+  // M001 (legacy active, canonical completed) and M002 (legacy complete,
+  // canonical ready) each have a branch with work that main does not have.
+  for (const milestoneId of ["M001", "M002"]) {
+    git("checkout", "-b", `milestone/${milestoneId}`);
+    writeFileSync(join(base, `${milestoneId}.txt`), "work\n");
+    git("add", `${milestoneId}.txt`);
+    git("commit", "-m", `work on ${milestoneId}`);
+    git("checkout", "main");
+  }
+  const blocked = async () => (await findUnmergedCompletedMilestones(base)).map((blocker) => blocker.milestoneId);
+  const stranded = () => detectIdleMilestoneResidueHint(base)?.milestoneIds;
+
+  assert.deepEqual(await blocked(), ["M002"]);
+  assert.deepEqual(stranded(), ["M002"]);
+
+  cutOver();
+
+  assert.deepEqual(await blocked(), ["M001"]);
+  assert.deepEqual(stranded(), ["M001"]);
+});
+
+test("after the Cutover park, unpark and discard take parked and closed from the lifecycle rows", async () => {
+  const base = seedDisagreement();
+
+  assert.equal(isParked("M004"), false, "before the Cutover the legacy row of M004 is active");
+
+  cutOver();
+
+  // M004 is legacy active and canonical paused. M001 is legacy active and canonical completed.
+  assert.equal(isParked("M004"), true);
+  assert.equal(await parkMilestone(base, "M004", "already parked"), false);
+  assert.equal(await parkMilestone(base, "M001", "closed"), false);
+  await assert.rejects(discardMilestone(base, "M001"), /M001 is already closed \(complete\)/);
+  assert.equal(await unparkMilestone(base, "M004"), true);
+  assert.equal(isParked("M004"), false);
+});
+
+test("after the Cutover undo and a duplicate task completion take the task state from the lifecycle rows", async () => {
+  const base = seedDisagreement();
+  const db = _getAdapter();
+  assert.ok(db);
+  db.prepare(`
+    INSERT INTO workers (
+      worker_id, host, pid, started_at, version, last_heartbeat_at, status, project_root_realpath
+    ) VALUES ('cutover-worker', 'test-host', 1, '2026-10-04T00:00:00.000Z', 'test',
+      '2026-10-04T00:00:00.000Z', 'active', :root)
+  `).run({ ":root": base });
+  db.prepare(`
+    INSERT INTO unit_dispatches (
+      trace_id, worker_id, milestone_lease_token, milestone_id, slice_id, task_id,
+      unit_type, unit_id, status, attempt_n, started_at, ended_at
+    ) VALUES (
+      'trace-T01', 'cutover-worker', 1, 'M002', 'S01', 'T01',
+      'execute-task', 'M002/S01/T01', 'completed', 1, '2026-10-04T00:00:00.000Z', '2026-10-04T00:00:00.000Z'
+    )
+  `).run();
+  cutOver();
+
+  // T01 is legacy complete and canonical ready: there is no completion to undo.
+  const undone = await undoLastCompletedUnit(base);
+  assert.equal(undone.success, false);
+  assert.match(undone.message, /Nothing to undo — execute-task \(M002\/S01\/T01\) is already open/);
+
+  const complete = (taskId: string) => executeTaskComplete({
+    milestoneId: "M002",
+    sliceId: "S01",
+    taskId,
+    oneLiner: "Duplicate completion",
+    narrative: "A second completion call with no verification.",
+  }, base);
+  // T02 is legacy pending and canonical completed: the call is a duplicate.
+  assert.equal((await complete("T02")).details["duplicate"], true);
+  assert.equal((await complete("T01")).details["error"], "verification_required");
+});
+
+test("after the Cutover the run-uat candidates, the UAT hold and the reassessment check follow the lifecycle rows", async () => {
+  const base = seedDisagreement();
+  const uat = ["# UAT", "", "## UAT Type", "- UAT mode: runtime-executable"].join("\n");
+  setSliceUatMd("M002", "S01", uat);
+  setSliceUatMd("M002", "S02", uat);
+  const state = await deriveState(base);
+  const answers = async () => ({
+    runUat: (await checkNeedsRunUat(base, "M002", undefined))?.sliceId,
+    awaitsUat: ["S01", "S02"].map((sliceId) => sliceAwaitsUatVerdict(base, "M002", sliceId)),
+    reassess: (await checkNeedsReassessment(base, "M002", state))?.sliceId,
+    completed: (await loadRoadmapCompletedSliceCandidates(base, "M002")).map((candidate) => candidate.sliceId),
+  });
+
+  // S01 is legacy complete and canonical ready. S02 is legacy pending and canonical completed.
+  assert.deepEqual(await answers(), { runUat: "S01", awaitsUat: [true, false], reassess: "S01", completed: ["S01"] });
+
+  cutOver();
+
+  assert.deepEqual(await answers(), { runUat: "S02", awaitsUat: [false, true], reassess: "S02", completed: ["S02"] });
+});
+
+test("after the Cutover a scoped pause is stale when the lifecycle row of its milestone or slice is closed", () => {
+  seedDisagreement();
+  const db = _getAdapter();
+  assert.ok(db);
+  for (const scope of ["M001", "M002", "M002/S01", "M002/S02"]) {
+    db.prepare(`
+      INSERT INTO auto_pauses (scope, blocker_kind, step_mode, paused_at)
+      VALUES (:scope, 'user_request', 0, '2026-10-04T00:00:00.000Z')
+    `).run({ ":scope": scope });
+  }
+
+  // The legacy rows: M002 is complete, so each pause in M002 is stale.
+  assert.deepEqual(findStaleScopedPauses(), ["M002", "M002/S01", "M002/S02"]);
+
+  cutOver();
+
+  // The lifecycle rows: M001 is completed. M002 is open and its Slice S02 is completed.
+  assert.deepEqual(findStaleScopedPauses(), ["M001", "M002/S02"]);
+});
+
+/**
+ * Rows for the planning and completion commands. M002 is legacy complete and
+ * canonical ready, and so are its Slices S01 and S03 and the Tasks T02 and T03
+ * of S01 and T01 of S03. S02 and the Task T01 of S01 are legacy pending and
+ * canonical completed. M001 is legacy active and canonical completed. M003 is
+ * legacy active and canonical cancelled. M004 is legacy complete and canonical
+ * pending.
+ */
+function seedPlanningDisagreement(): string {
+  const base = makeProject();
+  insertMilestone({ id: "M001", title: "Canonical completed", status: "active" });
+  insertMilestone({ id: "M002", title: "Canonical open", status: "complete" });
+  insertMilestone({ id: "M003", title: "Canonical cancelled", status: "active" });
+  insertMilestone({ id: "M004", title: "Canonical pending", status: "complete" });
+  insertSlice({ id: "S01", milestoneId: "M002", title: "Canonical open", status: "complete", depends: [], sequence: 1 });
+  insertSlice({ id: "S02", milestoneId: "M002", title: "Canonical completed", status: "pending", depends: [], sequence: 2 });
+  insertSlice({ id: "S03", milestoneId: "M002", title: "Canonical open", status: "complete", depends: [], sequence: 3 });
+  insertTask({ id: "T01", sliceId: "S01", milestoneId: "M002", title: "Canonical completed", status: "pending" });
+  insertTask({ id: "T02", sliceId: "S01", milestoneId: "M002", title: "Canonical open", status: "complete" });
+  insertTask({ id: "T03", sliceId: "S01", milestoneId: "M002", title: "Canonical open", status: "complete" });
+  insertTask({ id: "T01", sliceId: "S03", milestoneId: "M002", title: "Canonical open", status: "complete" });
+  seedLifecycles("planning-disagreement", [
+    milestone("M001", "completed"),
+    milestone("M002", "ready"),
+    milestone("M003", "cancelled"),
+    milestone("M004", "pending"),
+    slice("M002", "S01", "ready"),
+    slice("M002", "S02", "completed"),
+    slice("M002", "S03", "ready"),
+    task("M002", "S01", "T01", "completed"),
+    task("M002", "S01", "T02", "ready"),
+    task("M002", "S01", "T03", "ready"),
+    task("M002", "S03", "T01", "ready"),
+  ]);
+  invalidateStateCache();
+  return base;
+}
+
+function plannedTask(taskId: string) {
+  return {
+    taskId,
+    title: `Planned ${taskId}`,
+    description: "Planned after the Cutover.",
+    estimate: "30m",
+    files: ["src/planned.ts"],
+    verify: "node --test src/planned.test.ts",
+    inputs: ["src/planned.ts"],
+    expectedOutput: ["src/planned.ts"],
+    requiredWorkflowTools: [] as string[],
+  };
+}
+
+function errorOf(result: object): string | undefined {
+  return "error" in result ? String(result.error) : undefined;
+}
+
+test("after the Cutover plan-slice takes the closed milestone, slice and tasks from the lifecycle rows", async () => {
+  const base = seedPlanningDisagreement();
+  const plan = () => handlePlanSlice({
+    milestoneId: "M002",
+    sliceId: "S03",
+    goal: "Plan the slice again.",
+    successCriteria: "- The plan is stored",
+    proofLevel: "integration",
+    integrationClosure: "The handler stores the plan rows.",
+    observabilityImpact: "- A refusal returns an error",
+    tasks: [plannedTask("T02")],
+  }, base, internalPlanningInvocation());
+
+  assert.match(errorOf(await plan()) ?? "", /cannot plan slice in a closed milestone: M002 \(status: complete\)/);
+
+  cutOver();
+
+  // M002, S03 and its Task T01 are legacy complete and canonical ready: the
+  // plan is accepted, and it removes T01, which the new plan does not name.
+  assert.equal(errorOf(await plan()), undefined);
+  assert.deepEqual(
+    readSliceTasks("M002", "S03").map((row) => [row.id, row.done]),
+    [["T01", true], ["T02", false]],
+  );
+});
+
+test("after the Cutover plan-task and replan-task take the closed slice and task from the lifecycle rows", async () => {
+  const base = seedPlanningDisagreement();
+  const { taskId: _taskId, ...taskPlan } = plannedTask("T02");
+  const planTask = () => handlePlanTask(
+    { milestoneId: "M002", sliceId: "S01", taskId: "T02", ...taskPlan },
+    base,
+    internalPlanningInvocation(),
+  );
+  const replanTask = (taskId: string) => handleReplanTask(
+    { milestoneId: "M002", sliceId: "S01", taskId, ...taskPlan, reworkBriefRef: "RB-001" },
+    base,
+    internalPlanningInvocation(),
+  );
+
+  assert.match(errorOf(await planTask()) ?? "", /cannot plan task in a closed slice: S01 \(status: complete\)/);
+  assert.match(errorOf(await replanTask("T03")) ?? "", /cannot replan a task in a closed slice: S01 \(status: complete\)/);
+
+  cutOver();
+
+  // S01, T02 and T03 are legacy complete and canonical ready. T01 is legacy
+  // pending and canonical completed.
+  assert.equal(errorOf(await planTask()), undefined);
+  assert.equal(errorOf(await replanTask("T03")), undefined);
+  assert.match(errorOf(await replanTask("T01")) ?? "", /cannot replan completed task T01/);
+});
+
+test("after the Cutover replan-slice takes the closed milestone, the blocker and the completed tasks from the lifecycle rows", async () => {
+  const base = seedPlanningDisagreement();
+  const replan = () => handleReplanSlice({
+    milestoneId: "M002",
+    sliceId: "S01",
+    blockerTaskId: "T01",
+    blockerDescription: "T01 found a blocker.",
+    whatChanged: "T02 uses the new interface.",
+    updatedTasks: [plannedTask("T02")],
+    removedTaskIds: ["T03"],
+  }, base, internalPlanningInvocation());
+
+  assert.match(errorOf(await replan()) ?? "", /cannot replan a slice in a closed milestone: M002 \(status: complete\)/);
+
+  cutOver();
+
+  // The blocker T01 is legacy pending and canonical completed. T02 and T03
+  // are legacy complete and canonical ready, so the replan can change them.
+  assert.equal(errorOf(await replan()), undefined);
+  assert.deepEqual(
+    readSliceTasks("M002", "S01").map((row) => [row.id, row.status]),
+    [["T01", "complete"], ["T02", "pending"], ["T03", "skipped"]],
+  );
+});
+
+test("after the Cutover reassess-roadmap takes the closed milestone and the completed slices from the lifecycle rows", async () => {
+  const base = seedPlanningDisagreement();
+  const reassess = (completedSliceId: string, modifiedSliceId: string) => handleReassessRoadmap({
+    milestoneId: "M002",
+    completedSliceId,
+    verdict: "confirmed",
+    assessment: "The roadmap is on track.",
+    sliceChanges: {
+      modified: [{ sliceId: modifiedSliceId, title: "Changed after the Cutover", risk: "high", depends: [], demo: "Changed demo." }],
+      added: [],
+      removed: [],
+    },
+  }, base, internalPlanningInvocation());
+
+  assert.match(errorOf(await reassess("S02", "S01")) ?? "", /cannot reassess a closed milestone: M002 \(status: complete\)/);
+
+  cutOver();
+
+  // S01 is legacy complete and canonical ready: it is not a completed slice.
+  assert.match(errorOf(await reassess("S01", "S03")) ?? "", /completedSliceId S01 is not complete/);
+  // S02 is legacy pending and canonical completed: it cannot be changed.
+  assert.match(errorOf(await reassess("S02", "S02")) ?? "", /cannot modify completed slice S02/);
+  assert.equal(errorOf(await reassess("S02", "S01")), undefined);
+  assert.equal(readSlice("M002", "S01")?.title, "Changed after the Cutover");
+});
+
+test("after the Cutover a blocker report takes the closed milestone, slice and task from the lifecycle rows", async () => {
+  const base = seedPlanningDisagreement();
+  const report = () => handleCompleteTask({
+    milestoneId: "M002",
+    sliceId: "S01",
+    taskId: "T01",
+    oneLiner: "Found a blocker",
+    narrative: "The task cannot continue.",
+    verification: "Not run.",
+    blockerDiscovered: true,
+  }, base);
+
+  assert.match(errorOf(await report()) ?? "", /cannot complete task in a closed milestone: M002 \(status: complete\)/);
+
+  cutOver();
+
+  // M002 and S01 are canonical ready. T01 is legacy pending and canonical completed.
+  assert.match(errorOf(await report()) ?? "", /task T01 is already complete/);
+});
+
+test("after the Cutover plan-milestone takes the closed milestone and its dependencies from the lifecycle rows", async () => {
+  const base = seedPlanningDisagreement();
+  const plan = (milestoneId: string, dependsOn: string[]) => persistMilestonePlan({
+    milestoneId,
+    title: "Planned after the Cutover",
+    vision: "The plan follows the lifecycle rows.",
+    dependsOn,
+    slices: [{
+      sliceId: "S01",
+      title: "First slice",
+      risk: "low",
+      depends: [],
+      demo: "The plan is stored.",
+      goal: "Store the plan.",
+      successCriteria: "The plan rows exist.",
+      proofLevel: "integration",
+      integrationClosure: "The roadmap renders from the rows.",
+      observabilityImpact: "A refusal returns an error.",
+    }],
+  }, base, internalPlanningInvocation());
+
+  assert.match(errorOf(await plan("M004", [])) ?? "", /cannot re-plan milestone M004: it is already complete/);
+  assert.match(errorOf(await plan("M006", ["M001"])) ?? "", /depends_on milestone M001 is not yet complete \(status: active\)/);
+
+  cutOver();
+
+  // M003 is legacy active and canonical cancelled. M002 is legacy complete and canonical ready.
+  assert.match(errorOf(await plan("M006", ["M003"])) ?? "", /depends_on milestone M003 was discarded/);
+  assert.match(errorOf(await plan("M006", ["M002"])) ?? "", /depends_on milestone M002 is not yet complete/);
+  // M004 is legacy complete and canonical pending: the precondition accepts
+  // it, and the status writer then refuses the rows that disagree.
+  assert.match(errorOf(await plan("M004", [])) ?? "", /canonical and legacy status mismatch \(canonical=pending, legacy=complete\)/);
+  // M001 is legacy active and canonical completed.
+  assert.equal(errorOf(await plan("M006", ["M001"])), undefined);
+  assert.equal(readSlice("M006", "S01")?.title, "First slice");
+});
+
+test("after the Cutover the branch cleanup tries to delete the branch of a canonically complete milestone only", async () => {
+  const base = seedDisagreement();
+  const git = initRepository(base);
+  git("branch", "milestone/M001");
+  git("branch", "milestone/M002");
+  // The cleanup skips a milestone branch that a worktree holds, and a branch
+  // with no worktree. It reaches the status check only for the branch that
+  // the project root has checked out, and git refuses to delete that branch.
+  // The warning of the refused delete shows which branch the cleanup chose.
+  const refusedDeletes = async (milestoneId: string) => {
+    git("checkout", `milestone/${milestoneId}`);
+    _resetLogs();
+    await handleCleanupBranches({ ui: { notify() {} } } as never, base);
+    return drainLogs().map((entry) => entry.message.replace(/:.*$/s, ""));
+  };
+
+  // M001 is legacy active and canonical completed. M002 is legacy complete and canonical ready.
+  assert.deepEqual(await refusedDeletes("M001"), []);
+  assert.deepEqual(await refusedDeletes("M002"), ["stale milestone branch delete failed for milestone/M002"]);
+
+  cutOver();
+
+  assert.deepEqual(await refusedDeletes("M001"), ["stale milestone branch delete failed for milestone/M001"]);
+  assert.deepEqual(await refusedDeletes("M002"), []);
+  assert.deepEqual(
+    git("branch", "--list", "milestone/*", "--format=%(refname:short)").toString().trim().split("\n"),
+    ["milestone/M001", "milestone/M002"],
+  );
+});
+
+test("after the Cutover the doctor scope is the first milestone with a canonically open slice", async () => {
+  const base = makeProject();
+  // No Milestone is active: both are parked. The Slice of M001 is legacy
+  // complete and canonical ready. The Slice of M002 is legacy pending and
+  // canonical completed.
+  insertMilestone({ id: "M001", title: "Canonical open slice", status: "parked" });
+  insertMilestone({ id: "M002", title: "Canonical completed slice", status: "parked" });
+  insertSlice({ id: "S01", milestoneId: "M001", title: "Canonical open", status: "complete", depends: [], sequence: 1 });
+  insertSlice({ id: "S01", milestoneId: "M002", title: "Canonical completed", status: "pending", depends: [], sequence: 1 });
+  seedLifecycles("doctor-scope", [
+    milestone("M001", "paused"),
+    milestone("M002", "paused"),
+    slice("M001", "S01", "ready"),
+    slice("M002", "S01", "completed"),
+  ]);
+  invalidateStateCache();
+
+  assert.equal(await selectDoctorScope(base), "M002");
+
+  cutOver();
+
+  assert.equal(await selectDoctorScope(base), "M001");
+});
+
+test("after the Cutover the discuss flow takes the complete slices from the lifecycle rows", async () => {
+  const base = seedDisagreement();
+  const complete = async () =>
+    (await _loadDiscussNormSlicesForTest(base, "M002")).filter((entry) => entry.done).map((entry) => entry.id);
+
+  // S01 is legacy complete and canonical ready. S02 is legacy pending and canonical completed.
+  assert.deepEqual(await complete(), ["S01"]);
+
+  cutOver();
+
+  assert.deepEqual(await complete(), ["S02"]);
 });
