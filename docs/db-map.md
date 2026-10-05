@@ -262,6 +262,7 @@ FOREIGN KEY milestone_id → milestones(id)
 
 - Index: `idx_slices_active` (milestone_id, status)
 - Status values: `pending`, `in_progress`, `complete`, `skipped` (legacy/imported `done` and `closed` are treated as closed aliases by `status-guards.ts`)
+- `replan_triggered_at` is the replan trigger that the state derivation reads. A capture that asks for a replan stamps it in one `slice.replan.trigger` Domain Operation (`triage-resolution.ts`). `S##-REPLAN-TRIGGER.md` is a render of the column; nothing reads the file.
 
 ---
 
@@ -306,6 +307,7 @@ FOREIGN KEY (milestone_id, slice_id) → slices(milestone_id, id)
 
 - Indexes: `idx_tasks_active` (milestone_id, slice_id, status), `idx_tasks_escalation_pending`
 - Status values: `pending`, `in_progress`, `complete`, `skipped`, `blocked` (legacy/imported `done` and `closed` are treated as complete aliases; `insertTask` stamps `completed_at` for `complete`/`done`/`closed`, but not `skipped`)
+- The `escalation_*` columns hold only an escalation from before the database stored escalations as Open Questions. A new escalation does not set them: its open question is the pause, and the `task.escalation.override_claimed` event (the `task.escalation.override.claim` Domain Operation) records that a prompt received the response. A non-null `escalation_override_applied_at` that is not older than the response is a claim from a build before that event, and it also counts as delivered; no build writes the column now. The columns are still read for a Task that has no escalation question, so that a pre-database pause or response is not lost. They are not retired.
 
 ---
 
@@ -754,8 +756,10 @@ the runtime-control feature, the
 [`milestone_integration_branches`](#milestone_integration_branches-non-versioned)
 feature, the
 [custom workflow run](#custom-workflow-run-tables-non-versioned) feature, the
-[`unit_metrics`](#unit_metrics-non-versioned) feature and the
+[`unit_metrics`](#unit_metrics-non-versioned) feature, the
 [`project_milestone_sequence`](#project_milestone_sequence-non-versioned)
+feature and the
+[`remote_question_prompts`](#remote_question_prompts-non-versioned)
 feature below;
 `db-liveness-backstop-schema.ts` owns the liveness table and open-wedge-index
 DDL. Startup repair and `/gsd doctor` query the same registry, so missing
@@ -884,6 +888,31 @@ FOREIGN KEY dispatch_id → unit_dispatches(id)
 - Index: `idx_auto_pauses_open_scope` UNIQUE (scope) WHERE closed_at IS NULL — one open pause for each worker scope.
 - DDL owner: `db-auto-pause-schema.ts`. Access: `db/writers/auto-pauses.ts`.
 - This row replaces the `paused_session` key in `runtime_kv`. Rules: see the third 2026-10-04 amendment in [ADR-048](dev/ADR-048-unitrun-dispatch-row.md).
+
+---
+
+#### `remote_question_prompts` (non-versioned)
+
+```
+id                TEXT PRIMARY KEY
+channel           TEXT NOT NULL      ← 'slack' | 'discord' | 'telegram'
+status            TEXT NOT NULL      ← 'pending' | 'answered' | 'timed_out' | 'failed' | 'cancelled'
+questions_json    TEXT NOT NULL      ← the questions that were asked
+ref_json          TEXT               ← the message in the channel; NULL until the prompt is sent
+response_json     TEXT               ← the answer of the user
+context_source    TEXT
+created_at        INTEGER NOT NULL   ← epoch milliseconds, as are the other times
+updated_at        INTEGER NOT NULL
+timeout_at        INTEGER NOT NULL
+poll_interval_ms  INTEGER NOT NULL
+last_poll_at      INTEGER
+last_error        TEXT
+```
+
+- DDL owner: `db-remote-question-prompt-schema.ts`. Access: `db/writers/remote-question-prompts.ts`, used by `remote-questions/store.ts`.
+- One row for each question prompt sent to a remote channel. It is delivery state of a transport, written outside Domain Operations. It replaces the `~/.gsd/runtime/remote-questions/<id>.json` files; nothing writes or reads those files now.
+- A prompt is not resumed: each ask sends a new message and writes a new row, also when a `pending` row has the same questions.
+- With no project database open, a prompt is not stored. A row write that fails is logged and not thrown, so the answer still reaches the caller.
 
 ---
 

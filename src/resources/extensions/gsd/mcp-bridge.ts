@@ -43,3 +43,4 @@ export {
   updateRequirementInDb,
 } from "./db-writer.js";
 export { queryJournal } from "./journal.js";
+export { resolvePendingEscalation } from "./escalation-resolution.js";

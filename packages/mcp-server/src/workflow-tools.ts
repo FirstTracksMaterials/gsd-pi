@@ -57,6 +57,24 @@ interface GsdMcpBridge {
   saveRequirementToDb: (...args: any[]) => any;
   updateRequirementInDb: (...args: any[]) => any;
   queryJournal: (...args: any[]) => any;
+  resolvePendingEscalation: (
+    projectDir: string,
+    response: string,
+    invocation: ExecutionInvocation,
+    questionId?: string,
+  ) => Promise<PersistedBlockerResolution>;
+}
+
+/** The outcome of answering the open escalation question in the project database. */
+export interface PersistedBlockerResolution {
+  status: "resolved" | "not-found" | "already-resolved" | "invalid-choice" | "rejected-to-blocker";
+  message: string;
+  questionId: string;
+  milestoneId: string;
+  sliceId: string;
+  taskId: string;
+  decisionId?: string;
+  decisionError?: string;
 }
 
 type WorkflowDatabaseOpenResult =
@@ -1386,6 +1404,31 @@ async function readDbViaBridge<T>(
       return null;
     }
     return read(bridge);
+  });
+}
+
+/**
+ * Resolve the pending blocker that the project database holds
+ * (gsd_resolve_blocker): the open escalation question, through its answer
+ * Domain Operation. It needs no session, so it works after a server restart.
+ * It is a workflow mutation: the write gate applies, and the answer records
+ * the MCP caller, not the user.
+ */
+export async function resolvePersistedBlockerViaBridge(
+  projectDir: string,
+  response: string,
+  questionId?: string,
+  extra?: WorkflowMcpRequestExtra,
+): Promise<PersistedBlockerResolution> {
+  await enforceWorkflowWriteGate("gsd_resolve_blocker", projectDir);
+  const invocation = mcpExecutionInvocation("gsd_resolve_blocker", extra);
+  return runSerializedWorkflowOperation(async () => {
+    const bridge = await importBridgeModule();
+    const opened = bridge.openExistingWorkflowDatabase(projectDir);
+    if (!opened.ok) {
+      throw opened.error ?? new Error(`No pending blocker: the project database is not available (${opened.reason}).`);
+    }
+    return bridge.resolvePendingEscalation(projectDir, response, invocation, questionId);
   });
 }
 
