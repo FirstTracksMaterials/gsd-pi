@@ -60,6 +60,10 @@ import {
   createRemoteQuestionPromptSchema,
   hasRemoteQuestionPromptSchema,
 } from "./db-remote-question-prompt-schema.js";
+import {
+  createDecisionStatementImpactSchema,
+  hasDecisionStatementImpactSchema,
+} from "./db-decision-statement-impact-schema.js";
 
 interface RequiredSchemaFeature {
   readonly id: string;
@@ -147,6 +151,11 @@ const REQUIRED_SCHEMA_FEATURES = [
     id: "remote-question-prompts",
     isPresent: hasRemoteQuestionPromptSchema,
     create: createRemoteQuestionPromptSchema,
+  },
+  {
+    id: "decision-statement-impacts",
+    isPresent: hasDecisionStatementImpactSchema,
+    create: createDecisionStatementImpactSchema,
   },
 ] as const satisfies readonly RequiredSchemaFeature[];
 
