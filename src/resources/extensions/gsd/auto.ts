@@ -20,6 +20,7 @@ import type {
   SessionMessageEntry,
 } from "@gsd/pi-coding-agent";
 import { setBeforeAgentStartContext } from "@gsd/pi-coding-agent";
+import { randomUUID } from "node:crypto";
 
 import { deriveState, invalidateStateCache } from "./state.js";
 import {
@@ -34,6 +35,7 @@ import {
   clearPausedSession as closePausedSession,
   closeStaleScopedPauses,
   readPausedSessionMetadata,
+  recordedMachinePauseAction,
   type InterruptedSessionAssessment,
 } from "./interrupted-session.js";
 import { openAutoPause } from "./db/writers/auto-pauses.js";
@@ -297,6 +299,7 @@ import { runAutoLoopWithUok } from "./uok/kernel.js";
 import { resolveUokFlags } from "./uok/flags.js";
 import { validateDirectory } from "./validate-directory.js";
 import { createAutoOrchestrator } from "./auto/orchestrator.js";
+import { kernelResume, kernelStart, kernelStop } from "./auto/lifecycle-kernel.js";
 import type { AutoAdvanceResult, AutoOrchestrationModule } from "./auto/contracts.js";
 import {
   repairAutoWorktreeSafetyFailure,
@@ -362,8 +365,18 @@ import { normalizeRealPath } from "./paths.js";
 import {
   formatStopNoticePrefix,
   isBlockedStopReason,
+  isNonBlockingPauseNotice,
   stopNoticeDisplayReason,
 } from "./stop-notice.js";
+import { emitWorkflowOutcomeEvent } from "./workflow-outcome-event.js";
+import { classifyFailure } from "./recovery-classification.js";
+import {
+  findPauseLifecycleId,
+  isHumanPauseBlockerKind,
+  openPauseBlockerRow,
+  resolvePauseBlockerRow,
+} from "./pause-blocker-domain-operation.js";
+import { readOpenAutoPauseBlockerId, setAutoPauseBlockerId } from "./db/writers/auto-pauses.js";
 import { abortActiveUnitTurn } from "./auto/unit-turn-abort.js";
 
 // ── ENCAPSULATION INVARIANT ─────────────────────────────────────────────────
@@ -636,22 +649,33 @@ function handlePausedSessionResumeRecovery(
  * pause row. Per ADR-047 the guard stays; this makes the
  * exit reachable by never restoring a superseded pin in the first place.
  *
+ * `machineAction` is the Recovery Classifier route the open pause row recorded
+ * (ADR-046). A machine-classified `retry` pause is consumed by the machine:
+ * the advance re-runs the unit from its stored budgets and retries without a
+ * person, so the route is `machine-retry` instead of a human restore. Every
+ * other action — and every human blocker kind — restores the paused session
+ * for a person as before. A superseded pin still adopts the active milestone
+ * first: the stale-pin exit outranks the retry.
+ *
  * Id comparison uses the dispatch guard's own normalization
  * (`milestoneIdsDispatchCompatible`, #1317) so bare-vs-suffixed aliases of the
  * same milestone never count as superseded.
  */
 export type PausedSessionResumeRoute =
   | { route: "restore" }
+  | { route: "machine-retry" }
   | { route: "discard"; reason: "missing" | "terminal" }
   | { route: "adopt-active"; activeMilestoneId: string };
 
 export function routePausedSessionResume(args: {
-  milestoneDirExists: boolean;
+  milestoneExists: boolean;
   summaryIsTerminal: boolean;
   pausedMilestoneId: string;
   activeMilestoneId: string | null | undefined;
+  /** The action the machine_fixable pause row recorded, when it did. */
+  machineAction?: "retry" | "escalate" | "stop" | null;
 }): PausedSessionResumeRoute {
-  if (!args.milestoneDirExists) return { route: "discard", reason: "missing" };
+  if (!args.milestoneExists) return { route: "discard", reason: "missing" };
   if (args.summaryIsTerminal) return { route: "discard", reason: "terminal" };
   if (
     args.activeMilestoneId
@@ -659,6 +683,7 @@ export function routePausedSessionResume(args: {
   ) {
     return { route: "adopt-active", activeMilestoneId: args.activeMilestoneId };
   }
+  if (args.machineAction === "retry") return { route: "machine-retry" };
   return { route: "restore" };
 }
 
@@ -2216,6 +2241,21 @@ export async function stopAuto(
     } catch (e) {
       debugLog("stop-cleanup-pending-resolve", { error: e instanceof Error ? e.message : String(e) });
     }
+
+    // The typed outcome event: hosts read the run's terminal state from it and
+    // keep the notification-text classification as a fallback (ADR-046). A
+    // blocked stop keeps exit 10; every other stop ends the run like a plain
+    // stop (exit 0), the same rule the text classifier applies.
+    // Emitted last, after every notification surface above (the Step 8 ledger
+    // notice and the headless completion notice): the headless host resolves
+    // the run on this event and stops reading the stream, so a notify sent
+    // after it never reaches the run's output.
+    emitWorkflowOutcomeEvent(pi, {
+      status: isBlockedStopReason(reason) ? "blocked" : "completed",
+      reason: displayReason || reason || undefined,
+      unitType: s.currentUnit?.type,
+      unitId: s.currentUnit?.id,
+    });
   } finally {
     // ── Critical invariants: these MUST execute regardless of errors ──
     // Browser teardown — prevent orphaned Chrome processes across retries (#1733)
@@ -2268,7 +2308,7 @@ export async function stopAuto(
     if (pi) clearToolBaseline(pi);
 
     try {
-      await s.orchestration?.stop(reason ?? "stop");
+      await kernelStop(s, reason ?? "stop");
     } catch (err) {
       debugLog("stop-orchestration-stop", { error: err instanceof Error ? err.message : String(err) });
     }
@@ -2378,6 +2418,24 @@ export async function pauseAuto(
   // Persist the pause so resume survives /exit (#1383). It is the open
   // auto_pauses row of this worker's scope; the fresh-start bootstrap below
   // reads the same row.
+  // A machine_fixable pause routes through the Recovery Classifier (ADR-046):
+  // the classifier owns the route, so the row records the classified failure
+  // kind, the action and the remediation, and a resume re-enters the kernel
+  // advance with that route named on the row instead of re-diagnosing prose.
+  // The seven human blocker kinds pause for a person unchanged.
+  let pauseReasonText = _errorContext?.message;
+  if (blockerKind === "machine_fixable") {
+    const classification = classifyFailure({
+      error: _errorContext?.message ?? "machine-fixable failure",
+      unitType: s.currentUnit?.type,
+      unitId: s.currentUnit?.id,
+    });
+    pauseReasonText = [
+      `recovery:${classification.failureKind}/${classification.action}`,
+      classification.reason,
+      classification.remediation,
+    ].filter(Boolean).join(" | ");
+  }
   try {
     s.pausedDispatchId = activeUnitDispatchId();
     const pausedWorktreePath = resolvePausedAutoWorktreePath({
@@ -2387,6 +2445,9 @@ export async function pauseAuto(
       isolationMode: getIsolationMode(s.originalBasePath || s.basePath),
       baseIsAutoWorktree: isInAutoWorktree(s.basePath),
     });
+    // The pause this row replaces had opened a workflow_blockers row for its
+    // human blocker; the new pause closes that row (ADR-046).
+    const previousBlockerId = readOpenAutoPauseBlockerId();
     openAutoPause({
       blockerKind,
       dispatchId: s.pausedDispatchId,
@@ -2402,14 +2463,55 @@ export async function pauseAuto(
       activeRunDir: s.activeRunDir,
       autoStartTime: s.autoStartTime,
       milestoneLock: s.sessionMilestoneLock ?? undefined,
-      pauseReason: _errorContext?.message,
+      pauseReason: pauseReasonText,
     });
+    if (previousBlockerId) {
+      try {
+        resolvePauseBlockerRow({
+          blockerId: previousBlockerId,
+          disposition: "resolved",
+          resolution: "closed by a newer pause of the same worker scope",
+          idempotencyKey: `pause-blocker-resolve-superseded:${previousBlockerId}`,
+        });
+      } catch (err) {
+        logWarning("engine", `pause blocker resolve failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    // A human blocker is human-only work (ADR-046): the pause opens a
+    // workflow_blockers row for the paused item. A pause of an item without a
+    // lifecycle row, and every machine_fixable or user_request pause, records
+    // the pause row alone.
+    if (isHumanPauseBlockerKind(blockerKind)) {
+      try {
+        const lifecycleId = findPauseLifecycleId({
+          milestoneId: s.currentMilestoneId,
+          unitType: s.currentUnit?.type,
+          unitId: s.currentUnit?.id,
+        });
+        if (lifecycleId) {
+          const { blockerId } = openPauseBlockerRow({
+            lifecycleId,
+            blockerKind,
+            description: pauseReasonText ?? `${blockerKind} pause`,
+            requestedAction: s.stepMode ? "Run /gsd next after resolving the blocker." : "Run /gsd auto after resolving the blocker.",
+            idempotencyKey: `pause-blocker-open:${randomUUID()}`,
+          });
+          setAutoPauseBlockerId(blockerId);
+        }
+      } catch (err) {
+        // The pause row is the source of truth; a blocker row that cannot open
+        // never blocks the pause itself.
+        logWarning("engine", `pause blocker open failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
   } catch (err) {
     // Non-fatal — resume will still work via full bootstrap, just without worktree context
     logWarning("engine", `paused-session DB write failed: ${err instanceof Error ? err.message : String(err)}`, { file: "auto.ts" });
   }
 
   const pausedUnitLabel = currentUnitLabel();
+  const pausedUnitType = s.currentUnit?.type;
+  const pausedUnitId = s.currentUnit?.id;
 
   // Close out the current unit so its runtime record doesn't stay at "dispatched"
   if (s.currentUnit && ctx) {
@@ -2456,7 +2558,7 @@ export async function pauseAuto(
   deregisterSigtermHandler();
 
   try {
-    await s.orchestration?.stop("pause");
+    await kernelStop(s, "pause");
   } catch (err) {
     debugLog("pause-orchestration-stop", { error: err instanceof Error ? err.message : String(err) });
   }
@@ -2485,6 +2587,17 @@ export async function pauseAuto(
     pauseMessage,
     lifecycle.notifyLevel,
   );
+
+  // The typed outcome event: hosts read the run's terminal state from it and
+  // keep the notification-text classification as a fallback (ADR-046). A
+  // non-blocking pause does not need operator intervention, so it is not
+  // blocked — the same rule the text classifier applies.
+  emitWorkflowOutcomeEvent(_pi, {
+    status: isNonBlockingPauseNotice(pauseMessage.toLowerCase()) ? "completed" : "blocked",
+    reason: _errorContext?.message ?? lifecycle.notifyPrefix,
+    unitType: pausedUnitType,
+    unitId: pausedUnitId,
+  });
 }
 
 /**
@@ -2910,7 +3023,6 @@ export async function startAuto(
           // Validate the milestone still exists and isn't already complete (#1664).
           // DB status is the only authority; with no DB the milestone is not
           // treated as terminal and the open failure is reported (ADR-046).
-          const mDir = resolveMilestonePath(base, meta.milestoneId);
           let summaryIsTerminal = false;
           let dbAvailable = isDbAvailable();
           let milestoneRow = dbAvailable ? readMilestone(meta.milestoneId) : null;
@@ -2934,10 +3046,15 @@ export async function startAuto(
           // terminal pin and, instead of merely starting fresh on a superseded
           // pin, adopts the project's current active milestone.
           const resumeRoute = routePausedSessionResume({
-            milestoneDirExists: !!mDir,
+            // The milestone row is the authority. With no database nothing is
+            // known, so the pause is kept.
+            milestoneExists: !dbAvailable || milestoneRow != null,
             summaryIsTerminal,
             pausedMilestoneId: meta.milestoneId,
             activeMilestoneId: freshStartAssessment.state?.activeMilestone?.id ?? null,
+            // The Recovery Classifier route the machine_fixable pause recorded
+            // (ADR-046): a retry is consumed by the machine, not by a person.
+            machineAction: recordedMachinePauseAction(meta),
           });
           if (resumeRoute.route === "discard") {
             clearPausedSession("paused-session DB cleanup failed (milestone gone/complete)");
@@ -2956,6 +3073,27 @@ export async function startAuto(
             s.milestoneLeaseToken = null;
             ctx.ui.notify(
               `Paused milestone ${meta.milestoneId} was superseded — ${resumeRoute.activeMilestoneId} is now the project's active milestone. Adopting ${resumeRoute.activeMilestoneId}; ${meta.milestoneId} remains open for later dispatch.`,
+              "info",
+            );
+          } else if (resumeRoute.route === "machine-retry") {
+            // The recorded Recovery Classifier route continues by machine
+            // decision (ADR-046): the advance re-runs the unit from its stored
+            // budgets and retries, so the interrupted turn is not replayed for
+            // a person — no paused-session file or tool-call recovery.
+            s.currentMilestoneId = meta.milestoneId;
+            s.originalBasePath = meta.originalBasePath || base;
+            s.stepMode = meta.stepMode ?? requestedStepMode;
+            s.autoStartTime = meta.autoStartTime || Date.now();
+            s.sessionMilestoneLock = meta.milestoneLock ?? null;
+            s.paused = true;
+            rebuildScope(
+              meta.worktreePath && existsSync(meta.worktreePath)
+                ? meta.worktreePath
+                : (s.originalBasePath || base),
+              s.currentMilestoneId,
+            );
+            ctx.ui.notify(
+              `Paused session for ${meta.milestoneId} was machine-classified retryable — resuming without operator action.`,
               "info",
             );
           } else {
@@ -3200,7 +3338,7 @@ export async function startAuto(
     pi.events.emit(CMUX_CHANNELS.LOG, { preferences: loadEffectiveGSDPreferences(s.basePath || undefined)?.preferences, message: s.stepMode ? "Step-mode resumed." : "Auto-mode resumed.", level: "progress" });
 
     try {
-      const resumeResult = await s.orchestration?.resume();
+      const resumeResult = await kernelResume(s);
       if (resumeResult?.kind === "blocked" && resumeResult.action === "stop") {
         notifyResumeBlocked(ctx, resumeResult);
         await cleanupAfterLoopExit(ctx);
@@ -3298,7 +3436,7 @@ export async function startAuto(
   pi.events.emit(CMUX_CHANNELS.LOG, { preferences: loadEffectiveGSDPreferences(s.basePath || undefined)?.preferences, message: requestedStepMode ? "Step-mode started." : "Auto-mode started.", level: "progress" });
 
   try {
-    await s.orchestration?.start({ basePath: s.basePath, trigger: "auto-loop" });
+    await kernelStart(s, { basePath: s.basePath, trigger: "auto-loop" });
   } catch (err) {
     debugLog("start-orchestration-start", { error: err instanceof Error ? err.message : String(err) });
   }

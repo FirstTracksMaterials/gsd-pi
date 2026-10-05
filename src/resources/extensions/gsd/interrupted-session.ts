@@ -18,7 +18,9 @@ import { deriveState } from "./state.js";
 import type { GSDState } from "./types.js";
 import { getRuntimeKv, deleteRuntimeKv } from "./db/runtime-kv.js";
 import { isDispatchExecutionOpen } from "./db/unit-dispatches.js";
-import { closeAutoPause, listOpenAutoPauseScopes, readOpenAutoPause } from "./db/writers/auto-pauses.js";
+import { closeAutoPause, listOpenAutoPauseScopes, readOpenAutoPause, readOpenAutoPauseBlockerId } from "./db/writers/auto-pauses.js";
+import { resolvePauseBlockerRow } from "./pause-blocker-domain-operation.js";
+import { logWarning } from "./workflow-logger.js";
 import { readMilestone, readSlice } from "./db/lifecycle-read.js";
 import type { AutoPauseBlockerKind } from "./recovery-policy.js";
 
@@ -27,6 +29,24 @@ export type InterruptedSessionClassification =
   | "running"
   | "recoverable"
   | "stale";
+
+/** The Recovery Classifier action a machine_fixable pause recorded on its row. */
+export type RecordedMachinePauseAction = "retry" | "escalate" | "stop";
+
+/**
+ * The action a machine_fixable pause's Recovery Classifier route recorded —
+ * the `recovery:<failure-kind>/<action>` prefix of the pause reason (ADR-046).
+ * Null for a human pause, a pause without a recorded route (an older row), or
+ * a recorded action outside the classifier's vocabulary: all of them stay
+ * human pauses.
+ */
+export function recordedMachinePauseAction(
+  meta: Pick<PausedSessionMetadata, "blockerKind" | "pauseReason"> | null | undefined,
+): RecordedMachinePauseAction | null {
+  if (meta?.blockerKind !== "machine_fixable") return null;
+  const match = /^recovery:[a-z0-9-]+\/(retry|escalate|stop)(?:\s|\||$)/.exec(meta.pauseReason ?? "");
+  return match ? (match[1] as RecordedMachinePauseAction) : null;
+}
 
 export interface PausedSessionMetadata {
   milestoneId?: string;
@@ -145,7 +165,23 @@ export function readPausedSessionMetadata(
  * key. Throws when no database is open.
  */
 export function clearPausedSession(): void {
+  // The resolution of the pause resolves the workflow_blockers row the human
+  // pause opened (ADR-046). Best-effort: the pause closes even when the
+  // blocker row cannot.
+  const blockerId = readOpenAutoPauseBlockerId();
   closeAutoPause();
+  if (blockerId) {
+    try {
+      resolvePauseBlockerRow({
+        blockerId,
+        disposition: "resolved",
+        resolution: "pause closed: the blocked work resumed or was discarded",
+        idempotencyKey: `pause-blocker-resolve-close:${blockerId}`,
+      });
+    } catch (err) {
+      logWarning("engine", `pause blocker resolve failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
   deleteRuntimeKv("global", "", PAUSED_SESSION_KV_KEY);
 }
 
@@ -169,7 +205,24 @@ export function findStaleScopedPauses(): string[] {
 /** Close every stale scoped pause and return the scopes. The rows stay in the table. */
 export function closeStaleScopedPauses(): string[] {
   const stale = findStaleScopedPauses();
-  for (const scope of stale) closeAutoPause(scope);
+  for (const scope of stale) {
+    // The item of a stale scoped pause is closed or gone: its human blocker
+    // resolves as dismissed (ADR-046). Best-effort — the pause closes anyway.
+    const blockerId = readOpenAutoPauseBlockerId(scope);
+    closeAutoPause(scope);
+    if (blockerId) {
+      try {
+        resolvePauseBlockerRow({
+          blockerId,
+          disposition: "dismissed",
+          resolution: "stale scoped pause closed: the blocked item no longer exists",
+          idempotencyKey: `pause-blocker-resolve-stale:${blockerId}`,
+        });
+      } catch (err) {
+        logWarning("engine", `stale pause blocker resolve failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  }
   return stale;
 }
 
