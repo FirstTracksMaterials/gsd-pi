@@ -10,6 +10,7 @@ import { admitCommand } from "../admission.ts";
 import { admitAnswer, answerMatchesOwner, registerAnswerWorkerLookup, registerPendingQuestion, verdictForAnswerSession } from "../answers.ts";
 import { NativeDispatchError, registerNativeAutoDispatchForTest, resetNativeAutoDispatchForTest } from "../native-auto-dispatch.ts";
 import { registerNativeWorkflowOpsForTest, resetNativeWorkflowOpsForTest } from "../native-commands.ts";
+import { configureEventHubForTest, readProjectJournal } from "../event-hub.ts";
 import {
   createControl,
   resetC05,
@@ -76,6 +77,37 @@ test("a dispatch that already began side effects stays recovery_required", async
   assert.equal(stored?.operation.state, "recovery_required");
   assert.notEqual(stored?.operation.state, "succeeded");
   assert.equal(control.lease.current()?.recovery_required, true);
+});
+
+test("native bridge assistant and tool events enter the canonical project journal", async () => {
+  configureEventHubForTest({ heartbeatMs: 0, coalesceMs: 0 });
+  const alpha = tempProject("dispatch-events");
+  const { control } = createControl({ projects: [{ project_id: "alpha", target: alpha }] });
+  seedReadyProject(control, "alpha", alpha);
+  process.env.GSD_WEB_DAEMON_MODE = "1";
+  registerNativeAutoDispatchForTest((input) => {
+    input.onEvent?.({
+      type: "message_update",
+      messageId: "message-1",
+      assistantMessageEvent: { type: "text_delta", delta: "Working", contentIndex: 0 },
+    });
+    input.onEvent?.({ type: "tool_execution_start", toolCallId: "tool-1", toolName: "read", args: { path: "README.md" } });
+    input.onEvent?.({ type: "tool_execution_end", toolCallId: "tool-1", toolName: "read", result: "ok", isError: false });
+    input.onEvent?.({ type: "extension_ui_request", id: "status-1", method: "setStatus", statusText: "working" });
+  });
+
+  const started = await admitCommand(control, "alpha:M001", startRequest(uuid(89)));
+  assert.equal(started.ok, true);
+  await flush();
+
+  const events = readProjectJournal(control, "alpha").readAfter(null).events;
+  const projected = events.filter((event) => ["assistant_delta", "tool_started", "tool_finished"].includes(event.type));
+  assert.deepEqual(projected.map((event) => event.type), ["assistant_delta", "tool_started", "tool_finished"]);
+  assert.equal(projected[0]?.payload.text, "Working");
+  assert.equal(projected[1]?.payload.tool, "read");
+  assert.equal(projected[2]?.payload.ok, true);
+  assert.equal(projected.every((event) => event.operation_id === (started.ok ? started.operation.operation_id : null)), true);
+  assert.equal(events.some((event) => event.type === "input_required"), false);
 });
 
 test("review without a native workflow does not succeed with empty findings", async () => {

@@ -226,6 +226,11 @@ export type ReadMetadata =
 
 export type ScientificStatus = "NOT_SIGNED_OFF" | "SIGNED_OFF" | "NOT_APPLICABLE";
 
+export type VerificationSummary = {
+  assessments: { total: number; pass: number; fail: number };
+  evidence: { total: number; passed: number; failed: number };
+};
+
 export type JobSnapshot = {
   protocol_version: 1;
   job_id: string;
@@ -245,6 +250,7 @@ export type JobSnapshot = {
   blockers: string[];
   pending_input: PendingInput | null;
   scientific_status: ScientificStatus;
+  verification: VerificationSummary | null;
   source_revision: string | null;
   references: SnapshotReference[];
   timeline: Array<Record<string, unknown>>;

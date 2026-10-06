@@ -18,7 +18,7 @@ import { readJobHistory } from "../../../../../src/runtime-control/history.ts";
 import { subscribeProjectEvents } from "../../../../../src/runtime-control/event-hub.ts";
 import { RuntimeControlError } from "../../../../../src/runtime-control/errors.ts";
 import type { Operation, RuntimeError } from "../../../../../src/runtime-control/types.ts";
-import { abortOwnedWorker, lookupProjectBridgeServiceForCwd, sendBridgeInput } from "../../../../../src/web/bridge-service.ts";
+import { abortOwnedWorker, getProjectBridgeServiceForCwd, lookupProjectBridgeServiceForCwd, sendBridgeInput } from "../../../../../src/web/bridge-service.ts";
 
 export { admitAnswer, admitCommand, admitImport, getOperation, getOperationByRequest };
 export { buildJobSnapshot, listProjectJobs, readJobHistory, subscribeProjectEvents };
@@ -86,8 +86,23 @@ function bindNativeDispatch(): void {
     if (fault === "lost") {
       throw new NativeDispatchError("native auto dispatch lost the response after the prompt", true);
     }
-    const result = await sendBridgeInput({ type: "prompt", message: "/gsd auto" }, input.basePath);
+    let unsubscribe = (): void => undefined;
+    if (input.onEvent) {
+      const bridge = getProjectBridgeServiceForCwd(input.basePath);
+      unsubscribe = bridge.subscribe((event) => {
+        input.onEvent?.(event);
+        if (event.type === "agent_end") unsubscribe();
+      });
+    }
+    let result: Awaited<ReturnType<typeof sendBridgeInput>>;
+    try {
+      result = await sendBridgeInput({ type: "prompt", message: input.resume ? "/gsd auto --native-resume" : "/gsd auto" }, input.basePath);
+    } catch (error) {
+      unsubscribe();
+      throw error;
+    }
     if (result && typeof result === "object" && "success" in result && result.success === false) {
+      unsubscribe();
       const message = "error" in result && typeof result.error === "string" ? result.error : "native auto dispatch failed";
       throw new NativeDispatchError(message, false);
     }

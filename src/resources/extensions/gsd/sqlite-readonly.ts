@@ -1,9 +1,7 @@
 // Project/App: gsd-pi
 // File Purpose: Narrow provider-portable SQLite opener for untrusted read-only inspection.
 
-import { createRequire } from "node:module";
 import { fstatSync, lstatSync, readdirSync, readSync, realpathSync } from "node:fs";
-import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   acquireSqliteFileIdentityLock,
@@ -47,11 +45,6 @@ export class SqliteReadOnlyConfigurationCloseError extends Error {
     super("SQLite read-only connection failed configuration and close");
     this.name = "SqliteReadOnlyConfigurationCloseError";
   }
-}
-
-function systemRequire(): ReturnType<typeof createRequire> {
-  const packageRoot = process.env.GSD_WEB_PACKAGE_ROOT || process.env.GSD_PKG_ROOT || process.cwd();
-  return createRequire(resolve(packageRoot, "package.json"));
 }
 
 export interface SqliteFileIdentity {
@@ -235,13 +228,15 @@ function openRawSqliteReadOnly(
   let captureTransferred = false;
   try {
     sqliteReadOnlyOpenBoundaryForTest?.beforeRaw?.(path);
-    const require = systemRequire();
     let nodeSqlite: unknown;
     if (nodeSqliteModuleLoaderForTest !== null) {
       nodeSqlite = nodeSqliteModuleLoaderForTest();
     } else {
       try {
-        nodeSqlite = require("node:sqlite");
+        const getBuiltinModule = (process as NodeJS.Process & {
+          getBuiltinModule?: (id: string) => unknown;
+        }).getBuiltinModule;
+        nodeSqlite = getBuiltinModule?.("node:sqlite");
       } catch {
         nodeSqlite = undefined;
       }

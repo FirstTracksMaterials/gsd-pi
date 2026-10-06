@@ -213,6 +213,33 @@ test("AT-E03: authoritative reads make no inference; projection fallback cannot 
   assert.equal(control.lease.isHeld(), true);
 });
 
+test("native executing phase without an owning operation is prepared, not running", async () => {
+  const alpha = tempProject("prepared-projection");
+  const { control } = createControl({ projects: [{ project_id: "alpha", target: alpha }] });
+  seedReadyProject(control, "alpha", alpha);
+  registerNativeSnapshotReaderForTest(async () => dbNative({
+    phase: "executing",
+    timeline: [
+      { id: "M001", title: "Milestone", status: "running", source: "native_plan" },
+      { id: "S01", title: "Slice", status: "pending", source: "native_plan" },
+      { id: "T01", title: "Task", status: "pending", source: "native_plan" },
+    ],
+    verification: {
+      assessments: { total: 0, pass: 0, fail: 0 },
+      evidence: { total: 0, passed: 0, failed: 0 },
+    },
+  }));
+  const response = await jobGet(
+    new Request("http://127.0.0.1/api/runtime/v1/jobs/alpha%3AM001"),
+    { params: { job_id: "alpha%3AM001" } },
+  );
+  assert.equal(response.status, 200);
+  const body = await response.json() as { state: string; timeline: Array<{ id: string }>; verification: unknown };
+  assert.equal(body.state, "prepared");
+  assert.deepEqual(body.timeline.map((row) => row.id), ["M001", "S01", "T01"]);
+  assert.ok(body.verification);
+});
+
 test("AT-E04: agent_end is not milestone completion; old-attempt terminals do not override current state", async () => {
   configureEventHubForTest({ heartbeatMs: 0, coalesceMs: 0 });
   const alpha = tempProject("e04");

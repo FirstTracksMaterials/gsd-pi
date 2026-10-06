@@ -9,6 +9,7 @@ export type NativeAutoDispatchInput = {
   basePath: string;
   milestoneId: string;
   resume: boolean;
+  onEvent?: (event: unknown) => void;
 };
 
 export type NativeAutoDispatcher = (input: NativeAutoDispatchInput) => Promise<void> | void;
@@ -40,9 +41,27 @@ async function sendExistingBridgeAuto(input: NativeAutoDispatchInput): Promise<v
     try {
       const loaded = await import(/* webpackIgnore: true */ pathToFileURL(candidate).href) as {
         sendBridgeInput: (command: { type: string; message: string }, cwd?: string) => Promise<unknown>;
+        getProjectBridgeServiceForCwd: (cwd: string) => {
+          subscribe: (listener: (event: unknown) => void) => () => void;
+        };
       };
+      let unsubscribe = (): void => undefined;
+      if (input.onEvent) {
+        const bridge = loaded.getProjectBridgeServiceForCwd(input.basePath);
+        unsubscribe = bridge.subscribe((event) => {
+          input.onEvent?.(event);
+          if (event && typeof event === "object" && "type" in event && (event as { type?: string }).type === "agent_end") {
+            unsubscribe();
+          }
+        });
+      }
       const message = input.resume ? "/gsd auto --native-resume" : "/gsd auto";
-      await loaded.sendBridgeInput({ type: "prompt", message }, input.basePath);
+      try {
+        await loaded.sendBridgeInput({ type: "prompt", message }, input.basePath);
+      } catch (error) {
+        unsubscribe();
+        throw error;
+      }
       return;
     } catch (error) {
       lastError = error;

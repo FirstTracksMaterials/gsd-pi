@@ -25,6 +25,7 @@ import type {
   ScientificStatus,
   SnapshotReference,
   StoredOperation,
+  VerificationSummary,
 } from "./types.ts";
 import { settlePrepareBoundary } from "./native-commands.ts";
 import { getWorkspacePhase } from "./workspace-profile.ts";
@@ -43,6 +44,7 @@ export type NativeObservationInput = {
   source_revision?: string | null;
   timeline?: Array<Record<string, unknown>>;
   scientific_status?: ScientificStatus;
+  verification?: VerificationSummary | null;
   open_question?: {
     question_id: string;
     title: string;
@@ -122,9 +124,9 @@ async function readNative(basePath: string): Promise<NativeObservationInput | nu
   if (nativeReader) return nativeReader(basePath);
   try {
     const { readProjectSnapshotFromDb } = await import("../resources/extensions/gsd/state/project-snapshot.ts");
-    const { readProgressFromDb } = await import("../resources/extensions/gsd/state/progress-from-db.ts");
+    const { readProjectProgressFromDb } = await import("../resources/extensions/gsd/state/progress-from-db.ts");
     const snapshot = await readProjectSnapshotFromDb(basePath, { preserveGlobalDbHandle: true });
-    const progress = await readProgressFromDb(basePath);
+    const progress = await readProjectProgressFromDb(basePath);
     if (!snapshot && !progress) return null;
     const tasksTotal = snapshot?.progress.tasks.total ?? progress?.tasks.total ?? 0;
     const tasksDone = snapshot?.progress.tasks.done ?? progress?.tasks.done ?? 0;
@@ -142,6 +144,8 @@ async function readNative(basePath: string): Promise<NativeObservationInput | nu
         : progress?.activeTask
           ? { id: progress.activeTask.id, title: progress.activeTask.title, started_at: null, turns: null }
           : null,
+      timeline: nativeTimeline(progress?.milestoneDetails ?? []),
+      verification: snapshot?.verification ?? null,
       open_question: question
         ? {
           question_id: question.questionId,
@@ -155,6 +159,93 @@ async function readNative(basePath: string): Promise<NativeObservationInput | nu
   } catch {
     return null;
   }
+}
+
+type NativeMilestoneDetail = {
+  id: string;
+  title: string;
+  status: string;
+  slices: Array<{
+    id: string;
+    title: string;
+    status: string;
+    tasks: Array<{
+      id: string;
+      title: string;
+      status: string;
+      description?: string;
+      verificationResult?: string;
+      duration?: string;
+      completedAt?: string | null;
+    }>;
+  }>;
+};
+
+function durationMs(value: string | undefined): number | null {
+  const text = (value ?? "").trim().toLowerCase();
+  if (!text) return null;
+  const match = /^(?:(\d+)h\s*)?(?:(\d+)m\s*)?(?:(\d+)s\s*)?$/.exec(text);
+  if (!match || !match.slice(1).some(Boolean)) return null;
+  return ((Number(match[1] ?? 0) * 3600) + (Number(match[2] ?? 0) * 60) + Number(match[3] ?? 0)) * 1000;
+}
+
+function timelineStatus(value: string): string {
+  const status = value.trim().toLowerCase();
+  if (["complete", "completed", "done", "closed", "passed"].includes(status)) return "passed";
+  if (["active", "running", "in_progress", "executing"].includes(status)) return "running";
+  if (["failed", "error"].includes(status)) return "failed";
+  if (["cancelled", "canceled", "interrupted", "aborted"].includes(status)) return "interrupted";
+  return status || "pending";
+}
+
+function nativeTimeline(milestones: NativeMilestoneDetail[]): Array<Record<string, unknown>> {
+  const rows: Array<Record<string, unknown>> = [];
+  for (const milestone of milestones) {
+    rows.push({
+      id: milestone.id,
+      title: milestone.title,
+      status: timelineStatus(milestone.status),
+      native_status: milestone.status,
+      detail: `Milestone ${milestone.id}`,
+      source: "native_plan",
+      unit_type: "milestone",
+      elapsed_ms: null,
+      turns: null,
+    });
+    for (const slice of milestone.slices) {
+      rows.push({
+        id: slice.id,
+        title: slice.title,
+        status: timelineStatus(slice.status),
+        native_status: slice.status,
+        detail: `Milestone ${milestone.id} · Slice ${slice.id}`,
+        source: "native_plan",
+        unit_type: "slice",
+        milestone_id: milestone.id,
+        elapsed_ms: null,
+        turns: null,
+      });
+      for (const task of slice.tasks) {
+        const context = task.description?.trim() || `Milestone ${milestone.id} · Slice ${slice.id}`;
+        rows.push({
+          id: task.id,
+          title: task.title,
+          status: timelineStatus(task.status),
+          native_status: task.status,
+          detail: context,
+          source: "native_plan",
+          unit_type: "task",
+          milestone_id: milestone.id,
+          slice_id: slice.id,
+          verification: task.verificationResult?.trim() || null,
+          completed_at: task.completedAt ?? null,
+          elapsed_ms: durationMs(task.duration),
+          turns: null,
+        });
+      }
+    }
+  }
+  return rows;
 }
 
 function latestLive(operations: StoredOperation[]): StoredOperation | undefined {
@@ -197,7 +288,9 @@ function deriveState(input: {
     return "completed";
   }
   if (PLANNING_PHASES.has(phase)) return "planning";
-  if (phase === "executing") return "running";
+  // A ready native plan has phase=executing even before an operation owns it.
+  // Only a durable live operation may project that phase as running.
+  if (phase === "executing") return "prepared";
   return "idle";
 }
 
@@ -329,6 +422,7 @@ export async function buildJobSnapshot(control: RuntimeControl, jobId: string): 
     blockers,
     pending_input: pending,
     scientific_status: scientific,
+    verification: native?.verification ?? null,
     source_revision: native?.source_revision ?? liveObservation.source_revision,
     references: liveObservation.references.length > 0 ? liveObservation.references : referencesFor(project),
     timeline: native?.timeline ?? liveObservation.timeline,

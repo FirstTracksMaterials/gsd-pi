@@ -1062,7 +1062,15 @@ export interface ProgressHierarchyDetails {
       title: string;
       status: string;
       truncated: boolean;
-      tasks: Array<{ id: string; title: string; status: string }>;
+      tasks: Array<{
+        id: string;
+        title: string;
+        status: string;
+        description: string;
+        verificationResult: string;
+        duration: string;
+        completedAt: string | null;
+      }>;
     }>;
   }>;
   milestonesTruncated: boolean;
@@ -1118,9 +1126,11 @@ export function getProgressHierarchyDetails(): ProgressHierarchyDetails {
       taskParams[`:taskSid${index}`] = slice.sliceId;
     });
     const rows = db.prepare(
-      `SELECT milestone_id, slice_id, id, title, status, sequence, row_number
+      `SELECT milestone_id, slice_id, id, title, status, description,
+              verification_result, duration, completed_at, sequence, row_number
          FROM (
-           SELECT milestone_id, slice_id, id, title, status, sequence,
+           SELECT milestone_id, slice_id, id, title, status, description,
+                  verification_result, duration, completed_at, sequence,
                   ROW_NUMBER() OVER (PARTITION BY milestone_id, slice_id ORDER BY sequence, id) AS row_number
              FROM tasks
             WHERE ${taskClauses}
@@ -1168,6 +1178,10 @@ export function getProgressHierarchyDetails(): ProgressHierarchyDetails {
               id: String(task.id ?? ""),
               title: String(task.title ?? ""),
               status: String(task.status ?? ""),
+              description: String(task.description ?? ""),
+              verificationResult: String(task.verification_result ?? ""),
+              duration: String(task.duration ?? ""),
+              completedAt: task.completed_at ? String(task.completed_at) : null,
             })),
           };
         }),

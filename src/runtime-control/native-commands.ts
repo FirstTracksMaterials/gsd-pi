@@ -11,12 +11,15 @@ import type { ModelLease } from "./model-lease.ts";
 import type { OperationStore } from "./operation-store.ts";
 import { setWorkspacePhase } from "./workspace-profile.ts";
 import { dispatchNativeScopedAuto, NativeDispatchError } from "./native-auto-dispatch.ts";
+import { ingestNativeEvent } from "./event-hub.ts";
+import type { RuntimeControl } from "./control.ts";
 
 export type CommandHost = {
   store: OperationStore;
   lease: ModelLease;
   jobs: JobCatalog;
   clock: () => Date;
+  stateRoot?: string;
 };
 
 export type NativeCommandContext = {
@@ -98,7 +101,14 @@ function storedFromContext(context: NativeCommandContext): StoredOperation | und
   return context.host.store.read(context.operation.operation_id);
 }
 
-async function defaultStart(input: { basePath: string; milestoneId: string; resume: boolean }): Promise<NativeStartResult> {
+type DefaultStartInput = {
+  basePath: string;
+  milestoneId: string;
+  resume: boolean;
+  onEvent?: (event: unknown) => void;
+};
+
+async function defaultStart(input: DefaultStartInput): Promise<NativeStartResult> {
   lastMilestoneLock.set(input.basePath, input.milestoneId);
   process.env.GSD_MILESTONE_LOCK = input.milestoneId;
   const dispatch = dispatchNativeScopedAuto(input).then((result) => {
@@ -108,6 +118,70 @@ async function defaultStart(input: { basePath: string; milestoneId: string; resu
     }
   });
   return { started: true, milestoneLock: input.milestoneId, dispatch };
+}
+
+function recordBridgeEvent(context: NativeCommandContext, event: unknown): void {
+  if (!event || typeof event !== "object" || !("type" in event)) return;
+  const native = event as Record<string, unknown>;
+  const type = typeof native.type === "string" ? native.type : "";
+  if (!type || type === "bridge_status" || type === "live_state_invalidation") return;
+
+  const payload: Record<string, unknown> = {};
+  if (type === "tool_execution_start" || type === "tool_execution_end" || type === "tool_execution_update") {
+    payload.tool = native.toolName;
+    payload.name = native.toolName;
+    payload.input = native.args ?? native.input;
+    payload.output = native.result;
+    payload.ok = native.isError !== true;
+    if (native.isError === true) payload.error = native.error ?? native.result ?? true;
+  } else if (type === "message_end" || type === "assistant_message") {
+    const message = native.message;
+    if (message && typeof message === "object") {
+      const record = message as { role?: unknown; content?: unknown };
+      if (typeof record.role === "string" && record.role !== "assistant") return;
+      if (typeof record.content === "string") {
+        payload.text = record.content;
+      } else if (Array.isArray(record.content)) {
+        payload.text = record.content
+          .filter((item): item is { type?: string; text?: string } => Boolean(item && typeof item === "object"))
+          .filter((item) => item.type === "text" && typeof item.text === "string")
+          .map((item) => item.text)
+          .join("\n");
+      }
+    } else if (typeof native.text === "string") payload.text = native.text;
+  } else if (type === "extension_ui_request") {
+    if (!["select", "confirm", "input", "editor"].includes(String(native.method ?? ""))) return;
+    payload.method = native.method;
+    payload.id = native.id;
+    payload.title = native.title;
+    payload.message = native.message;
+    payload.options = native.options;
+    payload.placeholder = native.placeholder;
+    payload.prefill = native.prefill;
+    payload.allowMultiple = native.allowMultiple;
+    payload.secure = native.secure;
+  }
+
+  if (!context.host.stateRoot) return;
+  ingestNativeEvent(context.host as RuntimeControl, {
+    type,
+    project_id: context.job.project_id,
+    job_id: context.job.job_id,
+    operation_id: context.operation.operation_id,
+    attempt_id: context.operation.operation_id,
+    task_id: typeof native.task_id === "string" ? native.task_id : null,
+    message_id: typeof native.message_id === "string"
+      ? native.message_id
+      : typeof native.messageId === "string"
+        ? native.messageId
+        : null,
+    revision: context.job.revision,
+    authority_epoch: context.job.authority_epoch,
+    payload,
+    assistantMessageEvent: native.assistantMessageEvent && typeof native.assistantMessageEvent === "object"
+      ? native.assistantMessageEvent as { type?: string; delta?: string; contentIndex?: number }
+      : undefined,
+  });
 }
 
 function failOperation(host: CommandHost, stored: StoredOperation, code: "runtime_unavailable" | "recovery_required" | "invalid_contract", message: string): void {
@@ -417,7 +491,14 @@ export async function productionCommandHandler(context: NativeCommandContext): P
       endPrepareMode(basePath);
       return { dispatch: false, holdLease: false };
     }
-    const start = await (nativeOps.startScopedAuto ?? defaultStart)({ basePath, milestoneId, resume: false });
+    const start = nativeOps.startScopedAuto
+      ? await nativeOps.startScopedAuto({ basePath, milestoneId, resume: false })
+      : await defaultStart({
+        basePath,
+        milestoneId,
+        resume: false,
+        onEvent: (event) => recordBridgeEvent(context, event),
+      });
     stored.operation.state = "running";
     stored.operation.updated_at = nowIso(context.host.clock);
     stored.operation.result = { kind: "prepare", milestoneLock: start.milestoneLock, dispatched: true };
@@ -514,11 +595,14 @@ export async function productionCommandHandler(context: NativeCommandContext): P
 
   if (action === "start" || action === "resume") {
     setWorkspacePhase(basePath, "implement");
-    const start = await (nativeOps.startScopedAuto ?? defaultStart)({
-      basePath,
-      milestoneId,
-      resume: action === "resume",
-    });
+    const start = nativeOps.startScopedAuto
+      ? await nativeOps.startScopedAuto({ basePath, milestoneId, resume: action === "resume" })
+      : await defaultStart({
+        basePath,
+        milestoneId,
+        resume: action === "resume",
+        onEvent: (event) => recordBridgeEvent(context, event),
+      });
     lastMilestoneLock.set(basePath, start.milestoneLock);
     stored.operation.state = "running";
     stored.operation.updated_at = nowIso(context.host.clock);

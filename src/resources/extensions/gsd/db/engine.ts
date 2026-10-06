@@ -8,7 +8,6 @@
 // This file legitimately holds DDL and BEGIN/COMMIT control, so it is
 // allowlisted in tests/single-writer-invariant.test.ts alongside the explicit
 // writer layer.
-import { createRequire } from "node:module";
 import { createHash, randomUUID } from "node:crypto";
 import {
   closeSync,
@@ -137,27 +136,15 @@ import {
 export { getDatabaseReplacementPaths };
 export type { DatabaseReplacementPaths } from "../database-replacement-paths.js";
 
-let _gsdRequire: ReturnType<typeof createRequire> | null | undefined;
-
-function getGsdRequire(): ReturnType<typeof createRequire> | null {
-  if (_gsdRequire !== undefined) return _gsdRequire;
-  try {
-    // Next.js may emit this module into a CommonJS chunk. Avoid ESM-only module
-    // metadata syntax here; it is a hard parse error there.
-    const packageRoot = process.env.GSD_WEB_PACKAGE_ROOT || process.env.GSD_PKG_ROOT || process.cwd();
-    _gsdRequire = createRequire(resolve(packageRoot, "package.json"));
-  } catch {
-    _gsdRequire = null;
-  }
-  return _gsdRequire;
-}
-
 type ProviderName = DbProviderName;
 const providerLoader = createSqliteProviderLoader({
   tryRequireNodeSqlite: () => {
-    const req = getGsdRequire();
-    if (!req) throw new Error("unavailable");
-    return req("node:sqlite");
+    const getBuiltinModule = (process as NodeJS.Process & {
+      getBuiltinModule?: (id: string) => unknown;
+    }).getBuiltinModule;
+    const sqlite = getBuiltinModule?.("node:sqlite");
+    if (!sqlite) throw new Error("unavailable");
+    return sqlite;
   },
   suppressSqliteWarning,
   nodeVersion: process.versions.node,

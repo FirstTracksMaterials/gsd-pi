@@ -56,7 +56,15 @@ export interface DbProjectProgressResult extends DbProgressResult {
       title: string;
       status: string;
       truncated: boolean;
-      tasks: Array<{ id: string; title: string; status: string }>;
+      tasks: Array<{
+        id: string;
+        title: string;
+        status: string;
+        description: string;
+        verificationResult: string;
+        duration: string;
+        completedAt: string | null;
+      }>;
     }>;
   }>;
   milestoneDetailsTruncated?: boolean;
