@@ -90,23 +90,24 @@ completed.
 - **`tool-unavailable` (Recovery kind)**: the Recovery Classification failure kind for a tool call that raced the workflow MCP server's registration (`No such tool available` / a Tool Surface Readiness abort). Transient — action `retry` with bounded attempts and its own exit reason; distinct from `tool-schema`/`tool-contract`, which are deterministic stops. The system retries; the model must never improvise a fallback around a missing workflow tool.
 - **Workflow Bridge Warm-up**: the stdio MCP server's eager load + shape-check of the executor and write-gate bridges before connecting when workflow tools are enabled. A broken bridge fails the spawn with the actionable error (fail closed) instead of advertising tools that error on first call; a healthy spawn pre-pays the bridge import.
 
-## State layer (markdown fallback removed; Cutover on first open is opt-in)
+## State layer (markdown fallback removed; Cutover on first open is the default)
 
 The 2026-08 state-DB milestone removed the markdown fallback for state
 derivation. It was not a **Cutover** in the glossary sense.
 
 The **Cutover** runs by itself (owner decision 2026-10-04,
-`authority-cutover-on-open.ts`). For now it is an opt-in canary (ADR-046
-migration step 6): it runs only with the environment variable
-`GSD_AUTHORITY_CUTOVER=1`. Without it, an open changes nothing and
-no production path advances the Authority Epoch. After the Cutover, database
+`authority-cutover-on-open.ts`). It is the default. The environment variable
+`GSD_AUTHORITY_CUTOVER=0` is the opt-out, and it is kept for one release: with
+it, an open of a database at Authority Epoch 0 changes nothing and no
+production path advances the Authority Epoch. No other value turns the Cutover
+off. After the Cutover, database
 triggers refuse a hierarchy row with no lifecycle row, and a change of the
 legacy status of an adopted hierarchy row outside a Domain Operation
 (`db-lifecycle-coverage-schema.ts`). A process that holds a receipt of the
 Cutover refuses an older copy of the database file; a new process does not
 (ADR-046, step 5). A project that was cut over before those triggers existed
 can hold a row with no lifecycle row: its next open adopts the row with
-`lifecycle.backfill`, with or without the environment variable, and logs each
+`lifecycle.backfill`, with or without the opt-out, and logs each
 legacy status that it changes. After the Cutover no production writer creates
 a hierarchy row with no lifecycle row: a Forward Repair adopts each row that
 it puts back, in its own Domain Operation, and an unknown legacy status
@@ -119,11 +120,24 @@ stops with nothing changed and names the row: `/gsd db adopt` is the route for
 a status change, and a fix of the status is the route for an unknown status
 (see below). Authority Epoch 0 is the usual state for a Forward Repair, because
 the automatic Cutover waits while the operation head is an Import Application.
-The automatic Cutover becomes the default after the test fixtures that
-insert a hierarchy row with no lifecycle row into a cut-over database are
-migrated, and the end-to-end suites pass with the flag on. This section owns
+An Import Application keeps the legacy status and the lifecycle row of a
+hierarchy row aligned, at each Authority Epoch. It adopts each row that it
+creates. It also adopts an existing row with no lifecycle row when it changes
+the status of that row: the lifecycle status is the status that the source
+gives, and open work (`pending`, `in_progress`) becomes `ready`, as for a row
+that the import creates. A completion that the source marks is adopted as
+completed with no completion evidence (unverified legacy); `lifecycle.backfill`
+does not do that. The import does not change the status of an existing row to a
+status that disagrees with the lifecycle row of that row. The Import Preview
+reports the row (`status-change-contradicts-lifecycle`), and the import applies
+nothing until the operator keeps the database row (`--choice`) or fixes the
+source. A workflow command is the route for that status change. An existing
+row with no lifecycle row whose status the import does not change stays so,
+and the next automatic Cutover adopts it or stops as above. A Forward Repair
+does not put back the status of an existing row that the Import Application
+adopted: the lifecycle row stays, so the status stays with it. This section owns
 the contract of the automatic Cutover; other documents point here. The rest of
-this section describes an open with the flag on.
+this section describes an open without the opt-out.
 
 The first open of an existing project database
 whose Authority Epoch is 0 writes a verified backup, runs `lifecycle.backfill`,
@@ -131,7 +145,7 @@ and advances the Authority Epoch with `cutoverProjectAuthority`. The
 precondition is a lifecycle row for every milestone, slice and task, and idle
 coordination. A row with an unknown legacy status stops the run with nothing
 changed: the open logs the rows as an error and doctor reports
-`lifecycle_unmappable_status` (doctor reports it with the flag off too).
+`lifecycle_unmappable_status` (doctor reports it with the opt-out too).
 Active coordination defers the run to a later
 open. A database that an open creates is cut over by its next open. An import
 open (`/gsd recover`, `/gsd migrate`) and `/gsd db restore-backup` do not run
@@ -249,9 +263,11 @@ authority. The owner confirmed it on 2026-10-02. Its project-database row is
 not written yet, so D012 is a provisional ID and that row is pending. The read cutover is
 implemented in the read interface `db/lifecycle-read.ts` only: it answers from
 canonical lifecycle rows and Waivers when the Authority Epoch of the Project
-is above 0, and from legacy rows at epoch 0. The epoch advances only with
-`GSD_AUTHORITY_CUTOVER=1` (see above), so by default public status responses,
-dispatch, and dependency decisions still read legacy rows. `gate:lifecycle-shadow-no-cutover` pins
+is above 0, and from legacy rows at epoch 0. The epoch advances on the first
+open of an existing database (see above), so public status responses,
+dispatch, and dependency decisions read canonical rows after that open, and
+legacy rows before it or with the opt-out (`GSD_AUTHORITY_CUTOVER=0`).
+`gate:lifecycle-shadow-no-cutover` pins
 both epochs. Since 2026-10-04 the dispatch, eligibility, queue, closeout,
 recovery, post-unit and verification sites, the preconditions of the planning
 and completion commands, the discard operation, the hook retry of a Task, the
@@ -268,9 +284,10 @@ legacy rows, as the renderers do. They run in the Projection Worker or in
 doctor, they do not block dispatch, and they move to the lifecycle rows with
 the renderers. The sites that only render or display a status stay on legacy
 rows. No decision site reads legacy rows any more: the unrouted
-decision-site list of the decision document is empty. The read cutover must
-not be declared complete while a decision site still reads legacy rows, and
-the automatic Cutover must not become the default before that.
+decision-site list of the decision document is empty, and the automatic
+Cutover is the default. The read cutover must not be declared complete while
+a decision site still reads legacy rows, and the automatic Cutover must not
+become the default before that.
 The decision document names each site of the groups.
 The decision, the
 Compatibility Window start (v1.12.0, 2026-08-03), and the open Removal Gates

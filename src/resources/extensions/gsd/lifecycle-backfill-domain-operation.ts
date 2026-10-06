@@ -408,12 +408,11 @@ function projectLegacy(
  * completion that an Import Application adopted gets one event with the
  * `unverified-legacy` evidence marker; its lifecycle row does not change.
  * Refuses on a worktree-local database, on any unknown raw status, and when
- * there is nothing to adopt, no Waiver to grant and no marker to store. With
- * GSD_AUTHORITY_CUTOVER=1, the first open of a pre-cutover project database
- * runs it when it would change no legacy status
- * (authority-cutover-on-open.ts), and an open of a cut-over database runs it
- * for the rows left with no lifecycle row; `/gsd db adopt --apply` runs it by
- * hand.
+ * there is nothing to adopt, no Waiver to grant and no marker to store. The
+ * first open of a pre-cutover project database runs it by default when it
+ * would change no legacy status (authority-cutover-on-open.ts), and an open
+ * of a cut-over database runs it for the rows left with no lifecycle row;
+ * `/gsd db adopt --apply` runs it by hand.
  */
 export function applyLifecycleBackfill(basePath: string): LifecycleBackfillResult {
   requireProjectRootDatabase(basePath);
