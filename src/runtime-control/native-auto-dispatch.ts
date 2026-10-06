@@ -41,7 +41,7 @@ async function sendExistingBridgeAuto(input: NativeAutoDispatchInput): Promise<v
       const loaded = await import(/* webpackIgnore: true */ pathToFileURL(candidate).href) as {
         sendBridgeInput: (command: { type: string; message: string }, cwd?: string) => Promise<unknown>;
       };
-      const message = input.resume ? "/gsd auto" : "/gsd auto";
+      const message = input.resume ? "/gsd auto --native-resume" : "/gsd auto";
       await loaded.sendBridgeInput({ type: "prompt", message }, input.basePath);
       return;
     } catch (error) {

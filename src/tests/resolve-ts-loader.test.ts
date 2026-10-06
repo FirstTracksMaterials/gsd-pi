@@ -35,6 +35,16 @@ test("resolve-ts loader rewrites direct pi-coding-agent source entry import to .
   )
 })
 
+test("resolve-ts loader preserves packaged standalone native package exports", async () => {
+  const resolved = await resolveWithTestLoader(
+    "@gsd/native/directory-sync",
+    { parentURL: "file:///pkg/dist/web/standalone/.next/server/app/api/runtime/route.js" },
+    nextResolve,
+  )
+
+  assert.equal(resolved.url, "@gsd/native/directory-sync")
+})
+
 test("resolve-ts loader transpiles pi-coding-agent source files that strip-only mode cannot parse", async () => {
   const agentUrl = new URL(
     "../../packages/pi-agent-core/src/agent.ts",

@@ -842,6 +842,51 @@ export function resumeTaskRecovery(input: {
   return loadTaskRecoveryResumeReceipt(operation);
 }
 
+/**
+ * Re-authorize only Task recoveries created by the native cancellation path.
+ * A normal `/gsd auto` must continue to fail closed on agent-owned aborts;
+ * native `resume` is the explicit ownership hand-off for this one cause.
+ */
+export function resumeCancellationTaskRecoveries(
+  milestoneId: string,
+  invocationFor: (recoveryActionId: string) => ExecutionInvocation,
+): TaskRecoveryResumeReceipt[] {
+  const rows = getDb().prepare(`
+    SELECT action.recovery_action_id
+    FROM workflow_item_lifecycles lifecycle
+    JOIN workflow_execution_attempts attempt
+      ON attempt.lifecycle_id = lifecycle.lifecycle_id
+     AND attempt.project_id = lifecycle.project_id
+    JOIN workflow_failure_observations observation
+      ON observation.attempt_id = attempt.attempt_id
+     AND observation.lifecycle_id = lifecycle.lifecycle_id
+     AND observation.project_id = lifecycle.project_id
+    JOIN workflow_recovery_actions action
+      ON action.failure_observation_id = observation.failure_observation_id
+     AND action.lifecycle_id = lifecycle.lifecycle_id
+     AND action.project_id = lifecycle.project_id
+    WHERE lifecycle.item_kind = 'task'
+      AND lifecycle.milestone_id = :milestone_id
+      AND observation.summary = 'cancellation-requested'
+      AND observation.recovery_owner = 'agent'
+      AND action.action = 'abort'
+    ORDER BY action.project_revision
+  `).all({ ":milestone_id": milestoneId }) as Array<Record<string, unknown>>;
+
+  const receipts: TaskRecoveryResumeReceipt[] = [];
+  for (const row of rows) {
+    const recoveryActionId = String(row["recovery_action_id"]);
+    if (!readTaskRecoveryResumeEligibility(recoveryActionId).eligible) continue;
+    receipts.push(resumeTaskRecovery({
+      invocation: invocationFor(recoveryActionId),
+      recoveryActionId,
+      repairSummary: "Native resume accepted ownership after an explicit cancellation.",
+      evidence: { cause: "cancellation-requested", owner: "native-runtime" },
+    }));
+  }
+  return receipts;
+}
+
 export function readTaskRecoveryRoute(attemptId: string): TaskRecoveryRouteSnapshot | null {
   const stored = getDb().prepare(`
     SELECT action.recovery_action_id, action.action,

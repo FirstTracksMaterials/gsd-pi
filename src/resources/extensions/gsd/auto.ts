@@ -19,6 +19,8 @@ import type {
   ExtensionCommandContext,
   SessionMessageEntry,
 } from "@gsd/pi-coding-agent";
+import { internalExecutionInvocation } from "./execution-invocation.js";
+import { resumeCancellationTaskRecoveries } from "./task-recovery-domain-operation.js";
 
 import { deriveState, invalidateStateCache } from "./state.js";
 import {
@@ -682,6 +684,7 @@ export function startAutoDetached(
     interrupted?: InterruptedSessionAssessment;
     milestoneLock?: string | null;
     resumeWedgeId?: string | null;
+    nativeResume?: boolean;
   },
 ): void {
   void withDetachedAutoKeepalive(startAuto(ctx, pi, base, verboseMode, options)).catch(async (err) => {
@@ -2642,6 +2645,7 @@ export async function startAuto(
     interrupted?: InterruptedSessionAssessment;
     milestoneLock?: string | null;
     resumeWedgeId?: string | null;
+    nativeResume?: boolean;
   },
 ): Promise<void> {
   if (s.active) {
@@ -2716,6 +2720,14 @@ export async function startAuto(
       "error",
     );
     return;
+  }
+  if (options?.nativeResume && s.sessionMilestoneLock) {
+    resumeCancellationTaskRecoveries(
+      s.sessionMilestoneLock,
+      (recoveryActionId) => internalExecutionInvocation(
+        `native-resume:${s.sessionMilestoneLock}:${recoveryActionId}`,
+      ),
+    );
   }
   const scopeId = normalizeRealPath(base) || base;
   const gcResult = await garbageCollectResolvedWedges(scopeId, async (wedge) => {

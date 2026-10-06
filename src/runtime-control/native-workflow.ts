@@ -5,10 +5,11 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { abortOwnedWorker, getProjectBridgeServiceForCwd, sendBridgeInput } from "../web/bridge-service.ts";
+import { loadEffectiveGSDPreferences } from "../resources/extensions/gsd/preferences.ts";
 import { NativeDispatchError } from "./native-auto-dispatch.ts";
 import type { NativeReplanResult, NativeReviewResult } from "./native-commands.ts";
 
-const WORKFLOW_TIMEOUT_MS = 90_000;
+const DEFAULT_WORKFLOW_HARD_TIMEOUT_MINUTES = 30;
 
 type WorkflowIdentity = {
   basePath: string;
@@ -29,19 +30,37 @@ function bridgeError(result: unknown, fallback: string): string {
   return fallback;
 }
 
-function waitForAgentEnd(basePath: string): { promise: Promise<void>; cancel: () => void } {
-  const bridge = getProjectBridgeServiceForCwd(basePath);
+type WorkflowTimer = ReturnType<typeof setTimeout>;
+
+type WorkflowWaitDependencies = {
+  subscribe: (listener: (event: unknown) => void) => () => void;
+  schedule: (listener: () => void, delayMs: number) => WorkflowTimer;
+  clear: (timer: WorkflowTimer) => void;
+};
+
+export function resolveNativeWorkflowTimeoutMs(basePath: string): number {
+  const configured = loadEffectiveGSDPreferences(basePath)?.preferences.auto_supervisor?.hard_timeout_minutes;
+  const minutes = typeof configured === "number" && Number.isFinite(configured) && configured > 0
+    ? configured
+    : DEFAULT_WORKFLOW_HARD_TIMEOUT_MINUTES;
+  return minutes * 60 * 1000;
+}
+
+export function waitForWorkflowCompletion(
+  timeoutMs: number,
+  dependencies: WorkflowWaitDependencies,
+): { promise: Promise<void>; cancel: () => void } {
   let unsubscribe = (): void => undefined;
-  let timer: ReturnType<typeof setTimeout> | undefined;
+  let timer: WorkflowTimer | undefined;
   const promise = new Promise<void>((resolve, reject) => {
-    timer = setTimeout(() => {
+    timer = dependencies.schedule(() => {
       unsubscribe();
       reject(new NativeDispatchError("native workflow did not finish", true));
-    }, WORKFLOW_TIMEOUT_MS);
-    unsubscribe = bridge.subscribe((event) => {
+    }, timeoutMs);
+    unsubscribe = dependencies.subscribe((event) => {
       if (!event || typeof event !== "object" || !("type" in event)) return;
       if ((event as { type?: string }).type !== "agent_end") return;
-      if (timer) clearTimeout(timer);
+      if (timer) dependencies.clear(timer);
       unsubscribe();
       resolve();
     });
@@ -49,10 +68,19 @@ function waitForAgentEnd(basePath: string): { promise: Promise<void>; cancel: ()
   return {
     promise,
     cancel: () => {
-      if (timer) clearTimeout(timer);
+      if (timer) dependencies.clear(timer);
       unsubscribe();
     },
   };
+}
+
+function waitForAgentEnd(basePath: string): { promise: Promise<void>; cancel: () => void } {
+  const bridge = getProjectBridgeServiceForCwd(basePath);
+  return waitForWorkflowCompletion(resolveNativeWorkflowTimeoutMs(basePath), {
+    subscribe: (listener) => bridge.subscribe(listener),
+    schedule: (listener, delayMs) => setTimeout(listener, delayMs),
+    clear: (timer) => clearTimeout(timer),
+  });
 }
 
 async function awaitMatchingFile(path: string, accept: (parsed: Record<string, unknown>) => boolean): Promise<Record<string, unknown> | null> {
@@ -125,7 +153,12 @@ export async function replanNativeMilestone(input: WorkflowIdentity & { reason: 
   try {
     await finished.promise;
   } catch (error) {
-    throw new NativeDispatchError(error instanceof Error ? error.message : "native replan workflow did not finish", true);
+    const evidence = await abortOwnedWorker(input.basePath, {
+      operationId: input.operationId,
+      jobId: input.jobId,
+    });
+    const began = evidence.cleaned !== true;
+    throw new NativeDispatchError(error instanceof Error ? error.message : "native replan workflow did not finish", began);
   }
   const receipt = await awaitMatchingFile(
     join(input.basePath, ".gsd", "runtime", "native-replan.json"),

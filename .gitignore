@@ -18,6 +18,11 @@ src/**/*.d.ts
 src/**/*.d.ts.map
 !src/**/*.test.js
 
+# @gsd/pi-coding-agent emits exclusively to packages/pi-coding-agent/dist.
+# Keep accidental in-place compiler output out even when a broad force-add is used.
+packages/pi-coding-agent/src/**/*.js
+packages/pi-coding-agent/src/**/*.d.ts
+
 # Dependencies and package-manager noise
 node_modules/
 packages/*/node_modules/

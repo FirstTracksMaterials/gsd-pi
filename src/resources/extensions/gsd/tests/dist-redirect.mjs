@@ -136,6 +136,11 @@ export function resolve(specifier, context, nextResolve) {
     return { url: specifier, format: 'builtin', shortCircuit: true };
   }
 
+  // The standalone host externalizes native imports to CJS package exports.
+  // A TypeScript file: redirect here makes the bundle's require() path fail
+  // even though the compiled native shim is packaged and available.
+  const packagedStandaloneParent = context.parentURL?.includes('/dist/web/standalone/') === true;
+
   // 1. Redirect all workspace package bare imports to source.
   //    CI portability runs don't build any packages/ dist artifacts, so every
   //    @gsd/* specifier (including transitive ones pulled in by pi-coding-agent
@@ -184,9 +189,9 @@ export function resolve(specifier, context, nextResolve) {
   } else if (specifier.startsWith("@opengsd/contracts/")) {
     const subpath = specifier.replace(/^@opengsd\/contracts\//, "").replace(/\.js$/, ".ts");
     specifier = new URL(`packages/contracts/src/${subpath}`, ROOT).href;
-  } else if (specifier === "@gsd/native") {
+  } else if (specifier === "@gsd/native" && !packagedStandaloneParent) {
     specifier = new URL("packages/native/src/index.ts", ROOT).href;
-  } else if (specifier.startsWith("@gsd/native/")) {
+  } else if (specifier.startsWith("@gsd/native/") && !packagedStandaloneParent) {
     // Sub-path imports like @gsd/native/fd, @gsd/native/text, etc.
     const subpath = specifier.slice("@gsd/native/".length);
     specifier = new URL(`packages/native/src/${subpath}/index.ts`, ROOT).href;

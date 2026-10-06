@@ -77,6 +77,14 @@ export function parseResumeWedgeFlag(input: string): { resumeWedgeId: string | n
   return { resumeWedgeId: match[1], rest };
 }
 
+export function parseNativeResumeFlag(input: string): { nativeResume: boolean; rest: string } {
+  const nativeResume = /(?:^|\s)--native-resume(?:\s|$)/.test(input);
+  return {
+    nativeResume,
+    rest: nativeResume ? input.replace(/(?:^|\s)--native-resume(?=\s|$)/, " ").replace(/\s+/g, " ").trim() : input,
+  };
+}
+
 /**
  * Extract a milestone ID (e.g. M016 or M001-a3b4c5) from the command string.
  * Returns the matched ID and the remaining string with the ID removed.
@@ -123,7 +131,8 @@ export async function handleAutoCommand(trimmed: string, ctx: ExtensionCommandCo
   }
 
   if (trimmed === "auto" || trimmed.startsWith("auto ")) {
-    const { resumeWedgeId, rest: afterWedge } = parseResumeWedgeFlag(trimmed);
+    const { nativeResume, rest: afterNativeResume } = parseNativeResumeFlag(trimmed);
+    const { resumeWedgeId, rest: afterWedge } = parseResumeWedgeFlag(afterNativeResume);
     const { modelQuery, rest: afterModel } = parseModelFlag(afterWedge);
     const { yoloSeedFile, rest: afterYolo } = parseYoloFlag(afterModel);
     const { milestoneId, rest: afterMilestone } = parseMilestoneTarget(afterYolo);
@@ -188,9 +197,10 @@ export async function handleAutoCommand(trimmed: string, ctx: ExtensionCommandCo
       startAutoDetached(ctx, pi, basePath, verboseMode, {
         milestoneLock: milestoneId,
         resumeWedgeId,
+        nativeResume,
       });
     } else {
-      startAutoDetached(ctx, pi, basePath, verboseMode, { resumeWedgeId });
+      startAutoDetached(ctx, pi, basePath, verboseMode, { resumeWedgeId, nativeResume });
     }
     return true;
   }
