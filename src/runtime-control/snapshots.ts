@@ -131,13 +131,20 @@ async function readNative(basePath: string): Promise<NativeObservationInput | nu
     const tasksTotal = snapshot?.progress.tasks.total ?? progress?.tasks.total ?? 0;
     const tasksDone = snapshot?.progress.tasks.done ?? progress?.tasks.done ?? 0;
     const question = snapshot?.openQuestions[0];
+    const verifiedComplete = isCanonicalDbCompletion({
+      phase: snapshot?.current.phase ?? progress?.phase ?? "idle",
+      milestones: snapshot?.progress.milestones ?? progress?.milestones,
+      slices: snapshot?.progress.slices ?? progress?.slices,
+      tasks: snapshot?.progress.tasks ?? progress?.tasks,
+      blockerCount: snapshot?.blockers.length ?? progress?.blockers.length ?? 0,
+    });
     return {
       readMetadata: { source: "database", authority: "db-authoritative" },
       phase: snapshot?.current.phase ?? progress?.phase ?? "idle",
       tasks_completed: tasksDone,
       tasks_total: tasksTotal,
       blockers: snapshot?.blockers.map((row) => row.description) ?? progress?.blockers ?? [],
-      verified_complete: false,
+      verified_complete: verifiedComplete,
       milestone_status: snapshot?.current.activeMilestone ? snapshot.current.phase : undefined,
       active_task: snapshot?.current.activeTask
         ? { id: snapshot.current.activeTask.id, title: snapshot.current.activeTask.title, started_at: null, turns: null }
@@ -159,6 +166,26 @@ async function readNative(basePath: string): Promise<NativeObservationInput | nu
   } catch {
     return null;
   }
+}
+
+type CompletionCounts = { total: number; done: number; active?: number; pending: number };
+
+export function isCanonicalDbCompletion(input: {
+  phase: string;
+  milestones?: CompletionCounts;
+  slices?: CompletionCounts;
+  tasks?: CompletionCounts;
+  blockerCount: number;
+}): boolean {
+  if (input.phase !== "complete" || input.blockerCount !== 0) return false;
+  const buckets = [input.milestones, input.slices, input.tasks];
+  return buckets.every((bucket) => Boolean(
+    bucket
+    && bucket.total > 0
+    && bucket.done === bucket.total
+    && bucket.pending === 0
+    && (bucket.active ?? 0) === 0,
+  ));
 }
 
 type NativeMilestoneDetail = {
