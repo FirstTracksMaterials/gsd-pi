@@ -454,6 +454,13 @@ export async function buildJobSnapshot(control: RuntimeControl, jobId: string): 
   const { actions, primary_action } = actionsFor(state, Boolean(recovery), blockers);
   const live = latestLive(operations);
   const phase = native?.phase ?? liveObservation.native_phase ?? state;
+  const observedActiveTask = native?.active_task ?? liveObservation.active_task;
+  const activeTask = observedActiveTask
+    ? {
+      ...observedActiveTask,
+      started_at: observedActiveTask.started_at ?? live?.operation.admitted_at ?? null,
+    }
+    : null;
   const snapshot: JobSnapshot = {
     protocol_version: 1,
     job_id: job.job_id,
@@ -466,7 +473,7 @@ export async function buildJobSnapshot(control: RuntimeControl, jobId: string): 
     phase,
     observed_at: nowIso(control.clock),
     active_operation_id: live?.operation.operation_id ?? null,
-    active_task: native?.active_task ?? liveObservation.active_task,
+    active_task: activeTask,
     progress: progressFrom(native, liveObservation),
     actions,
     primary_action,

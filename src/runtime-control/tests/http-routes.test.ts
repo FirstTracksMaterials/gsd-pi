@@ -13,6 +13,7 @@ import { GET as importGet, POST as importPost } from "../../../web/app/api/runti
 import { GET as byRequestGet } from "../../../web/app/api/runtime/v1/operations/by-request/[request_id]/route.ts";
 import { registerCommandHandlerForTest } from "../command-handlers.ts";
 import { registerPendingQuestion } from "../answers.ts";
+import { registerNativeSnapshotReaderForTest } from "../snapshots.ts";
 import { createControl, resetC05, seedReadyProject, startRequest, tempProject, uuid } from "./harness.ts";
 
 afterEach(() => {
@@ -141,6 +142,37 @@ test("POST commands returns 202 after durable admission", async () => {
   assert.equal(lookup.status, 200);
   const found = await lookup.json() as { operation_id: string };
   assert.equal(found.operation_id, operation.operation_id);
+});
+
+test("active snapshots use the durable operation admission time for an untimed native task", async () => {
+  const alpha = tempProject("http-active-time");
+  const { control } = createControl({ projects: [{ project_id: "alpha", target: alpha }] });
+  seedReadyProject(control, "alpha", alpha);
+  registerNativeSnapshotReaderForTest(async () => ({
+    readMetadata: { source: "database", authority: "db-authoritative" },
+    phase: "executing",
+    tasks_completed: 0,
+    tasks_total: 1,
+    blockers: [],
+    active_task: { id: "T01", title: "Timed task", started_at: null, turns: null },
+  }));
+  registerCommandHandlerForTest(() => ({ holdLease: true }));
+  const requestId = uuid(220);
+  const started = await commandsPost(
+    new Request("http://127.0.0.1/api/runtime/v1/jobs/alpha%3AM001/commands", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(startRequest(requestId)),
+    }),
+    { params: { job_id: "alpha%3AM001" } },
+  );
+  const operation = await started.json() as { admitted_at: string };
+  const response = await jobGet(
+    new Request("http://127.0.0.1/api/runtime/v1/jobs/alpha%3AM001"),
+    { params: { job_id: "alpha%3AM001" } },
+  );
+  const snapshot = await response.json() as { active_task: { started_at: string | null } };
+  assert.equal(snapshot.active_task.started_at, operation.admitted_at);
 });
 
 test("GET capabilities uses existing control registration", async () => {
