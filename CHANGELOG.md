@@ -8,6 +8,12 @@ This changelog starts from the `open-gsd/gsd-pi` ownership baseline. Earlier pro
 
 ## [Unreleased]
 
+## [1.21.1] - 2026-10-07
+
+### Fixed
+- **release**: wait for bounded npm registry propagation (#2688)
+- **release**: verify npm artifact identity before accepting publication (#2686)
+
 ## [1.21.0] - 2026-10-07
 
 ### Added
