@@ -635,6 +635,9 @@ export function completeLegacyTaskForVerifiedAttempt(
     ":slice_id": identity.sliceId,
     ":task_id": identity.taskId,
   });
+  // The canonical lifecycle row carries the completion; this legacy tasks.status
+  // write only keeps the replan gate's legacy reads coherent. The publication
+  // path that calls this writer counts the mirror write in legacy telemetry.
   if (changes(result) !== 1) {
     throw new Error("Verified Task publication did not complete exactly one legacy Task");
   }
