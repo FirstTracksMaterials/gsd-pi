@@ -28,16 +28,10 @@ See [CHANGELOG.md](./CHANGELOG.md) for release-by-release fixes and [Legacy Rele
 ## Latest Release Highlights
 
 <!-- release-highlights:start -->
-Latest release: **v1.21.0**
+Latest release: **v1.21.1**
 
-- **gsd:** Final removal gates, legacy counters, performance baseline and the truthful contract (#2681).
-- **gsd:** Run the Authority Epoch cutover on the first open by default (#2673).
-- **gsd:** Keep hook gate verdicts, closeout refusals and step retries in the database (#2662).
-- **gsd:** Add /gsd db prune-quarantine for preserved projection copies (#2663).
-- **gsd:** Require a source-commit receipt before a Task publishes or a Slice completes (#2660).
-- **gsd:** Store statement decision impacts and show the supersede in DECISIONS.md (#2657).
-- **gsd:** Finish the Lifecycle Kernel: interactive claims, remediation dispatch, typed outcome event, pause blocker rows (#2655).
-- **gsd:** Store an answered ask_user_questions round as Open Question, interaction and Answer rows (#2632).
+- **release:** Wait for bounded npm registry propagation (#2688).
+- **release:** Verify npm artifact identity before accepting publication (#2686).
 
 <!-- release-highlights:end -->
 
