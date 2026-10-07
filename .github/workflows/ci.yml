@@ -303,6 +303,9 @@ jobs:
           cd "$GITHUB_WORKSPACE"
           git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          # The source-revision hash fixtures compare working-tree bytes across
+          # checkouts; runner-default autocrlf would convert them on Windows.
+          git config --global core.autocrlf false
 
           git -c protocol.version=2 fetch --no-tags --prune --depth="$FETCH_DEPTH" origin \
             "+${GITHUB_SHA}:refs/checkout-ref"
@@ -350,6 +353,10 @@ jobs:
 
       - name: Typecheck extensions
         if: needs.fast-gates.outputs.portability-changed == 'true'
+        env:
+          # The extensions type graph OOMs Node's default heap on the Windows
+          # runner (observed on #2677: Ineffective mark-compacts ~33s into tsc).
+          NODE_OPTIONS: '--max-old-space-size=6144'
         run: pnpm run typecheck:extensions
 
       - name: Run package tests

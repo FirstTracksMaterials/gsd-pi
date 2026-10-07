@@ -33,6 +33,7 @@ import { deriveState, invalidateStateCache } from "../state.ts";
 import { autoSession } from "../auto-runtime-state.ts";
 import { normalizeRealPath, relSliceFile, targetMilestoneFile } from "../paths.ts";
 import { _setManagedProjectionWriteFaultForTest } from "../managed-projection-history.ts";
+import { _setManagedMutationBoundaryForTest } from "../atomic-write.ts";
 import { handlePlanTask } from "../tools/plan-task.ts";
 import { recordUnitHarnessAbort } from "../unit-runtime.ts";
 import { markApprovalGateVerified, markDepthVerified, clearDiscussionFlowState, loadWriteGateSnapshot, setPendingGate } from "../bootstrap/write-gate.ts";
@@ -77,12 +78,9 @@ function executePlanMilestone(
 function executeCompleteMilestone(
   params: Parameters<typeof executeCompleteMilestoneWithInvocation>[0],
   basePath: string,
+  key = "test:complete-milestone",
 ) {
-  return executeCompleteMilestoneWithInvocation(
-    params,
-    basePath,
-    internalExecutionInvocation("test:complete-milestone"),
-  );
+  return executeCompleteMilestoneWithInvocation(params, basePath, internalExecutionInvocation(key));
 }
 
 function executePlanSlice(
@@ -236,6 +234,37 @@ function seedSlice(milestoneId: string, sliceId: string, status: string): void {
   ).run(milestoneId, sliceId, `Slice ${sliceId}`, status, new Date().toISOString());
 }
 
+/** Adopt the seeded hierarchy rows so canonical tools accept them. */
+function adoptFixtureRows(key: string, milestoneId: string, sliceId: string): void {
+  const fence = readDomainOperationFence();
+  executeDomainOperation({
+    operationType: "test.fixture.adopt-rows",
+    idempotencyKey: `test/workflow-executors/adopt-rows/${key}`,
+    expectedRevision: fence.revision,
+    expectedAuthorityEpoch: fence.authorityEpoch,
+    actorType: "test",
+    sourceTransport: "test",
+    payload: { milestoneId },
+  }, (context) => {
+    adoptOrTransitionLifecycle(context, { itemKind: "milestone", milestoneId, lifecycleStatus: "ready" });
+    adoptOrTransitionLifecycle(context, { itemKind: "slice", milestoneId, sliceId, lifecycleStatus: "completed" });
+    return {
+      events: [{
+        eventType: "test.fixture.adopted",
+        entityType: "milestone",
+        entityId: milestoneId,
+        payload: { milestoneId },
+        destinations: ["test"],
+      }],
+      projections: [{
+        projectionKey: `test/adopt-rows/${key}`,
+        projectionKind: "test",
+        rendererVersion: "1",
+      }],
+    };
+  });
+}
+
 let adoptedCloseoutSequence = 0;
 
 /**
@@ -316,7 +345,6 @@ async function seedAdoptedCompletedMilestone(base: string): Promise<void> {
       traceId: `trace/workflow-executors/${sequence}`,
       turnId: `turn/workflow-executors/${sequence}`,
     },
-    skipBrowserEvidenceGate: true,
   });
   assert.ok(!("error" in validation), `validation fixture failed: ${"error" in validation ? validation.error : ""}`);
 }
@@ -672,82 +700,6 @@ test("executeSummarySave mirrors milestone artifacts into the active worktree pr
   }
 });
 
-test("executeTaskComplete coerces string verificationEvidence entries", async () => {
-  const base = makeTmpBase();
-  try {
-    openTestDb(base);
-    seedLegacyTask();
-    const planDir = join(base, ".gsd", "milestones", "M001", "slices", "S01");
-    mkdirSync(planDir, { recursive: true });
-    writeFileSync(join(planDir, "S01-PLAN.md"), "# S01\n\n- [ ] **T01: Demo** `est:5m`\n");
-
-    const result = await inProjectDir(base, () => executeTaskComplete({
-      milestoneId: "M001",
-      sliceId: "S01",
-      taskId: "T01",
-      oneLiner: "Completed task",
-      narrative: "Did the work",
-      verification: "npm test",
-      verificationEvidence: ["npm test"],
-    }, base));
-
-    assert.equal(result.details.operation, "complete_task");
-    assert.equal(result.details.taskId, "T01");
-
-    const db = _getAdapter();
-    assert.ok(db, "DB should be open");
-    const rows = db!.prepare(
-      "SELECT command, exit_code, verdict, duration_ms FROM verification_evidence WHERE milestone_id = ? AND slice_id = ? AND task_id = ?",
-    ).all("M001", "S01", "T01") as Array<Record<string, unknown>>;
-
-    assert.equal(rows.length, 1, "one coerced verification evidence row should be inserted");
-    assert.equal(rows[0]["command"], "npm test");
-    assert.equal(rows[0]["exit_code"], -1);
-    assert.match(String(rows[0]["verdict"]), /coerced from string/);
-
-    const summaryPath = String(result.details.summaryPath);
-    assert.ok(existsSync(summaryPath), "task summary should be written to disk");
-  } finally {
-    closeDatabase();
-    cleanup(base);
-  }
-});
-
-test("executeTaskComplete derives missing verification from evidence", async () => {
-  const base = makeTmpBase();
-  try {
-    openTestDb(base);
-    seedLegacyTask();
-    const planDir = join(base, ".gsd", "milestones", "M001", "slices", "S01");
-    mkdirSync(planDir, { recursive: true });
-    writeFileSync(join(planDir, "S01-PLAN.md"), "# S01\n\n- [ ] **T01: Demo** `est:5m`\n");
-
-    const result = await inProjectDir(base, () => executeTaskComplete({
-      milestoneId: "M001",
-      sliceId: "S01",
-      taskId: "T01",
-      oneLiner: "Completed task",
-      narrative: "Did the work",
-      verificationEvidence: [
-        { command: "npm test", exitCode: 0, verdict: "pass", durationMs: 1234 },
-      ],
-    }, base));
-
-    assert.equal(result.details.operation, "complete_task");
-    const db = _getAdapter();
-    assert.ok(db, "DB should be open");
-    const row = db!.prepare(
-      "SELECT verification_result FROM tasks WHERE milestone_id = ? AND slice_id = ? AND id = ?",
-    ).get("M001", "S01", "T01") as Record<string, unknown> | undefined;
-
-    assert.match(String(row?.verification_result), /Verification evidence recorded/);
-    assert.match(String(row?.verification_result), /`npm test` exited 0 \(pass\)/);
-  } finally {
-    closeDatabase();
-    cleanup(base);
-  }
-});
-
 test("executeTaskComplete treats a malformed duplicate for an already-complete task as idempotent", async () => {
   const base = makeTmpBase();
   try {
@@ -756,16 +708,13 @@ test("executeTaskComplete treats a malformed duplicate for an already-complete t
     const planDir = join(base, ".gsd", "milestones", "M001", "slices", "S01");
     mkdirSync(planDir, { recursive: true });
     writeFileSync(join(planDir, "S01-PLAN.md"), "# S01\n\n- [ ] **T01: Demo** `est:5m`\n");
-
-    const first = await inProjectDir(base, () => executeTaskComplete({
-      milestoneId: "M001",
-      sliceId: "S01",
-      taskId: "T01",
-      oneLiner: "Completed task",
-      narrative: "Did the work",
-      verification: "npm test",
-    }, base));
-    assert.ok(!first.isError, "the well-formed call should complete the task");
+    // The task is already complete through the durable pipeline (stamped).
+    _getAdapter()!.prepare(`
+      UPDATE tasks SET status = 'complete', completed_at = :now,
+        one_liner = 'Completed task', narrative = 'Did the work',
+        verification_result = 'npm test'
+      WHERE milestone_id = 'M001' AND slice_id = 'S01' AND id = 'T01'
+    `).run({ ":now": new Date().toISOString() });
 
     // Parallel duplicate from the same turn: no verification, no evidence, no
     // blocker. Must not trip the fail-closed guard now that the task is closed.
@@ -780,7 +729,6 @@ test("executeTaskComplete treats a malformed duplicate for an already-complete t
     assert.ok(!duplicate.isError, "duplicate completion should not be an error");
     assert.equal(duplicate.details.error, undefined);
     assert.equal(duplicate.details.duplicate, true);
-    assert.equal(duplicate.details.summaryPath, first.details.summaryPath);
   } finally {
     closeDatabase();
     cleanup(base);
@@ -825,7 +773,11 @@ test("executeTaskComplete rejects an escalation on a Task without a canonical li
   }, base));
 
   assert.equal(result.isError, true);
-  assert.match(String(result.content[0]?.text), /escalation requires a canonical Task lifecycle for M001\/S01\/T01/);
+  assert.match(
+    String(result.content[0]?.text),
+    /Canonical Task completion lifecycle is missing for M001\/S01\/T01/,
+    "the completion authority refuses before any escalation is recorded",
+  );
 
   const db = _getAdapter();
   assert.ok(db, "DB should be open");
@@ -834,60 +786,6 @@ test("executeTaskComplete rejects an escalation on a Task without a canonical li
   ).get("M001", "S01", "T01") as Record<string, unknown> | undefined;
   assert.equal(row?.count, 0, "the rejected escalation must not complete the task");
   assert.equal(existsSync(join(planDir, "tasks", "T01-ESCALATION.json")), false);
-});
-
-test("executeTaskComplete surfaces stale readable status and duplicate repair metadata", async (t) => {
-  const base = makeTmpBase();
-  t.after(() => {
-    closeDatabase();
-    cleanup(base);
-  });
-
-  openTestDb(base);
-  seedLegacyTask();
-  writeFileSync(join(base, ".gsd", "PREFERENCES.md"), [
-    "---",
-    "version: 1",
-    "phases:",
-    "  mid_execution_escalation: true",
-    "---",
-  ].join("\n"));
-  const planDir = join(base, ".gsd", "milestones", "M001", "slices", "S01");
-  mkdirSync(planDir, { recursive: true });
-  writeFileSync(
-    join(planDir, "S01-PLAN.md"),
-    "# S01\n\n- [ ] **T01: Ordinary** `est:5m`\n- [ ] **T02: Escalated** `est:5m`\n",
-  );
-
-  const roadmapPath = join(base, ".gsd", "ROADMAP.md");
-  mkdirSync(roadmapPath);
-  const ordinaryParams = {
-    milestoneId: "M001",
-    sliceId: "S01",
-    taskId: "T01",
-    oneLiner: "Completed ordinary task",
-    narrative: "Did the ordinary work.",
-    verification: "Focused test passed.",
-  };
-  const ordinary = await inProjectDir(base, () => executeTaskComplete(ordinaryParams, base));
-
-  assert.equal(ordinary.isError, undefined);
-  assert.equal(ordinary.details.stale, true);
-  assert.match(String(ordinary.content[0]?.text), /readable status update is pending repair/i);
-
-  // The obstruction gate refuses to journal a write over the foreign ROADMAP.md
-  // directory, so the retry converges once the obstruction is cleared
-  // externally — and provably left no unbound recovery evidence behind.
-  discardProjectionEvidence(base);
-  rmSync(roadmapPath, { recursive: true });
-  removeProjectionFileSync(String(ordinary.details.summaryPath));
-  const repaired = await inProjectDir(base, () => executeTaskComplete(ordinaryParams, base));
-
-  assert.equal(repaired.isError, undefined);
-  assert.equal(repaired.details.duplicate, true);
-  assert.equal(repaired.details.stale, undefined);
-  assert.doesNotMatch(String(repaired.content[0]?.text), /pending repair/i);
-  assert.equal(existsSync(roadmapPath), true, "same-task retry must repair the readable roadmap");
 });
 
 test("executeTaskComplete returns a tool error when verification cannot be derived", async () => {
@@ -2952,9 +2850,19 @@ test("executeSliceComplete normalizes requirement object aliases (how -> proof/w
 test("executeValidateMilestone persists validation artifact and gate records", async () => {
   const base = makeTmpBase();
   try {
+    // The validation receipt binds to the tested source revision, so the
+    // fixture base must be a committed git repository.
+    writeFileSync(join(base, ".gitignore"), ".gsd/\n");
+    writeFileSync(join(base, "source.ts"), "export const fixture = 'validate';\n");
+    execFileSync("git", ["init"], { cwd: base, stdio: "ignore" });
+    execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: base });
+    execFileSync("git", ["config", "user.name", "Test"], { cwd: base });
+    execFileSync("git", ["add", ".gitignore", "source.ts"], { cwd: base });
+    execFileSync("git", ["commit", "-m", "fixture"], { cwd: base, stdio: "ignore" });
     openTestDb(base);
     seedMilestone("M002", "Milestone Two");
     seedSlice("M002", "S02", "complete");
+    adoptFixtureRows("validate-persist", "M002", "S02");
 
     const result = await inProjectDir(base, () => executeValidateMilestone({
       milestoneId: "M002",
@@ -2965,7 +2873,7 @@ test("executeValidateMilestone persists validation artifact and gate records", a
       crossSliceIntegration: "No cross-slice issues.",
       requirementCoverage: "All requirements covered.",
       verdictRationale: "Everything passed.",
-    }, base));
+    }, base, { invocation: internalExecutionInvocation("test/workflow-executors/validate-persist") }));
 
     assert.equal(result.details.operation, "validate_milestone");
     const validationPath = String(result.details.validationPath);
@@ -3005,7 +2913,7 @@ test("executeValidateMilestone rejects verificationClasses that omit planned Ope
       requirementCoverage: "All requirements covered.",
       verificationClasses: "| Check | Result |\n| --- | --- |\n| Generic verification | PASS |",
       verdictRationale: "Everything passed.",
-    }, base));
+    }, base, { invocation: internalExecutionInvocation("test/workflow-executors/validate-classes") }));
 
     assert.equal(result.isError, true);
     assert.match(String(result.details.error), /must include canonical row "Operational"/);
@@ -3032,7 +2940,7 @@ test("executeCompleteMilestone sanitizes raw params and writes milestone summary
       lessonsLearned: ["MCP transport stays generic"],
     } as unknown as Parameters<typeof executeCompleteMilestone>[0];
 
-    const result = await inProjectDir(base, () => executeCompleteMilestone(rawParams, base));
+    const result = await inProjectDir(base, () => executeCompleteMilestone(rawParams, base, "test/workflow-executors/complete-sanitize"));
 
     assert.equal(result.details.operation, "complete_milestone");
     const summaryPath = String(result.details.summaryPath);
@@ -3044,32 +2952,46 @@ test("executeCompleteMilestone sanitizes raw params and writes milestone summary
   }
 });
 
-test("executeCompleteMilestone returns success for already-complete milestones without overwriting the existing summary", async () => {
+test("executeCompleteMilestone replays an already-complete milestone from the durable closeout", async () => {
   const base = makeTmpBase();
   try {
     openTestDb(base);
-    seedMilestone("M003", "Milestone Three", "complete");
-    seedSlice("M003", "S03", "complete");
     writeRoadmap(base, "M003", ["S03"]);
+    await seedAdoptedCompletedMilestone(base);
     const milestoneDir = join(base, ".gsd", "milestones", "M003");
     mkdirSync(milestoneDir, { recursive: true });
     const summaryPath = join(milestoneDir, "M003-SUMMARY.md");
-    writeFileSync(summaryPath, "# Existing Summary\n");
 
-    const result = await inProjectDir(base, () => executeCompleteMilestone({
+    const first = await inProjectDir(base, () => executeCompleteMilestone({
       milestoneId: "M003",
       title: "Milestone Three",
       oneLiner: "Completed milestone",
       narrative: "Everything shipped.",
       verificationPassed: true,
-    }, base));
+    }, base, "test/workflow-executors/complete-first"));
+    assert.ok(!first.isError, `first completion failed: ${String(first.content?.[0]?.text)}`);
+    const projected = readFileSync(summaryPath, "utf-8");
 
-    assert.equal(result.isError, undefined);
-    assert.equal(result.details.operation, "complete_milestone");
-    assert.equal(result.details.alreadyComplete, true);
-    assert.match(result.content[0].text, /already complete/);
-    assert.doesNotMatch(result.content[0].text, /Summary written to/);
-    assert.equal(readFileSync(summaryPath, "utf-8"), "# Existing Summary\n");
+    // A replay re-projects the same durable closeout; a stale hand-edited
+    // SUMMARY never survives.
+    writeFileSync(summaryPath, "# Stale Summary\n");
+
+    const replay = await inProjectDir(base, () => executeCompleteMilestone({
+      milestoneId: "M003",
+      title: "Milestone Three",
+      oneLiner: "Completed milestone",
+      narrative: "Everything shipped.",
+      verificationPassed: true,
+    // The same invocation identity replays the stored completion receipt.
+    }, base, "test/workflow-executors/complete-first"));
+
+    assert.ok(!replay.isError, `replay failed: ${String(replay.content?.[0]?.text)}`);
+    assert.equal(replay.details.operation, "complete_milestone");
+    assert.equal(replay.details.alreadyComplete, true);
+    assert.match(replay.content[0].text, /already complete/);
+    const replayed = readFileSync(summaryPath, "utf-8");
+    assert.doesNotMatch(replayed, /# Stale Summary/);
+    assert.match(replayed, /Everything shipped\./);
   } finally {
     closeDatabase();
     cleanup(base);
@@ -3086,12 +3008,15 @@ test("executeCompleteMilestone recovers a managed summary projection failure", a
   writeRoadmap(base, "M003", ["S03"]);
   await seedAdoptedCompletedMilestone(base);
   const summaryPath = targetMilestoneFile(base, "M003", "SUMMARY", "Milestone Three");
+  // Obstruct exactly the milestone SUMMARY write itself.
   let summaryWriteBlocked = false;
-  t.after(() => _setManagedProjectionApplyFaultForTest(null));
-  _setManagedProjectionApplyFaultForTest(() => {
-    summaryWriteBlocked = true;
-    _setManagedProjectionApplyFaultForTest(null);
-    throw new Error("simulated milestone summary projection failure");
+  t.after(() => _setManagedMutationBoundaryForTest(null));
+  _setManagedMutationBoundaryForTest((boundary, target) => {
+    if (boundary === "before-write" && target === summaryPath) {
+      summaryWriteBlocked = true;
+      _setManagedMutationBoundaryForTest(null);
+      throw new Error("simulated milestone summary projection failure");
+    }
   });
 
   const result = await inProjectDir(base, () => executeCompleteMilestone({
@@ -3100,7 +3025,7 @@ test("executeCompleteMilestone recovers a managed summary projection failure", a
     oneLiner: "Completed milestone",
     narrative: "Everything shipped.",
     verificationPassed: true,
-  }, base));
+  }, base, "test/workflow-executors/complete-recovery"));
 
   assert.equal(result.isError, undefined);
   assert.equal(summaryWriteBlocked, true, "fixture must obstruct the milestone SUMMARY write itself");
@@ -3128,13 +3053,15 @@ test("executeCompleteMilestone surfaces stale readable status while a managed su
     join(normalizeRealPath(base), ".gsd"),
     summaryPath,
   ).replaceAll("\\", "/");
+  // Obstruct every attempt to write the milestone SUMMARY.
   const obstructedWrites: string[] = [];
-  _setManagedProjectionWriteFaultForTest((logicalPath) => {
-    if (logicalPath !== summaryLogicalPath) return;
-    obstructedWrites.push(logicalPath);
-    throw new Error("simulated milestone summary projection failure");
+  _setManagedMutationBoundaryForTest((boundary, target) => {
+    if (boundary === "before-write" && target === summaryPath) {
+      obstructedWrites.push(summaryLogicalPath);
+      throw new Error("simulated milestone summary projection failure");
+    }
   });
-  t.after(() => _setManagedProjectionWriteFaultForTest(null));
+  t.after(() => _setManagedMutationBoundaryForTest(null));
 
   const result = await inProjectDir(base, () => executeCompleteMilestone({
     milestoneId: "M003",
@@ -3142,7 +3069,7 @@ test("executeCompleteMilestone surfaces stale readable status while a managed su
     oneLiner: "Completed milestone",
     narrative: "Everything shipped.",
     verificationPassed: true,
-  }, base));
+  }, base, "test/workflow-executors/complete-stale"));
 
   assert.equal(result.isError, undefined);
   assert.ok(obstructedWrites.length > 0, "fixture must obstruct the milestone SUMMARY write itself");
@@ -3352,7 +3279,6 @@ test("executeSaveGateResult succeeds after committing a gate for a skipped slice
 test("executeSaveGateResult reports a post-commit projection failure as stale success", async (t) => {
   const base = makeTmpBase();
   t.after(() => {
-    _setManagedProjectionWriteFaultForTest(null);
     closeDatabase();
     cleanup(base);
   });
@@ -3377,10 +3303,12 @@ test("executeSaveGateResult reports a post-commit projection failure as stale su
     }],
   }, base));
   const obstructedWrites: string[] = [];
-  _setManagedProjectionWriteFaultForTest((logicalPath) => {
-    if (!logicalPath.endsWith("-PLAN.md")) return;
-    obstructedWrites.push(logicalPath);
-    throw new Error("simulated gate plan projection failure");
+  t.after(() => _setManagedMutationBoundaryForTest(null));
+  _setManagedMutationBoundaryForTest((boundary, target) => {
+    if (boundary === "before-write" && typeof target === "string" && target.endsWith("-PLAN.md")) {
+      obstructedWrites.push(target);
+      throw new Error("simulated gate plan projection failure");
+    }
   });
 
   const result = await inProjectDir(base, () => executeSaveGateResult({

@@ -434,6 +434,11 @@ export function insertSlice(s: {
     )
     ON CONFLICT (milestone_id, id) DO UPDATE SET
       title = CASE WHEN :raw_title IS NOT NULL THEN excluded.title ELSE slices.title END,
+      -- The ELSE arm is the pre-adoption import path: /gsd migrate writes
+      -- hierarchy rows before the Authority Epoch cutover (the import's
+      -- Restore Window defers the cutover), so no lifecycle row exists yet and
+      -- the imported status must land. Once a lifecycle row exists the status
+      -- is canonical and never changes here.
       status = CASE
         WHEN slices.status IN (${TERMINAL_STATUS_SQL}) OR EXISTS (
           SELECT 1 FROM workflow_item_lifecycles lifecycle
@@ -587,6 +592,8 @@ export function insertTask(t: {
     )
     ON CONFLICT(milestone_id, slice_id, id) DO UPDATE SET
       title = CASE WHEN NULLIF(:title, '') IS NOT NULL THEN :title ELSE tasks.title END,
+      -- Pre-adoption import path: see the insertSlice status CASE. With a
+      -- lifecycle row the status is canonical and never changes here.
       status = CASE WHEN EXISTS (
         SELECT 1 FROM workflow_item_lifecycles lifecycle
         WHERE lifecycle.project_id = (SELECT project_id FROM project_authority WHERE singleton = 1)
@@ -913,23 +920,6 @@ export function setMilestoneQueueOrder(order: string[]): void {
     });
   });
 }
-
-/**
- * Update a milestone's status in the database.
- *
- * The generic writer only updates adopted milestones whose legacy status stays
- * aligned with the canonical lifecycle; it never reopens a closed milestone
- * (gsd_milestone_reopen) and refuses rows without a canonical lifecycle row
- * (run /gsd db adopt).
- */
-export function updateMilestoneStatus(milestoneId: string, status: string, completedAt?: string | null, preserveCompletion?: boolean): void {
-  applyStatusTransition({ entity: "milestone", milestoneId, status, completedAt, preserveCompletion });
-}
-
-
-
-
-
 
 // ─── Lightweight Query Variants (hot-path optimized) ─────────────────────
 
