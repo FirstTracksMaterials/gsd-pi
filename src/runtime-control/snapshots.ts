@@ -120,7 +120,7 @@ function referencesFor(project: { project_id: string; target_realpath: string; r
   });
 }
 
-async function readNative(basePath: string): Promise<NativeObservationInput | null> {
+async function readNative(basePath: string, milestoneId?: string): Promise<NativeObservationInput | null> {
   if (nativeReader) return nativeReader(basePath);
   try {
     const { readProjectSnapshotFromDb } = await import("../resources/extensions/gsd/state/project-snapshot.ts");
@@ -128,16 +128,27 @@ async function readNative(basePath: string): Promise<NativeObservationInput | nu
     const snapshot = await readProjectSnapshotFromDb(basePath, { preserveGlobalDbHandle: true });
     const progress = await readProjectProgressFromDb(basePath);
     if (!snapshot && !progress) return null;
-    const tasksTotal = snapshot?.progress.tasks.total ?? progress?.tasks.total ?? 0;
-    const tasksDone = snapshot?.progress.tasks.done ?? progress?.tasks.done ?? 0;
+    const scopedMilestone = milestoneId
+      ? progress?.milestoneDetails?.find((milestone) => milestone.id === milestoneId)
+      : undefined;
+    const scopedTasks = scopedMilestone?.slices.flatMap((slice) => slice.tasks) ?? [];
+    const tasksTotal = scopedMilestone
+      ? scopedTasks.length
+      : snapshot?.progress.tasks.total ?? progress?.tasks.total ?? 0;
+    const tasksDone = scopedMilestone
+      ? scopedTasks.filter((task) => timelineStatus(task.status) === "passed").length
+      : snapshot?.progress.tasks.done ?? progress?.tasks.done ?? 0;
     const question = snapshot?.openQuestions[0];
-    const verifiedComplete = isCanonicalDbCompletion({
-      phase: snapshot?.current.phase ?? progress?.phase ?? "idle",
-      milestones: snapshot?.progress.milestones ?? progress?.milestones,
-      slices: snapshot?.progress.slices ?? progress?.slices,
-      tasks: snapshot?.progress.tasks ?? progress?.tasks,
-      blockerCount: snapshot?.blockers.length ?? progress?.blockers.length ?? 0,
-    });
+    const blockerCount = snapshot?.blockers.length ?? progress?.blockers.length ?? 0;
+    const verifiedComplete = scopedMilestone
+      ? isCanonicalMilestoneCompletion({ milestone: scopedMilestone, blockerCount })
+      : isCanonicalDbCompletion({
+        phase: snapshot?.current.phase ?? progress?.phase ?? "idle",
+        milestones: snapshot?.progress.milestones ?? progress?.milestones,
+        slices: snapshot?.progress.slices ?? progress?.slices,
+        tasks: snapshot?.progress.tasks ?? progress?.tasks,
+        blockerCount,
+      });
     return {
       readMetadata: { source: "database", authority: "db-authoritative" },
       phase: snapshot?.current.phase ?? progress?.phase ?? "idle",
@@ -186,6 +197,19 @@ export function isCanonicalDbCompletion(input: {
     && bucket.pending === 0
     && (bucket.active ?? 0) === 0,
   ));
+}
+
+export function isCanonicalMilestoneCompletion(input: {
+  milestone: NativeMilestoneDetail;
+  blockerCount: number;
+}): boolean {
+  if (input.blockerCount !== 0 || timelineStatus(input.milestone.status) !== "passed") return false;
+  if (input.milestone.slices.length === 0) return false;
+  return input.milestone.slices.every((slice) =>
+    timelineStatus(slice.status) === "passed"
+    && slice.tasks.length > 0
+    && slice.tasks.every((task) => timelineStatus(task.status) === "passed")
+  );
 }
 
 type NativeMilestoneDetail = {
@@ -391,7 +415,7 @@ export async function buildJobSnapshot(control: RuntimeControl, jobId: string): 
   const project = control.registration.getById(job.project_id);
   if (!project) throw invalidRequest(`Unknown project ${job.project_id}`);
   settlePrepareBoundary(control, project.target_realpath);
-  const native = await readNative(project.target_realpath);
+  const native = await readNative(project.target_realpath, job.milestone_id);
   const observation = getObservation(job.job_id);
   if (native) {
     patchObservation(job.job_id, {

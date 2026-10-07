@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { isCanonicalDbCompletion } from "../snapshots.ts";
+import { isCanonicalDbCompletion, isCanonicalMilestoneCompletion } from "../snapshots.ts";
 
 const complete = {
   phase: "complete",
@@ -28,5 +28,42 @@ test("phase text, partial hierarchy, and blockers cannot manufacture completion"
   assert.equal(isCanonicalDbCompletion({
     ...complete,
     milestones: { total: 0, done: 0, active: 0, pending: 0 },
+  }), false);
+});
+
+const completedMilestone = {
+  id: "M001",
+  title: "Accepted milestone",
+  status: "complete",
+  slices: [{
+    id: "S01",
+    title: "Accepted slice",
+    status: "complete",
+    tasks: [{ id: "T01", title: "Accepted task", status: "complete" }],
+  }],
+};
+
+test("a completed job milestone remains complete when another project milestone is queued", () => {
+  assert.equal(isCanonicalMilestoneCompletion({ milestone: completedMilestone, blockerCount: 0 }), true);
+});
+
+test("milestone completion fails closed for blockers or an incomplete hierarchy", () => {
+  assert.equal(isCanonicalMilestoneCompletion({ milestone: completedMilestone, blockerCount: 1 }), false);
+  assert.equal(isCanonicalMilestoneCompletion({
+    milestone: {
+      ...completedMilestone,
+      slices: [{ ...completedMilestone.slices[0]!, tasks: [] }],
+    },
+    blockerCount: 0,
+  }), false);
+  assert.equal(isCanonicalMilestoneCompletion({
+    milestone: {
+      ...completedMilestone,
+      slices: [{
+        ...completedMilestone.slices[0]!,
+        tasks: [{ ...completedMilestone.slices[0]!.tasks[0]!, status: "queued" }],
+      }],
+    },
+    blockerCount: 0,
   }), false);
 });

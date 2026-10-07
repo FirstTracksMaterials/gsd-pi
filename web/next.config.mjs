@@ -8,6 +8,12 @@ const repoRoot = resolve(webRoot, '..')
 const nextConfig = {
   output: 'standalone',
   outputFileTracingRoot: repoRoot,
+  experimental: {
+    // Next 16 defaults to its detached TypeScript CLI path, which can return a
+    // truncated --showConfig payload on this host. TypeScript 5.7 provides the
+    // compiler API, so keep the build deterministic by using that supported path.
+    useTypeScriptCli: false,
+  },
   typescript: {
     ignoreBuildErrors: true,
   },
