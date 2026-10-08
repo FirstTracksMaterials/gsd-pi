@@ -324,11 +324,24 @@ export async function productionCommandHandler(context: NativeCommandContext): P
       context.host.store.update(stored);
       return { dispatch: false, holdLease: true };
     }
+    if (!owner) {
+      const blockedAt = nowIso(context.host.clock);
+      stored.operation.state = "recovery_required";
+      stored.operation.updated_at = blockedAt;
+      stored.operation.error = {
+        code: "recovery_required",
+        message: "The recovery diagnostic's owning operation is unavailable; ownership remains unresolved.",
+        retryable: false,
+        operation_id: stored.operation.operation_id,
+      };
+      context.host.store.update(stored);
+      return { dispatch: false, holdLease: true };
+    }
     if (diagnostic.next_state === "recovery_required") {
       const target = owner?.operation.target_operation_id
         ? context.host.store.read(owner.operation.target_operation_id)
         : undefined;
-      const binding = owner?.backend_binding ?? target?.backend_binding ?? null;
+      const binding = owner.backend_binding ?? target?.backend_binding ?? null;
       if (!binding) {
         const blockedAt = nowIso(context.host.clock);
         stored.operation.state = "recovery_required";
@@ -396,7 +409,7 @@ export async function productionCommandHandler(context: NativeCommandContext): P
           code: "recovery_required",
           message: !evidence.cleaned
             ? (evidence.reason ?? "worker cleanup was not acknowledged")
-            : (idle?.reason ?? "backend ownership remains uncertain"),
+            : (idle && !idle.idle ? idle.reason : "backend ownership remains uncertain"),
           retryable: false,
           operation_id: stored.operation.operation_id,
         };

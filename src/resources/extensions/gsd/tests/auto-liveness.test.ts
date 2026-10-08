@@ -33,6 +33,7 @@ import {
 } from "../auto-cancellation.ts";
 import { registerHooks } from "../bootstrap/register-hooks.ts";
 import { _setAutoActiveForTest } from "../auto.ts";
+import { closeDatabase, openDatabase } from "../gsd-db.ts";
 
 const SUPERVISOR_PREFS = [
   "auto_supervisor:",
@@ -74,6 +75,8 @@ function makeHarness(): Harness {
   writeFileSync(join(home, "preferences.md"), ["---", ...SUPERVISOR_PREFS, "---", ""].join("\n"));
   clearGSDPreferencesCache();
   initRepo(base);
+  mkdirSync(join(base, ".gsd"), { recursive: true });
+  assert.equal(openDatabase(join(base, ".gsd", "gsd.db")), true);
 
   const notifications: string[] = [];
   const ctx = {
@@ -120,6 +123,7 @@ function makeHarness(): Harness {
         verbose: false,
         currentUnitStartedAt: 0,
         unitRecoveryCount: new Map(),
+        unclaimedUnitBudgets: new Map(),
       }),
       pauseAuto: async () => {
         harness.paused = true;
@@ -142,6 +146,7 @@ function cleanup(h: Harness): void {
   clearGSDPreferencesCache();
   resetUsefulProgressCacheForTest();
   resetAutoCancellationForTest();
+  closeDatabase();
   if (h.previousGsdHome === undefined) delete process.env.GSD_HOME;
   else process.env.GSD_HOME = h.previousGsdHome;
   rmSync(h.home, { recursive: true, force: true });

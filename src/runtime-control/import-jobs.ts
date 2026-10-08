@@ -390,7 +390,7 @@ async function admitImportLocked(
     };
     if (existing) host.store.update(stored);
     else host.store.writeAccepted(stored);
-    persistImportedMilestone(project.target_realpath, digestMatch.milestone_id, parsed.title, parsed.import_digest, parsed.documents);
+    persistImportedMilestone(project, digestMatch.milestone_id, parsed.title, parsed.import_digest, parsed.documents);
     return { ok: true, status: 202, operation: stored.operation };
   }
 

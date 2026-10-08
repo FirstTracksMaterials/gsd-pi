@@ -3,6 +3,10 @@ import { getModels, getProviders } from "../src/models.ts";
 import type { Api, Model } from "../src/types.ts";
 
 // models.dev 2026-09 refresh: Claude Fable 5.1 joined the Anthropic-backed providers; github-copilot dropped claude-opus-4.6.
+// Claude Opus 5.5 is injected by generate-models.ts for anthropic/anthropic-vertex and matches the `opus-5` substring in
+// isAnthropicAdaptiveThinkingModel, so it carries forceAdaptiveThinking like the rest of the Opus 5 line.
+// models.dev 2026-10 refresh: Claude Sonnet 5.5 joined the Anthropic-backed providers and Opus 5.5 spread to
+// cloudflare-ai-gateway/opencode/vercel-ai-gateway; both match the adaptive-thinking substrings.
 const EXPECTED_ADAPTIVE_THINKING_MODELS = [
 	"anthropic-vertex/claude-fable-5",
 	"anthropic-vertex/claude-fable-5-1",
@@ -10,22 +14,27 @@ const EXPECTED_ADAPTIVE_THINKING_MODELS = [
 	"anthropic-vertex/claude-opus-4-7",
 	"anthropic-vertex/claude-opus-4-8",
 	"anthropic-vertex/claude-opus-5",
+	"anthropic-vertex/claude-opus-5-5",
 	"anthropic-vertex/claude-sonnet-4-6",
 	"anthropic-vertex/claude-sonnet-5",
+	"anthropic-vertex/claude-sonnet-5-5",
 	"anthropic/claude-fable-5",
 	"anthropic/claude-fable-5-1",
 	"anthropic/claude-opus-4-6",
 	"anthropic/claude-opus-4-7",
 	"anthropic/claude-opus-4-8",
 	"anthropic/claude-opus-5",
+	"anthropic/claude-opus-5-5",
 	"anthropic/claude-sonnet-4-6",
 	"anthropic/claude-sonnet-5",
+	"anthropic/claude-sonnet-5-5",
 	"cloudflare-ai-gateway/claude-fable-5",
 	"cloudflare-ai-gateway/claude-fable-5.1",
 	"cloudflare-ai-gateway/claude-opus-4.6",
 	"cloudflare-ai-gateway/claude-opus-4.7",
 	"cloudflare-ai-gateway/claude-opus-4.8",
 	"cloudflare-ai-gateway/claude-opus-5",
+	"cloudflare-ai-gateway/claude-opus-5.5",
 	"cloudflare-ai-gateway/claude-sonnet-4.6",
 	"cloudflare-ai-gateway/claude-sonnet-5",
 	"github-copilot/claude-opus-4.7",
@@ -39,8 +48,10 @@ const EXPECTED_ADAPTIVE_THINKING_MODELS = [
 	"opencode/claude-opus-4-7",
 	"opencode/claude-opus-4-8",
 	"opencode/claude-opus-5",
+	"opencode/claude-opus-5-5",
 	"opencode/claude-sonnet-4-6",
 	"opencode/claude-sonnet-5",
+	"opencode/claude-sonnet-5-5",
 	"vercel-ai-gateway/anthropic/claude-fable-5",
 	"vercel-ai-gateway/anthropic/claude-fable-5.1",
 	"vercel-ai-gateway/anthropic/claude-opus-4.6",
@@ -49,8 +60,11 @@ const EXPECTED_ADAPTIVE_THINKING_MODELS = [
 	"vercel-ai-gateway/anthropic/claude-opus-4.8-fast",
 	"vercel-ai-gateway/anthropic/claude-opus-5",
 	"vercel-ai-gateway/anthropic/claude-opus-5-fast",
+	"vercel-ai-gateway/anthropic/claude-opus-5.5",
+	"vercel-ai-gateway/anthropic/claude-opus-5.5-fast",
 	"vercel-ai-gateway/anthropic/claude-sonnet-4.6",
 	"vercel-ai-gateway/anthropic/claude-sonnet-5",
+	"vercel-ai-gateway/anthropic/claude-sonnet-5.5",
 ];
 
 function getAllModels(): Model<Api>[] {

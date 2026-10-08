@@ -11,7 +11,6 @@ import {
   removeWorktree,
   diffWorktreeGSD,
   diffWorktreeNumstat,
-  getWorktreeGSDDiff,
   getWorktreeLog,
   mergeWorktreeToMain,
   worktreeBranchName,
@@ -176,23 +175,55 @@ describe("createWorktree", () => {
   });
 });
 
-test("stale worktree cleanup gives actionable guidance for EACCES", () => {
-  const cause = Object.assign(new Error("permission denied"), { code: "EACCES" });
+test("stale worktree cleanup retries transient EPERM/EBUSY before succeeding (#1987)", () => {
+  let calls = 0;
+  const sleeps: number[] = [];
+  removeStaleWorktreeDirectory(
+    "/project/.gsd-worktrees/M010",
+    "M010",
+    () => {
+      calls += 1;
+      if (calls <= 2) throw Object.assign(new Error("locked"), { code: calls === 1 ? "EPERM" : "EBUSY" });
+    },
+    (ms) => { sleeps.push(ms); },
+  );
+  assert.equal(calls, 3);
+  assert.equal(sleeps.length, 2);
+});
 
+test("stale worktree cleanup surfaces the lock error once retries are exhausted (#1987)", () => {
+  let calls = 0;
+  const cause = Object.assign(new Error("resource busy"), { code: "EBUSY" });
+  const sleeps: number[] = [];
   assert.throws(
-    () => removeStaleWorktreeDirectory("/project/.gsd-worktrees/M010", "M010", () => {
-      throw cause;
-    }),
+    () => removeStaleWorktreeDirectory(
+      "/project/.gsd-worktrees/M010",
+      "M010",
+      () => { calls += 1; throw cause; },
+      (ms) => { sleeps.push(ms); },
+    ),
     (error: unknown) => {
       assert.ok(error instanceof GSDError);
       assert.equal(error.code, GSD_GIT_ERROR);
       assert.equal(error.cause, cause);
-      assert.match(error.message, /EACCES/);
-      assert.match(error.message, /owned by another user/);
-      assert.match(error.message, /ownership or permissions/);
+      assert.match(error.message, /EBUSY/);
+      assert.doesNotMatch(error.message, /after \d+ attempts/);
       return true;
     },
   );
+  assert.deepEqual(sleeps, [20, 50, 100]);
+  assert.equal(calls, 4);
+});
+
+test("stale worktree cleanup does not retry EACCES (#1987)", () => {
+  let calls = 0;
+  assert.throws(() => removeStaleWorktreeDirectory(
+    "/project/.gsd-worktrees/M010",
+    "M010",
+    () => { calls += 1; throw Object.assign(new Error("denied"), { code: "EACCES" }); },
+    () => { throw new Error("must not sleep"); },
+  ));
+  assert.equal(calls, 1);
 });
 
 describe("createWorktree — duplicate rejection", () => {
@@ -422,7 +453,7 @@ describe("listWorktrees", () => {
 
 // ─── diffWorktreeGSD ─────────────────────────────────────────────────────────
 
-describe("diffWorktreeGSD and getWorktreeGSDDiff", () => {
+describe("diffWorktreeGSD", () => {
   let base: string;
   beforeEach(() => {
     const repo = makeRepoWithChanges("feature-x");
@@ -443,12 +474,6 @@ describe("diffWorktreeGSD and getWorktreeGSDDiff", () => {
       "M001 roadmap should be in modified files",
     );
     assert.strictEqual(diff.removed.length, 0, "should have no removed files");
-  });
-
-  test("returns patch content", () => {
-    const fullDiff = getWorktreeGSDDiff(base, "feature-x");
-    assert.ok(fullDiff.includes("M002"), "diff should mention M002");
-    assert.ok(fullDiff.includes("updated"), "diff should mention the update");
   });
 });
 

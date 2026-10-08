@@ -125,6 +125,31 @@ export interface EvidenceJSON {
 }
 
 /**
+ * The record of each host check: command, exit code, duration, verdict and the
+ * bounded output of a failed check. The canonical evidence row stores it, so
+ * the check output is in the database and not only in T##-VERIFY.json.
+ */
+export function evidenceChecks(result: VerificationResult): EvidenceCheckJSON[] {
+  return result.checks.map((check) => {
+    const stdoutExcerpt = check.exitCode === 0 ? undefined : boundedOutputExcerpt(check.stdout);
+    const stderrExcerpt = check.exitCode === 0 ? undefined : boundedOutputExcerpt(check.stderr);
+    return {
+      command: check.command,
+      exitCode: check.exitCode,
+      durationMs: check.durationMs,
+      verdict: check.failureClass === "command-not-found" || check.failureClass === "shell-parse"
+        ? "inconclusive"
+        : check.exitCode === 0
+          ? "pass"
+          : "fail",
+      ...(check.failureClass ? { failureClass: check.failureClass } : {}),
+      ...(stdoutExcerpt !== undefined ? { stdoutExcerpt } : {}),
+      ...(stderrExcerpt !== undefined ? { stderrExcerpt } : {}),
+    };
+  });
+}
+
+/**
  * Write a T##-VERIFY.json artifact to the evidence directory.
  * Creates the directory with mkdirSync({ recursive: true }) if it doesn't exist.
  * Flat-phase callers can pass sliceId to write S##-T##-VERIFY.json.

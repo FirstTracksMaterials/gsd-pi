@@ -898,7 +898,19 @@ export class OnboardingService {
           runtime.state.status = "awaiting_browser_auth";
           runtime.state.updatedAt = nowIso(this.deps.now ?? (() => new Date()));
         },
+        onDeviceCode: (info) => {
+          runtime.state.auth = {
+            url: info.verificationUri,
+            instructions: `Enter code ${info.userCode}`,
+          };
+          runtime.state.status = "awaiting_browser_auth";
+          runtime.state.updatedAt = nowIso(this.deps.now ?? (() => new Date()));
+        },
         onPrompt: async (prompt) => await this.waitForFlowInput(runtime, "text", prompt),
+        onSelect: async (prompt) => await this.waitForFlowInput(runtime, "text", {
+          message: `${prompt.message}\n${prompt.options.map((option) => `${option.id}: ${option.label}`).join("\n")}`,
+          placeholder: "Enter an option id",
+        }),
         onProgress: (message) => {
           runtime.state.progress = [...runtime.state.progress, sanitizeMessage(message)].slice(-20);
           if (runtime.state.status !== "awaiting_input") {

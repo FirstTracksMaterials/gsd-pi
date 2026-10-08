@@ -52,7 +52,7 @@ function isUuid(value: string): boolean {
   return UUID_RE.test(value);
 }
 
-function isModelProducing(action: CommandAction): boolean {
+function isModelProducing(action: Operation["action"]): boolean {
   return (MODEL_PRODUCING_ACTIONS as readonly string[]).includes(action);
 }
 

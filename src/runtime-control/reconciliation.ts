@@ -83,7 +83,7 @@ export function readReconciliationDecision(stateRoot: string, operationId: strin
 export function reconciliationClearsFalseSuccess(
   stateRoot: string,
   operationId: string,
-  expected: { cancelOperationId: string; jobId: string },
+  expected: { cancelOperationId: string; jobId: string | null },
 ): boolean {
   const decision = readReconciliationDecision(stateRoot, operationId);
   return decision?.cancel_operation_id === expected.cancelOperationId && decision.job_id === expected.jobId;

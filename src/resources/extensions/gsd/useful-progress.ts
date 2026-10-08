@@ -19,6 +19,9 @@ export const USEFUL_PROGRESS_EXCLUDE_PATHS = [
   ".gsd/journal/**",
   ".gsd/audit",
   ".gsd/audit/**",
+  ".gsd/gsd.db",
+  ".gsd/gsd.db-shm",
+  ".gsd/gsd.db-wal",
   ".gsd/event-log.jsonl",
   ".gsd/event-log-*.jsonl.archived",
 ] as const;
@@ -68,6 +71,9 @@ function isExcludedPath(path: string): boolean {
     || relative.startsWith(".gsd/journal/")
     || relative === ".gsd/audit"
     || relative.startsWith(".gsd/audit/")
+    || relative === ".gsd/gsd.db"
+    || relative === ".gsd/gsd.db-shm"
+    || relative === ".gsd/gsd.db-wal"
     || relative === ".gsd/event-log.jsonl"
     || /^event-log-.*\.jsonl\.archived$/.test(relative)
     || relative.startsWith(".gsd/event-log-")
