@@ -4,7 +4,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { isCanonicalDbCompletion, isCanonicalMilestoneCompletion } from "../snapshots.ts";
+import {
+  isCanonicalDbCompletion,
+  isCanonicalMilestoneCompletion,
+  nativeTimelineForJob,
+} from "../snapshots.ts";
 
 const complete = {
   phase: "complete",
@@ -45,6 +49,17 @@ const completedMilestone = {
 
 test("a completed job milestone remains complete when another project milestone is queued", () => {
   assert.equal(isCanonicalMilestoneCompletion({ milestone: completedMilestone, blockerCount: 0 }), true);
+});
+
+test("a milestone-scoped job timeline excludes another project milestone", () => {
+  const queuedMilestone = {
+    id: "M002",
+    title: "Unrelated queued milestone",
+    status: "queued",
+    slices: [],
+  };
+  const timeline = nativeTimelineForJob([completedMilestone, queuedMilestone], "M001");
+  assert.deepEqual(timeline.map((row) => row.id), ["M001", "S01", "T01"]);
 });
 
 test("milestone completion fails closed for blockers or an incomplete hierarchy", () => {

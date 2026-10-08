@@ -188,7 +188,7 @@ async function readNative(basePath: string, milestoneId?: string): Promise<Nativ
         : progress?.activeTask
           ? { id: progress.activeTask.id, title: progress.activeTask.title, started_at: null, turns: null }
           : null,
-      timeline: nativeTimeline(progress?.milestoneDetails ?? []),
+      timeline: nativeTimelineForJob(progress?.milestoneDetails ?? [], milestoneId),
       verification,
       open_question: question
         ? {
@@ -323,6 +323,16 @@ function nativeTimeline(milestones: NativeMilestoneDetail[]): Array<Record<strin
     }
   }
   return rows;
+}
+
+export function nativeTimelineForJob(
+  milestones: NativeMilestoneDetail[],
+  milestoneId?: string,
+): Array<Record<string, unknown>> {
+  const scoped = milestoneId
+    ? milestones.filter((milestone) => milestone.id === milestoneId)
+    : milestones;
+  return nativeTimeline(scoped);
 }
 
 function latestLive(operations: StoredOperation[]): StoredOperation | undefined {
