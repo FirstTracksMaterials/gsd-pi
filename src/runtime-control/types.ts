@@ -229,6 +229,9 @@ export type ScientificStatus = "NOT_SIGNED_OFF" | "SIGNED_OFF" | "NOT_APPLICABLE
 export type VerificationSummary = {
   assessments: { total: number; pass: number; fail: number };
   evidence: { total: number; passed: number; failed: number };
+  /** Authoritative host verdict for the currently active Task Attempt, when one exists. */
+  host_verdict?: "pass" | "fail" | "inconclusive" | "pending";
+  host_attempt_id?: string;
 };
 
 export type JobSnapshot = {

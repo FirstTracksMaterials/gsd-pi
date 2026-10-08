@@ -138,6 +138,32 @@ async function readNative(basePath: string, milestoneId?: string): Promise<Nativ
     const tasksDone = scopedMilestone
       ? scopedTasks.filter((task) => timelineStatus(task.status) === "passed").length
       : snapshot?.progress.tasks.done ?? progress?.tasks.done ?? 0;
+    let verification: VerificationSummary | null = snapshot?.verification ?? null;
+    const activeMilestoneId = snapshot?.current.activeMilestone?.id ?? progress?.activeMilestone?.id;
+    const activeSliceId = snapshot?.current.activeSlice?.id ?? progress?.activeSlice?.id;
+    const activeTaskId = snapshot?.current.activeTask?.id ?? progress?.activeTask?.id;
+    if (activeMilestoneId && activeSliceId && activeTaskId) {
+      const [{ readLatestTaskAttempt }, { readTaskTechnicalVerdict }] = await Promise.all([
+        import("../resources/extensions/gsd/task-execution-domain-operation.ts"),
+        import("../resources/extensions/gsd/task-verification-domain-operation.ts"),
+      ]);
+      const attempt = readLatestTaskAttempt({
+        milestoneId: activeMilestoneId,
+        sliceId: activeSliceId,
+        taskId: activeTaskId,
+      });
+      if (attempt) {
+        const verdict = readTaskTechnicalVerdict(attempt.attemptId);
+        verification = {
+          ...(verification ?? {
+            assessments: { total: 0, pass: 0, fail: 0 },
+            evidence: { total: 0, passed: 0, failed: 0 },
+          }),
+          host_verdict: verdict?.verdict ?? "pending",
+          host_attempt_id: attempt.attemptId,
+        };
+      }
+    }
     const question = snapshot?.openQuestions[0];
     const blockerCount = snapshot?.blockers.length ?? progress?.blockers.length ?? 0;
     const verifiedComplete = scopedMilestone
@@ -163,7 +189,7 @@ async function readNative(basePath: string, milestoneId?: string): Promise<Nativ
           ? { id: progress.activeTask.id, title: progress.activeTask.title, started_at: null, turns: null }
           : null,
       timeline: nativeTimeline(progress?.milestoneDetails ?? []),
-      verification: snapshot?.verification ?? null,
+      verification,
       open_question: question
         ? {
           question_id: question.questionId,
