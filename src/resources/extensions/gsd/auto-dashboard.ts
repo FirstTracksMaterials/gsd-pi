@@ -18,7 +18,7 @@ import type {
 } from "@gsd/pi-coding-agent";
 import type { GSDState } from "./types.js";
 import { getActiveHook } from "./post-unit-hooks.js";
-import { filterUnitsForMilestone, getLedger, getProjectTotals } from "./metrics.js";
+import { getLedger, getProjectTotals } from "./metrics.js";
 import { getErrorMessage } from "./error-utils.js";
 import { nativeIsRepo } from "./native-git-bridge.js";
 import {
@@ -34,6 +34,7 @@ import { makeUI } from "../shared/tui.js";
 import { GLYPH, INDENT } from "../shared/mod.js";
 import { padRightVisible, renderPlainOutcome, renderProgressBar, rightAlign, wrapVisibleText } from "./tui/render-kit.js";
 import { computeProgressScore } from "./progress-score.js";
+import { estimateTimeRemainingMsFrom, formatTimeRemaining } from "./monitoring-status.js";
 import {
   getGlobalGSDPreferencesPath,
   getProjectGSDPreferencesPath,
@@ -363,39 +364,9 @@ function formatSmallWidgetSpend(): string {
  */
 export function estimateTimeRemaining(): string | null {
   const ledger = getLedger();
-  if (!ledger || ledger.units.length < 2) return null;
-
   const sliceProgress = getRoadmapSlicesSync();
-  if (!sliceProgress || sliceProgress.total === 0) return null;
-
-  const remainingSlices = sliceProgress.total - sliceProgress.done;
-  if (remainingSlices <= 0) return null;
-
-  // Compute average duration per completed slice from the ledger
-  const completedSliceUnits = filterUnitsForMilestone(ledger.units, sliceProgress.milestoneId).filter(
-    u => u.finishedAt > 0 && u.startedAt > 0,
-  );
-  if (completedSliceUnits.length < 2) return null;
-
-  const totalDuration = completedSliceUnits.reduce(
-    (sum, u) => sum + (u.finishedAt - u.startedAt), 0,
-  );
-  const avgDuration = totalDuration / completedSliceUnits.length;
-
-  // Rough estimate: remaining slices × average units per slice × avg duration
-  const completedSlices = sliceProgress.done || 1;
-  const unitsPerSlice = completedSliceUnits.length / completedSlices;
-  const estimatedMs = remainingSlices * unitsPerSlice * avgDuration;
-
-  if (estimatedMs < 5_000) return null; // Too small to display
-
-  const s = Math.floor(estimatedMs / 1000);
-  if (s < 60) return `~${s}s remaining`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `~${m}m remaining`;
-  const h = Math.floor(m / 60);
-  const rm = m % 60;
-  return rm > 0 ? `~${h}h ${rm}m remaining` : `~${h}h remaining`;
+  const estimatedMs = estimateTimeRemainingMsFrom(ledger?.units ?? [], sliceProgress);
+  return estimatedMs === null ? null : formatTimeRemaining(estimatedMs);
 }
 
 // ─── Slice Progress Cache ─────────────────────────────────────────────────────

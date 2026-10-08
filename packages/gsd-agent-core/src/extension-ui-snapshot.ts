@@ -1,4 +1,4 @@
-import type { ExtensionWidgetOptions } from "@gsd/pi-coding-agent/core/extensions/index.js";
+import type { ExtensionWidgetOptions, GsdProgressState } from "@gsd/pi-coding-agent/core/extensions/index.js";
 
 /** Extension UI chrome captured for RPC replay and web bridge sync. */
 export interface ExtensionUiSnapshot {
@@ -9,6 +9,8 @@ export interface ExtensionUiSnapshot {
 	editorText: string | undefined;
 	hasCustomHeader: boolean;
 	hasCustomFooter: boolean;
+	/** Structured GSD strip state, retained by headless/RPC hosts. */
+	gsdProgress?: GsdProgressState;
 }
 
 export function createEmptyExtensionUiSnapshot(): ExtensionUiSnapshot {
@@ -84,6 +86,7 @@ export function extensionUiSnapshotFromRpcMaps(input: {
 	editorTextState: string | undefined;
 	hasCustomHeader: boolean;
 	hasCustomFooter: boolean;
+	gsdProgress?: GsdProgressState;
 }): ExtensionUiSnapshot {
 	return {
 		statusByKey: Object.fromEntries(input.statusState.entries()),
@@ -93,5 +96,6 @@ export function extensionUiSnapshotFromRpcMaps(input: {
 		editorText: input.editorTextState,
 		hasCustomHeader: input.hasCustomHeader,
 		hasCustomFooter: input.hasCustomFooter,
+		gsdProgress: input.gsdProgress,
 	};
 }

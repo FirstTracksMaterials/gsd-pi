@@ -260,17 +260,22 @@ export async function runRpcMode(session: AgentSession): Promise<never> {
 	let workingMessageState: string | null | undefined;
 	let titleState: string | undefined;
 	let editorTextState: string | undefined;
+	let gsdProgressState: GsdProgressState | undefined;
+	let gsdProgressDispose: (() => void) | undefined;
 
 	const emitExtensionUiSnapshot = (): void => {
-		const snapshot = extensionUiSnapshotFromRpcMaps({
-			statusState,
-			widgetState,
-			workingMessageState,
-			titleState,
-			editorTextState,
-			hasCustomHeader: headerFactory !== undefined,
-			hasCustomFooter: footerFactory !== undefined,
-		});
+		const snapshot = {
+			...extensionUiSnapshotFromRpcMaps({
+				statusState,
+				widgetState,
+				workingMessageState,
+				titleState,
+				editorTextState,
+				hasCustomHeader: headerFactory !== undefined,
+				hasCustomFooter: footerFactory !== undefined,
+			}),
+			gsdProgress: gsdProgressState,
+		};
 		output({ type: "extension_ui_snapshot", snapshot });
 	};
 
@@ -292,6 +297,7 @@ export async function runRpcMode(session: AgentSession): Promise<never> {
 			ui.setWidget(key, widget.content as any, widget.options);
 		}
 		ui.setWorkingMessage(workingMessageState);
+		ui.setGsdProgress(gsdProgressState);
 		if (titleState) {
 			ui.setTitle(titleState);
 		}
@@ -438,8 +444,12 @@ export async function runRpcMode(session: AgentSession): Promise<never> {
 			});
 		},
 
-		setGsdProgress(_state: GsdProgressState | undefined, _dispose?: () => void): void {
-			// Structured GSD strip is interactive-mode only
+		setGsdProgress(state: GsdProgressState | undefined, dispose?: () => void): void {
+			if (gsdProgressDispose && gsdProgressDispose !== dispose) gsdProgressDispose();
+			gsdProgressState = state;
+			gsdProgressDispose = dispose;
+			emitExtensionUiSnapshot();
+			void withEmbeddedUiContext((ui) => ui.setGsdProgress(state));
 		},
 
 		setWorkingMessage(message?: string | null): void {

@@ -47,6 +47,7 @@ export type FeatureFlags = {
   event_history: boolean;
   readonly_references: boolean;
   single_model_admission: boolean;
+  structured_gsd_status: boolean;
 };
 
 export async function buildCapabilities(registration: RegistrationRegistry): Promise<Record<string, unknown>> {
@@ -79,6 +80,7 @@ export async function buildCapabilities(registration: RegistrationRegistry): Pro
     event_history: true,
     readonly_references: true,
     single_model_admission: true,
+    structured_gsd_status: true,
   };
 
   return {

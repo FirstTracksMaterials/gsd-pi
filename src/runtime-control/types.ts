@@ -262,6 +262,8 @@ export type JobSnapshot = {
   log_ref: string | null;
   run_id: string | null;
   attempt_id: string | null;
+  /** Canonical GSD workflow monitoring state. Additive for legacy consumers. */
+  gsd_status?: import("../resources/extensions/gsd/monitoring-status.js").GsdMonitoringStatus;
 };
 
 export type JobSummary = {

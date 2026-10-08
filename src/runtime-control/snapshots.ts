@@ -52,6 +52,7 @@ export type NativeObservationInput = {
     method: PendingInput["method"];
     session_id: string;
   } | null;
+  gsd_status?: JobSnapshot["gsd_status"];
 };
 
 const VERIFYING_PHASES = new Set([
@@ -165,6 +166,35 @@ async function readNative(basePath: string, milestoneId?: string): Promise<Nativ
       }
     }
     const question = snapshot?.openQuestions[0];
+    let gsdStatus: JobSnapshot["gsd_status"];
+    if (snapshot && progress) {
+      const [monitoring, runtimeState, progressHealth, metrics] = await Promise.all([
+        import("../resources/extensions/gsd/monitoring-status.ts"),
+        import("../resources/extensions/gsd/auto-runtime-state.ts"),
+        import("../resources/extensions/gsd/progress-score.ts"),
+        import("../resources/extensions/gsd/metrics.ts"),
+      ]);
+      const ledger = metrics.loadLedgerFromDisk(basePath);
+      const liveRuntime = runtimeState.getAutoRuntimeSnapshot();
+      const runtime = !liveRuntime.basePath || liveRuntime.basePath === basePath
+        ? liveRuntime
+        : {
+            ...liveRuntime,
+            active: false,
+            paused: false,
+            currentUnit: null,
+            autoStartTime: 0,
+            stepMode: false,
+            currentDispatchedModelId: null,
+          };
+      gsdStatus = monitoring.buildGsdRuntimeProgressSnapshot({
+        snapshot,
+        progress,
+        runtime,
+        health: progressHealth.computeProgressScore(),
+        units: ledger?.units ?? [],
+      });
+    }
     const blockerCount = snapshot?.blockers.length ?? progress?.blockers.length ?? 0;
     const verifiedComplete = scopedMilestone
       ? isCanonicalMilestoneCompletion({ milestone: scopedMilestone, blockerCount })
@@ -199,6 +229,7 @@ async function readNative(basePath: string, milestoneId?: string): Promise<Nativ
           session_id: "",
         }
         : null,
+      gsd_status: gsdStatus,
     };
   } catch {
     return null;
@@ -525,6 +556,7 @@ export async function buildJobSnapshot(control: RuntimeControl, jobId: string): 
     log_ref: native?.log_ref ?? liveObservation.log_ref,
     run_id: liveObservation.run_id,
     attempt_id: liveObservation.attempt_id,
+    gsd_status: native?.gsd_status,
   };
   return snapshot;
 }

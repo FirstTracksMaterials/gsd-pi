@@ -30,6 +30,9 @@ export type AutoRuntimeSnapshot = {
   paused: boolean;
   currentUnit: CurrentUnit | null;
   basePath: string;
+  autoStartTime: number;
+  stepMode: boolean;
+  currentDispatchedModelId: string | null;
   isolationDegraded: boolean;
   strandedRecoveryIsolationMode: "worktree" | "branch" | null;
   orchestrationPhase?: "idle" | "running" | "paused" | "stopped" | "error";
@@ -45,6 +48,9 @@ export function getAutoRuntimeSnapshot(): AutoRuntimeSnapshot {
     paused: autoSession.paused,
     currentUnit: autoSession.currentUnit ? { ...autoSession.currentUnit } : null,
     basePath: autoSession.basePath,
+    autoStartTime: autoSession.autoStartTime,
+    stepMode: autoSession.stepMode,
+    currentDispatchedModelId: autoSession.currentDispatchedModelId,
     isolationDegraded: autoSession.isolationDegraded,
     strandedRecoveryIsolationMode: autoSession.strandedRecoveryIsolationMode,
     orchestrationPhase: orchestrationStatus?.phase,
