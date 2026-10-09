@@ -405,7 +405,10 @@ function deriveState(input: {
   if (terminal?.operation.action === "start" && terminal.operation.state === "succeeded" && input.observation.verified_complete) {
     return "completed";
   }
-  if (PLANNING_PHASES.has(phase)) return "planning";
+  // Native planning phases describe what the workflow needs next, not proof
+  // that work is running. A durable live operation above is the sole owner of
+  // an active planning state; an imported milestone shell remains actionable.
+  if (PLANNING_PHASES.has(phase)) return "idle";
   // A ready native plan has phase=executing even before an operation owns it.
   // Only a durable live operation may project that phase as running.
   if (phase === "executing") return "prepared";

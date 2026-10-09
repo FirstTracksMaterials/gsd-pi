@@ -74,6 +74,13 @@ test("POST import admits a JobImport and stays idempotent on the same digest", a
   assert.equal(operation.action, "import");
   assert.equal(operation.state, "succeeded");
   assert.equal(operation.result.job_id, "alpha:M001");
+  registerNativeSnapshotReaderForTest(async () => ({
+    readMetadata: { source: "database", authority: "db-authoritative" },
+    phase: "pre-planning",
+    tasks_completed: 0,
+    tasks_total: 0,
+    blockers: [],
+  }));
   const importedSnapshot = await jobGet(
     new Request("http://127.0.0.1/api/runtime/v1/jobs/alpha%3AM001"),
     { params: { job_id: "alpha%3AM001" } },
