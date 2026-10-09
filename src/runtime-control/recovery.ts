@@ -2,7 +2,7 @@
 // File Purpose: Explicit recovery IDs from native diagnostics. Never auto-replay shell.
 
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
 import { atomicWriteJson } from "./atomic-json.ts";
@@ -22,6 +22,12 @@ let diagnosticsDir: string | null = null;
 
 export function configureRecoveryStore(stateRoot: string): void {
   diagnosticsDir = join(stateRoot, "runtime-control", "recovery");
+  records.clear();
+  if (!existsSync(diagnosticsDir)) return;
+  for (const entry of readdirSync(diagnosticsDir)) {
+    if (!entry.endsWith(".json")) continue;
+    getRecovery(entry.slice(0, -".json".length));
+  }
 }
 
 export function issueRecoveryId(input: {
@@ -81,7 +87,9 @@ export function listRecoveries(): RecoveryRecord[] {
 }
 
 export function latestOpenRecoveryForJob(jobId: string): RecoveryRecord | undefined {
-  const matches = listRecoveries().filter((record) => record.job_id === jobId && !record.applied);
+  const matches = listRecoveries()
+    .filter((record) => record.job_id === jobId && !record.applied)
+    .sort((left, right) => left.issued_at.localeCompare(right.issued_at));
   return matches.at(-1);
 }
 

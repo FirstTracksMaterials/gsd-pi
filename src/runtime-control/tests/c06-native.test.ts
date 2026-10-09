@@ -32,7 +32,7 @@ import {
 } from "../workspace-profile.ts";
 import { getMilestoneLockBlocker } from "../../resources/extensions/gsd/dispatch-guard.ts";
 import { shouldRefuseNewWork } from "../../resources/extensions/gsd/auto-cancellation.ts";
-import { createControl, resetC05, seedReadyProject, startRequest, tempProject, uuid } from "./harness.ts";
+import { createControl, reopenControl, resetC05, seedReadyProject, startRequest, tempProject, uuid } from "./harness.ts";
 
 afterEach(() => {
   resetC05();
@@ -262,7 +262,7 @@ test("AT-C07 missing idle probe retains the lease as recovery_required", async (
 
 test("recover releases a recovery_required lease only after an idle probe", async () => {
   const alpha = tempProject("recover-idle");
-  const { control } = createControl({
+  const { control, stateRoot } = createControl({
     projects: [{ project_id: "alpha", target: alpha, backend_idle_probe: "http://127.0.0.1/slots" }],
   });
   seedReadyProject(control, "alpha", alpha);
@@ -302,7 +302,10 @@ test("recover releases a recovery_required lease only after an idle probe", asyn
     issued_at: "2026-09-20T00:00:01Z",
     next_state: "recovery_required",
   });
-  const snapshot = await buildJobSnapshot(control, "alpha:M001");
+  const reopened = reopenControl(stateRoot, [
+    { project_id: "alpha", target: alpha, backend_idle_probe: "http://127.0.0.1/slots" },
+  ]);
+  const snapshot = await buildJobSnapshot(reopened, "alpha:M001");
   const recoverAction = snapshot.actions.find((action) => action.id === "recover");
   assert.deepEqual(recoverAction?.parameters, { recovery_id: blocked.recovery_id });
   registerCancelNativeOpsForTest({
