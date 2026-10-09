@@ -191,6 +191,7 @@ export type Action = {
   label: string;
   enabled: boolean;
   reason: string | null;
+  parameters?: Record<string, unknown>;
 };
 
 export type ActiveTask = {

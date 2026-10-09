@@ -425,11 +425,17 @@ function progressFrom(native: NativeObservationInput | null, observation: JobObs
   return { tasks_completed: completed, tasks_total: total, label: `${completed} of ${total} tasks` };
 }
 
-function action(id: ActionId, enabled: boolean, reason: string | null = null): Action {
-  return { id, label: ACTION_LABELS[id], enabled, reason };
+function action(
+  id: ActionId,
+  enabled: boolean,
+  reason: string | null = null,
+  parameters?: Record<string, unknown>,
+): Action {
+  return { id, label: ACTION_LABELS[id], enabled, reason, ...(parameters ? { parameters } : {}) };
 }
 
-function actionsFor(state: JobState, recoveryAvailable: boolean, blockers: string[]): { actions: Action[]; primary_action: ActionId | null } {
+function actionsFor(state: JobState, recoveryId: string | null, blockers: string[]): { actions: Action[]; primary_action: ActionId | null } {
+  const recoveryAvailable = Boolean(recoveryId);
   const reviewReplan = state === "idle" || state === "prepared" || state === "cancelled" || state === "failed";
   const cancelLive = state === "running" || state === "planning" || state === "verifying" || state === "waiting_for_input" || state === "cancelling";
   const actions: Action[] = [
@@ -439,7 +445,12 @@ function actionsFor(state: JobState, recoveryAvailable: boolean, blockers: strin
     action("start", state === "prepared" && blockers.length === 0, state === "prepared" && blockers.length > 0 ? "Blockers must be cleared before start" : null),
     action("resume", state === "cancelled"),
     action("cancel", cancelLive, cancelLive ? null : "No outstanding operation to cancel"),
-    action("recover", (state === "failed" || state === "recovery_required") && recoveryAvailable, (state === "failed" || state === "recovery_required") && !recoveryAvailable ? "No native recovery_id is available" : null),
+    action(
+      "recover",
+      (state === "failed" || state === "recovery_required") && recoveryAvailable,
+      (state === "failed" || state === "recovery_required") && !recoveryAvailable ? "No native recovery_id is available" : null,
+      recoveryId ? { recovery_id: recoveryId } : undefined,
+    ),
   ];
   let primary: ActionId | null = null;
   if (state === "idle") primary = "prepare";
@@ -521,7 +532,7 @@ export async function buildJobSnapshot(control: RuntimeControl, jobId: string): 
   }
   if (scientific === "SIGNED_OFF" && metadata.authority !== "db-authoritative") scientific = "NOT_SIGNED_OFF";
   const recovery = latestOpenRecoveryForJob(job.job_id);
-  const { actions, primary_action } = actionsFor(state, Boolean(recovery), blockers);
+  const { actions, primary_action } = actionsFor(state, recovery?.recovery_id ?? null, blockers);
   const live = latestLive(operations);
   const phase = native?.phase ?? liveObservation.native_phase ?? state;
   const observedActiveTask = native?.active_task ?? liveObservation.active_task;

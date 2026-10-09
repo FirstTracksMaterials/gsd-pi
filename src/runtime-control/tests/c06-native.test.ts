@@ -17,6 +17,7 @@ import { getLastMilestoneLock, registerNativeWorkflowOpsForTest } from "../nativ
 import { registerNativeAutoDispatchForTest } from "../native-auto-dispatch.ts";
 import { applyPrepareDispatchBoundary, beginPrepareMode, endPrepareMode, isPrepareMode, resetPrepareModeForTest } from "../prepare-boundary.ts";
 import { issueRecoveryId } from "../recovery.ts";
+import { buildJobSnapshot } from "../snapshots.ts";
 import {
   assertTrustedGitRepo,
   canonicalRealpath,
@@ -301,6 +302,9 @@ test("recover releases a recovery_required lease only after an idle probe", asyn
     issued_at: "2026-09-20T00:00:01Z",
     next_state: "recovery_required",
   });
+  const snapshot = await buildJobSnapshot(control, "alpha:M001");
+  const recoverAction = snapshot.actions.find((action) => action.id === "recover");
+  assert.deepEqual(recoverAction?.parameters, { recovery_id: blocked.recovery_id });
   registerCancelNativeOpsForTest({
     abortOwnedWorker: async (input) => ({
       cleaned: true,
