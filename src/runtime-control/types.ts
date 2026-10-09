@@ -108,6 +108,7 @@ export type ReferenceRegistration = {
 export type ProjectRegistration = {
   project_id: string;
   target_worktree: string;
+  source_repository?: string | null;
   contract_root: string;
   reference_repositories: ReferenceRegistration[];
   writable_cache_roots: string[];
@@ -119,6 +120,7 @@ export type ProjectRegistration = {
 
 export type RegistrationFile = {
   version?: number;
+  trusted_project_roots?: string[];
   projects: ProjectRegistration[];
 };
 
@@ -126,6 +128,7 @@ export type ResolvedProject = {
   project_id: string;
   target_worktree: string;
   target_realpath: string;
+  source_repository?: string | null;
   contract_root: string;
   reference_repositories: Array<ReferenceRegistration & { realpath: string }>;
   writable_cache_roots: string[];

@@ -97,6 +97,7 @@ export function createControl(options: {
   projects: Array<{
     project_id: string;
     target: string;
+    source_repository?: string;
     required_policy?: string;
     references?: Array<{ project_id: string; root: string }>;
     writable_cache_roots?: string[];
@@ -110,9 +111,11 @@ export function createControl(options: {
   resetCommandHandlerForTest();
   const stateRoot = options.stateRoot ?? tempState();
   const registration: RegistrationFile = {
+    trusted_project_roots: [tmpdir()],
     projects: options.projects.map((project) => ({
       project_id: project.project_id,
       target_worktree: project.target,
+      source_repository: project.source_repository,
       contract_root: ".gsd/ftm/contracts",
       reference_repositories: project.references ?? [],
       writable_cache_roots: project.writable_cache_roots ?? [],

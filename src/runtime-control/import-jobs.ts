@@ -165,6 +165,16 @@ export function importedMilestoneRows(documents: JobImportDocument[]): {
   };
 }
 
+export function importedMilestoneSeed(
+  documents: JobImportDocument[],
+  sourceKind: "prompt" | "legacy",
+): { context: string; plan: ReturnType<typeof importedMilestoneRows> } {
+  return {
+    context: documents.map((doc) => doc.content.trim()).filter(Boolean).join("\n\n"),
+    plan: sourceKind === "legacy" ? importedMilestoneRows(documents) : null,
+  };
+}
+
 function nativeWriteMilestone(input: {
   project: ResolvedProject;
   milestoneId: string;
@@ -172,6 +182,7 @@ function nativeWriteMilestone(input: {
   digest: string;
   title: string;
   documents: JobImportDocument[];
+  sourceKind: "prompt" | "legacy";
 }): { milestoneId: string; revision: number } {
   if (importWriter) {
     return importWriter({
@@ -187,7 +198,7 @@ function nativeWriteMilestone(input: {
     title: input.title,
   });
   writeImportDocuments(input.project, input.digest, input.documents);
-  persistImportedMilestone(input.project, input.milestoneId, input.title, input.digest, input.documents);
+  persistImportedMilestone(input.project, input.milestoneId, input.title, input.digest, input.documents, input.sourceKind);
   return { milestoneId: input.milestoneId, revision: 1 };
 }
 
@@ -208,13 +219,15 @@ function persistImportedMilestone(
   title: string,
   digest: string,
   documents: JobImportDocument[],
+  sourceKind: "prompt" | "legacy",
 ): void {
   const target = project.target_realpath;
-  const plan = importedMilestoneRows(documents);
-  if (plan) {
-    const note = referenceReadNote(project);
-    if (note) plan.context = `${plan.context.trim()}\n${note}`;
-  }
+  const seed = importedMilestoneSeed(documents, sourceKind);
+  const plan = seed.plan;
+  let context = seed.context;
+  const note = referenceReadNote(project);
+  if (note && context) context = `${context.trim()}\n${note}`;
+  if (plan) plan.context = context;
   try {
     const root = process.env.GSD_WEB_PACKAGE_ROOT?.trim();
     if (!root) throw new Error("GSD_WEB_PACKAGE_ROOT is unset");
@@ -235,7 +248,7 @@ function persistImportedMilestone(
         planning: { description: string; estimate: string; files: string[]; verify: string; inputs: string[]; expectedOutput: string[]; requiredWorkflowTools: string[]; observabilityImpact: string; fullPlanMd: string };
       }) => void;
     };
-    if (workspace.openWorkflowDatabase?.(target).ok && plan) {
+    if (workspace.openWorkflowDatabase?.(target).ok && context) {
       const paths = nodeRequire(join(root, "dist/resources/extensions/gsd/paths.js")) as {
         resolveMilestonePath?: (basePath: string, milestoneId: string) => string | null;
       };
@@ -247,24 +260,26 @@ function persistImportedMilestone(
       const phaseDir = paths.resolveMilestonePath?.(target, milestoneId)
         ?? join(target, ".gsd", "phases", layout.canonicalPhaseDirName?.(milestoneId, title) ?? milestoneId);
       mkdirSync(phaseDir, { recursive: true });
-      writeFileSync(join(phaseDir, contextName), `${plan.context}\n`, "utf-8");
+      writeFileSync(join(phaseDir, contextName), `${context}\n`, "utf-8");
     }
     if (workspace.openWorkflowDatabase?.(target).ok) {
       gsdDb.insertMilestone?.({
         id: milestoneId,
         title,
         status: plan?.status ?? "queued",
-        planning: plan ? { vision: plan.context } : undefined,
+        planning: context ? { vision: context } : undefined,
       });
-      if (plan) {
+      if (context) {
         gsdDb.insertArtifact?.({
           path: `.gsd/imports/${digest}/CONTEXT.md`,
           artifact_type: "CONTEXT",
           milestone_id: milestoneId,
           slice_id: null,
           task_id: null,
-          full_content: plan.context,
+          full_content: context,
         });
+      }
+      if (plan) {
         gsdDb.insertSlice?.({
           id: plan.sliceId,
           milestoneId,
@@ -390,7 +405,7 @@ async function admitImportLocked(
     };
     if (existing) host.store.update(stored);
     else host.store.writeAccepted(stored);
-    persistImportedMilestone(project, digestMatch.milestone_id, parsed.title, parsed.import_digest, parsed.documents);
+    persistImportedMilestone(project, digestMatch.milestone_id, parsed.title, parsed.import_digest, parsed.documents, parsed.source.kind);
     return { ok: true, status: 202, operation: stored.operation };
   }
 
@@ -447,6 +462,7 @@ async function admitImportLocked(
     digest: parsed.import_digest,
     title: parsed.title,
     documents: parsed.documents,
+    sourceKind: parsed.source.kind,
   });
   const job: JobRecord = {
     job_id: `${decodedProjectId}:${written.milestoneId}`,

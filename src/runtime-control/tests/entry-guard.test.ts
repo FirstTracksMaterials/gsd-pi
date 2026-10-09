@@ -101,7 +101,12 @@ test("AT-C04: unregistered cwd remains general-purpose GSD", async () => {
 test("GET capabilities and projects make no model calls and report honest feature flags", async () => {
   const alpha = tempProject("caps");
   const { control } = createControl({
-    projects: [{ project_id: "alpha", target: alpha, required_policy: "ftm-science/v1" }],
+    projects: [{
+      project_id: "alpha",
+      target: alpha,
+      source_repository: "/home/test/Projects/FirstTracks/alpha",
+      required_policy: "ftm-science/v1",
+    }],
     readyPolicy: false,
   });
   const capabilities = await buildCapabilities(control.registration) as {
@@ -122,4 +127,5 @@ test("GET capabilities and projects make no model calls and report honest featur
   const projects = await buildProjectList(control.registration);
   assert.equal(projects.projects.length, 1);
   assert.equal(projects.projects[0]?.policy_ready, false);
+  assert.equal(projects.projects[0]?.source_repository, "/home/test/Projects/FirstTracks/alpha");
 });

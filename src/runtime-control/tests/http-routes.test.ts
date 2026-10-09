@@ -74,6 +74,18 @@ test("POST import admits a JobImport and stays idempotent on the same digest", a
   assert.equal(operation.action, "import");
   assert.equal(operation.state, "succeeded");
   assert.equal(operation.result.job_id, "alpha:M001");
+  const importedSnapshot = await jobGet(
+    new Request("http://127.0.0.1/api/runtime/v1/jobs/alpha%3AM001"),
+    { params: { job_id: "alpha%3AM001" } },
+  );
+  const importedBody = await importedSnapshot.json() as {
+    state: string;
+    primary_action: string | null;
+    progress: { tasks_total: number };
+  };
+  assert.equal(importedBody.state, "idle");
+  assert.equal(importedBody.primary_action, "prepare");
+  assert.equal(importedBody.progress.tasks_total, 0, "prompt import must await native GSD planning");
 
   const retry = await importPost(
     new Request("http://127.0.0.1/api/runtime/v1/projects/alpha/jobs", {

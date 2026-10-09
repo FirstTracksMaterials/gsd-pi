@@ -32,7 +32,7 @@ function asString(value: unknown, field: string): string {
   return value.trim();
 }
 
-function parseProject(raw: unknown): ProjectRegistration {
+export function parseProjectRegistration(raw: unknown): ProjectRegistration {
   if (!raw || typeof raw !== "object") {
     throw invalidRequest("Each registration project must be an object");
   }
@@ -42,6 +42,9 @@ function parseProject(raw: unknown): ProjectRegistration {
   return {
     project_id: asString(record.project_id, "project_id"),
     target_worktree: asString(record.target_worktree, "target_worktree"),
+    source_repository: typeof record.source_repository === "string" && record.source_repository.trim()
+      ? record.source_repository.trim()
+      : null,
     contract_root: typeof record.contract_root === "string" && record.contract_root.trim()
       ? record.contract_root.trim()
       : ".gsd/ftm/contracts",
@@ -77,11 +80,14 @@ function parseOptionalBinding(raw: unknown, probe: unknown): BackendBinding | nu
   return binding;
 }
 
-function resolveProject(project: ProjectRegistration): ResolvedProject {
+export function resolveProjectRegistration(project: ProjectRegistration): ResolvedProject {
   if (project.target_worktree.includes("~") || project.target_worktree.includes("$")) {
     throw invalidRequest(`target_worktree for ${project.project_id} must be an absolute path; JSON does not expand ~ or $HOME`);
   }
   const target = canonicalRealpath(project.target_worktree);
+  if (project.source_repository?.includes("~") || project.source_repository?.includes("$")) {
+    throw invalidRequest(`source_repository for ${project.project_id} must be an absolute path; JSON does not expand ~ or $HOME`);
+  }
   const references = project.reference_repositories.map((ref) => {
     if (ref.root.includes("~") || ref.root.includes("$")) {
       throw invalidRequest(`reference root for ${ref.project_id} must be an absolute path`);
@@ -92,6 +98,7 @@ function resolveProject(project: ProjectRegistration): ResolvedProject {
     project_id: project.project_id,
     target_worktree: resolve(project.target_worktree),
     target_realpath: target,
+    source_repository: project.source_repository ? resolve(project.source_repository) : null,
     contract_root: project.contract_root,
     reference_repositories: references,
     writable_cache_roots: project.writable_cache_roots.map((root) => canonicalRealpath(root)),
@@ -186,7 +193,7 @@ export class RegistrationRegistry {
     }
     try {
       const parsed = JSON.parse(readFileSync(path, "utf-8")) as RegistrationFile;
-      const projects = Array.isArray(parsed.projects) ? parsed.projects.map(parseProject).map(resolveProject) : [];
+      const projects = Array.isArray(parsed.projects) ? parsed.projects.map(parseProjectRegistration).map(resolveProjectRegistration) : [];
       assertNoOverlap(projects);
       this.replace(projects, path, null);
     } catch (error) {
@@ -196,7 +203,7 @@ export class RegistrationRegistry {
   }
 
   loadFromObject(file: RegistrationFile, sourcePath = "<memory>"): void {
-    const projects = (file.projects ?? []).map(parseProject).map(resolveProject);
+    const projects = (file.projects ?? []).map(parseProjectRegistration).map(resolveProjectRegistration);
     assertNoOverlap(projects);
     this.replace(projects, sourcePath, null);
   }

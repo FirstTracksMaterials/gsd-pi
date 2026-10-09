@@ -20,6 +20,7 @@ export { RuntimeControlError } from "./errors.ts";
 export { fingerprintAnswer, fingerprintCommand, fingerprintImport } from "./fingerprint.ts";
 export { REGISTRATION_ENV } from "./registration.ts";
 export { admitImport } from "./import-jobs.ts";
+export { admitProjectRegistration } from "./project-registration.ts";
 export { admitAnswer, registerPendingQuestion } from "./answers.ts";
 export { buildJobSnapshot, listProjectJobs, registerNativeSnapshotReaderForTest, reconcileBufferedEvents } from "./snapshots.ts";
 export { subscribeProjectEvents, ingestNativeEvent, ingestVerifiedMilestone, cursorSemantics, configureEventHubForTest } from "./event-hub.ts";

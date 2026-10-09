@@ -104,6 +104,7 @@ export async function buildProjectList(registration: RegistrationRegistry): Prom
     projects.push({
       project_id: project.project_id,
       target_worktree: project.target_worktree,
+      source_repository: project.source_repository,
       required_policy: project.required_policy,
       policy_ready: status.ready,
       policy_reason: status.reason ?? null,
